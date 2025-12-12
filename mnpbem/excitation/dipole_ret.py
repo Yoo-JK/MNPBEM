@@ -55,7 +55,7 @@ class DipoleRet:
 
     name = 'dipole'
 
-    def __init__(self, pt_pos, dip=None, full=False, medium=1):
+    def __init__(self, pt_pos, dip=None, full=False, medium=1, spec=None):
         """
         Initialize dipole excitation.
 
@@ -69,11 +69,14 @@ class DipoleRet:
             If True, different dipole at each position
         medium : int
             Embedding medium index (1-indexed)
+        spec : SpectrumRet, optional
+            Spectrum object for scattering/radiative decay rate
         """
         # Dipole positions
         self.pt_pos = np.atleast_2d(pt_pos).astype(float)
         self.npt = self.pt_pos.shape[0]
         self.medium = medium
+        self.spec = spec
 
         # Dipole orientations
         if dip is None:
@@ -303,37 +306,144 @@ class DipoleRet:
             'enei': enei
         }
 
-    def decayrate(self, sig):
+    def decayrate(self, sig, spec=None):
         """
-        Compute decay rates for dipole near particle.
+        Compute total and radiative decay rates for dipole near particle.
+
+        MATLAB: decayrate.m
+        Total decay rate from imaginary part of induced field.
+        Radiative decay rate from scattering cross section.
+
+        Parameters
+        ----------
+        sig : dict
+            Solution from BEM solver containing:
+            - 'sig1', 'sig2': surface charges
+            - 'h1', 'h2': surface currents
+            - 'p': particle
+            - 'enei': wavelength
+        spec : SpectrumRet, optional
+            Spectrum object for scattering. Uses self.spec if not provided.
+
+        Returns
+        -------
+        tot : ndarray, shape (npt, ndip)
+            Total decay rate (normalized to free space)
+        rad : ndarray, shape (npt, ndip)
+            Radiative decay rate (normalized to free space)
+        rad0 : ndarray, shape (npt, ndip)
+            Free-space decay rate (for reference)
+        """
+        p = sig['p']
+        enei = sig['enei']
+
+        # Wavenumber in vacuum
+        k0 = 2 * np.pi / enei
+
+        # Wigner-Weisskopf rate: gamma = 4/3 * k0^3
+        gamma = 4 / 3 * k0**3
+
+        # Refractive index of embedding medium
+        eps_val, k = p.eps[self.medium - 1](enei)
+        nb = np.sqrt(np.real(eps_val))
+
+        # Initialize output
+        tot = np.zeros((self.npt, self.ndip))
+        rad = np.zeros((self.npt, self.ndip))
+        rad0 = np.full((self.npt, self.ndip), nb * gamma)
+
+        # Use provided spec or self.spec
+        if spec is None:
+            spec = self.spec
+
+        # Compute scattering cross section for radiative decay rate
+        if spec is not None:
+            sca, _ = spec.scattering(sig)
+            if np.isscalar(sca):
+                sca = np.full((self.npt, self.ndip), sca)
+            else:
+                sca = np.broadcast_to(sca, (self.npt, self.ndip))
+            # rad = sca / (2*pi*k0) normalized to free-space rate
+            rad = sca / (2 * np.pi * k0) / (0.5 * nb * gamma)
+
+        # Compute induced field at dipole positions for total decay rate
+        # This requires Green function evaluation from surface to dipole
+        pos = p.pos
+        area = p.area
+
+        # Get surface charges
+        sig1 = sig.get('sig1', np.zeros(p.nfaces))
+        sig2 = sig.get('sig2', np.zeros(p.nfaces))
+
+        if sig1.ndim == 1:
+            sig_total = sig1 + sig2
+        else:
+            sig_total = sig1 + sig2  # Sum inside and outside contributions
+
+        for ipt in range(self.npt):
+            pt_pos = self.pt_pos[ipt]
+
+            for idip in range(self.ndip):
+                dip_vec = self.dip[ipt, :, idip]
+
+                # Get surface charge for this configuration
+                if sig_total.ndim == 1:
+                    sig_vals = sig_total
+                else:
+                    # Need to map (npt, ndip) to proper index
+                    idx = ipt * self.ndip + idip
+                    if idx < sig_total.shape[1]:
+                        sig_vals = sig_total[:, idx]
+                    else:
+                        sig_vals = sig_total[:, 0]
+
+                # Compute induced field at dipole position
+                # Using retarded Green function: G = exp(ikr)/r
+                r_vec = pt_pos - pos  # (nfaces, 3)
+                r_mag = np.linalg.norm(r_vec, axis=1)
+                r_mag = np.maximum(r_mag, 1e-30)
+                r_hat = r_vec / r_mag[:, np.newaxis]
+
+                # Green function
+                G = np.exp(1j * k * r_mag) / r_mag
+
+                # Electric field from surface charge (simplified)
+                # E = sum(sig * area * (-grad G))
+                # For retarded case: -grad G = (ik - 1/r) * G * r_hat
+                grad_G_factor = (1j * k - 1 / r_mag) * G
+                e_ind = np.sum(
+                    sig_vals[:, np.newaxis] * area[:, np.newaxis] *
+                    grad_G_factor[:, np.newaxis] * r_hat,
+                    axis=0
+                ) / eps_val
+
+                # Total decay rate: 1 + Im(E_ind · dip) / (0.5 * nb * gamma)
+                tot[ipt, idip] = 1 + np.imag(np.dot(e_ind, dip_vec)) / (0.5 * nb * gamma)
+
+        return tot, rad, rad0
+
+    def scattering(self, sig, spec=None):
+        """
+        Compute scattering cross section for dipole excitation.
 
         Parameters
         ----------
         sig : dict
             Solution from BEM solver
+        spec : SpectrumRet, optional
+            Spectrum object
 
         Returns
         -------
-        tot : ndarray
-            Total decay rate
-        rad : ndarray
-            Radiative decay rate
+        sca : ndarray
+            Scattering cross section
         """
-        # Similar to DipoleStat but with retardation
-        p = sig['p']
-        enei = sig['enei']
+        if spec is None:
+            spec = self.spec
+        if spec is None:
+            raise ValueError("SpectrumRet object required for scattering calculation")
 
-        # Wigner-Weisskopf rate
-        gamma = 4 / 3 * (2 * np.pi / enei)**3
-
-        eps_val, _ = p.eps[0](enei)
-        nb = np.sqrt(np.real(eps_val))
-
-        tot = np.ones((self.npt, self.ndip))
-        rad = np.ones((self.npt, self.ndip))
-        rad0 = np.full((self.npt, self.ndip), nb * gamma)
-
-        return tot, rad, rad0
+        return spec.scattering(sig)
 
     def __repr__(self):
         return f"DipoleRet(npt={self.npt}, ndip={self.ndip}, medium={self.medium})"
