@@ -104,13 +104,18 @@ class SpectrumRet:
 
     Parameters
     ----------
-    n_faces : int, optional
-        Number of faces for unit sphere discretization (default: 144)
+    pinfty : Particle or ndarray or int, optional
+        - Particle: Use its nvec and area properties
+        - ndarray (ndir, 3): Light propagation directions
+        - int: Number of faces for unit sphere (creates trisphere)
+        - None: Creates trisphere(256, 2) like MATLAB default
     medium : int, optional
         Index of embedding medium (1-indexed, default: 1)
 
     Attributes
     ----------
+    pinfty : object
+        Discretized unit sphere (stores nvec, area)
     nvec : ndarray, shape (ndir, 3)
         Directions on unit sphere (outward normals)
     area : ndarray, shape (ndir,)
@@ -132,166 +137,223 @@ class SpectrumRet:
     >>> sca, dsca = spec.scattering(sig)
     """
 
-    def __init__(self, n_faces=144, medium=1):
+    def __init__(self, pinfty=None, medium=1):
         """
         Initialize spectrum calculator.
 
+        MATLAB: spectrumret(pinfty, op, PropertyPair)
+
         Parameters
         ----------
-        n_faces : int
-            Number of faces for unit sphere
+        pinfty : Particle, ndarray, or int, optional
+            Unit sphere specification (see class docstring)
         medium : int
             Embedding medium index (1-indexed)
         """
-        # Create unit sphere mesh
-        _, _, self.nvec, self.area = trisphere_unit(n_faces)
-        self.ndir = len(self.nvec)
         self.medium = medium
 
-    def farfield(self, sig):
-        """
-        Compute far-field amplitudes from surface charges and currents.
+        # Handle different input types like MATLAB init.m
+        if pinfty is None:
+            # Default: create trisphere(256, 2)
+            _, _, nvec, area = trisphere_unit(256)
+            self.pinfty = _PinftyStruct(nvec, area)
+        elif isinstance(pinfty, int):
+            # Integer: create unit sphere with given number of faces
+            _, _, nvec, area = trisphere_unit(pinfty)
+            self.pinfty = _PinftyStruct(nvec, area)
+        elif isinstance(pinfty, np.ndarray):
+            # Numeric array: treat as direction vectors
+            nvec = np.atleast_2d(pinfty)
+            # For direction vectors, compute area as uniform solid angles
+            area = np.full(nvec.shape[0], 4 * np.pi / nvec.shape[0])
+            self.pinfty = _PinftyStruct(nvec, area)
+        elif hasattr(pinfty, 'nvec') and hasattr(pinfty, 'area'):
+            # Particle or struct with nvec and area properties
+            self.pinfty = pinfty
+        else:
+            # Try to use as particle
+            _, _, nvec, area = trisphere_unit(256)
+            self.pinfty = _PinftyStruct(nvec, area)
 
-        MATLAB: Garcia de Abajo, Rev. Mod. Phys. 82, 209 (2010), Eq. (50)
+        # Expose nvec and area directly for convenience
+        self.nvec = self.pinfty.nvec if hasattr(self.pinfty, 'nvec') else self.pinfty['nvec']
+        self.area = self.pinfty.area if hasattr(self.pinfty, 'area') else self.pinfty['area']
+        self.ndir = len(self.nvec)
 
-        Parameters
-        ----------
-        sig : dict
-            Solution containing:
-            - 'sig1', 'sig2': surface charges
-            - 'h1', 'h2': surface currents
-            - 'p': particle
-            - 'enei': wavelength
 
-        Returns
-        -------
-        field : dict
-            Far-field with 'e' and 'h' arrays
-        """
-        p = sig['p']
-        enei = sig['enei']
+class _PinftyStruct:
+    """Simple struct to hold pinfty data."""
 
-        # Wavenumber
-        _, k = p.eps[self.medium - 1](enei)
-        k0 = 2 * np.pi / enei
+    def __init__(self, nvec, area):
+        self.nvec = nvec
+        self.area = area
 
-        pos = p.pos
-        area = p.area
-        inout_faces = p.inout_faces
 
-        # Get charges and currents
-        sig1 = sig.get('sig1', np.zeros(p.nfaces))
-        sig2 = sig.get('sig2', np.zeros(p.nfaces))
-        h1 = sig.get('h1', np.zeros((p.nfaces, 3)))
-        h2 = sig.get('h2', np.zeros((p.nfaces, 3)))
+# Add methods to SpectrumRet class
+def _farfield(self, sig, direction=None):
+    """
+    Compute far-field amplitudes from surface charges and currents.
 
-        # Ensure proper shape
-        if sig1.ndim == 1:
-            sig1 = sig1[:, np.newaxis]
-            sig2 = sig2[:, np.newaxis]
-        if h1.ndim == 2:
-            h1 = h1[:, :, np.newaxis]
-            h2 = h2[:, :, np.newaxis]
+    MATLAB: Garcia de Abajo, Rev. Mod. Phys. 82, 209 (2010), Eq. (50)
 
-        npol = sig1.shape[1] if sig1.ndim > 1 else 1
+    Parameters
+    ----------
+    sig : dict
+        Solution containing:
+        - 'sig1', 'sig2': surface charges
+        - 'h1', 'h2': surface currents
+        - 'p': particle
+        - 'enei': wavelength
+    direction : ndarray, optional
+        Light propagation directions. Defaults to self.nvec.
 
-        # Initialize far-field
-        e = np.zeros((self.ndir, 3, npol), dtype=complex)
-        h = np.zeros((self.ndir, 3, npol), dtype=complex)
+    Returns
+    -------
+    field : dict
+        Far-field with 'e' and 'h' arrays
+    """
+    if direction is None:
+        direction = self.nvec
 
-        # Phase factor: exp(-i*k*dir·pos) * area
-        # dir: (ndir, 3), pos: (nfaces, 3)
-        phase = np.exp(-1j * k * np.dot(self.nvec, pos.T)) * area  # (ndir, nfaces)
+    p = sig['p']
+    enei = sig['enei']
 
-        # Find faces connected to medium
-        # Inside contribution: faces where inside == medium
-        ind1 = np.where(inout_faces[:, 0] == self.medium)[0]
-        # Outside contribution: faces where outside == medium
-        ind2 = np.where(inout_faces[:, 1] == self.medium)[0]
+    # Wavenumber
+    _, k = p.eps[self.medium - 1](enei)
+    k0 = 2 * np.pi / enei
 
-        for ipol in range(npol):
-            # Inside surface contribution
-            if len(ind1) > 0:
-                phase1 = phase[:, ind1]  # (ndir, nind1)
-                h_term = 1j * k0 * np.dot(phase1, h1[ind1, :, ipol])  # (ndir, 3)
-                sig_term = np.dot(phase1, sig1[ind1, ipol])  # (ndir,)
-                e_term = -1j * k * self.nvec * sig_term[:, np.newaxis]
+    pos = p.pos
+    area = p.area
+    inout_faces = p.inout_faces
 
-                e[:, :, ipol] += h_term + e_term
-                h[:, :, ipol] += 1j * k * np.cross(
-                    self.nvec, np.dot(phase1, h1[ind1, :, ipol])
-                )
+    # Get charges and currents
+    sig1 = sig.get('sig1', np.zeros(p.nfaces))
+    sig2 = sig.get('sig2', np.zeros(p.nfaces))
+    h1 = sig.get('h1', np.zeros((p.nfaces, 3)))
+    h2 = sig.get('h2', np.zeros((p.nfaces, 3)))
 
-            # Outside surface contribution
-            if len(ind2) > 0:
-                phase2 = phase[:, ind2]
-                h_term = 1j * k0 * np.dot(phase2, h2[ind2, :, ipol])
-                sig_term = np.dot(phase2, sig2[ind2, ipol])
-                e_term = -1j * k * self.nvec * sig_term[:, np.newaxis]
+    # Ensure proper shape
+    if sig1.ndim == 1:
+        sig1 = sig1[:, np.newaxis]
+        sig2 = sig2[:, np.newaxis]
+    if h1.ndim == 2:
+        h1 = h1[:, :, np.newaxis]
+        h2 = h2[:, :, np.newaxis]
 
-                e[:, :, ipol] += h_term + e_term
-                h[:, :, ipol] += 1j * k * np.cross(
-                    self.nvec, np.dot(phase2, h2[ind2, :, ipol])
-                )
+    npol = sig1.shape[1] if sig1.ndim > 1 else 1
+    ndir = len(direction)
 
-        return {
-            'e': e,
-            'h': h,
-            'nvec': self.nvec,
-            'area': self.area,
-            'enei': enei,
-            'k': k
-        }
+    # Initialize far-field
+    e = np.zeros((ndir, 3, npol), dtype=complex)
+    h = np.zeros((ndir, 3, npol), dtype=complex)
 
-    def scattering(self, sig):
-        """
-        Compute scattering cross section.
+    # Phase factor: exp(-i*k*dir·pos) * area
+    # MATLAB: phase = exp(-1i * k * dir * p.pos') * spdiag(p.area)
+    phase = np.exp(-1j * k * np.dot(direction, pos.T)) * area  # (ndir, nfaces)
 
-        MATLAB:
-            dsca = 0.5 * real(inner(nvec, cross(e, conj(h))))
-            sca = matmul(area, dsca)
+    # Find faces connected to medium
+    # MATLAB: ind = p.index(find(p.inout(:, 1) == obj.medium)')
+    # Inside contribution: faces where inside == medium
+    ind1 = np.where(inout_faces[:, 0] == self.medium)[0]
+    # Outside contribution: faces where outside == medium
+    ind2 = np.where(inout_faces[:, 1] == self.medium)[0]
 
-        Parameters
-        ----------
-        sig : dict
-            Solution from BEM solver
+    for ipol in range(npol):
+        # Inside surface contribution
+        # MATLAB: e = 1i*k0 * matmul(phase(:,ind), sig.h1(ind,:,:)) -
+        #             1i*k * outer(dir, matmul(phase(:,ind), sig.sig1(ind,:)))
+        if len(ind1) > 0:
+            phase1 = phase[:, ind1]  # (ndir, nind1)
+            # Current term: i*k0 * phase @ h
+            h_term = 1j * k0 * np.dot(phase1, h1[ind1, :, ipol])  # (ndir, 3)
+            # Charge term: -i*k * dir * (phase @ sig)
+            sig_term = np.dot(phase1, sig1[ind1, ipol])  # (ndir,)
+            e_term = -1j * k * direction * sig_term[:, np.newaxis]
 
-        Returns
-        -------
-        sca : ndarray
-            Total scattering cross section
-        dsca : ndarray
-            Differential scattering (per solid angle)
-        """
-        # Get far-field
-        field = self.farfield(sig)
-        e = field['e']  # (ndir, 3, npol)
-        h = field['h']  # (ndir, 3, npol)
+            e[:, :, ipol] += h_term + e_term
+            # Magnetic field: H = i*k * cross(dir, matmul(phase, h))
+            h[:, :, ipol] += 1j * k * np.cross(
+                direction, np.dot(phase1, h1[ind1, :, ipol])
+            )
 
-        if e.ndim == 2:
-            e = e[:, :, np.newaxis]
-            h = h[:, :, np.newaxis]
+        # Outside surface contribution
+        if len(ind2) > 0:
+            phase2 = phase[:, ind2]
+            h_term = 1j * k0 * np.dot(phase2, h2[ind2, :, ipol])
+            sig_term = np.dot(phase2, sig2[ind2, ipol])
+            e_term = -1j * k * direction * sig_term[:, np.newaxis]
 
-        npol = e.shape[2]
+            e[:, :, ipol] += h_term + e_term
+            h[:, :, ipol] += 1j * k * np.cross(
+                direction, np.dot(phase2, h2[ind2, :, ipol])
+            )
 
-        # Poynting vector component in radial direction
-        # dsca = 0.5 * real(nvec · (E × conj(H)))
-        dsca = np.zeros((self.ndir, npol))
+    return {
+        'e': e,
+        'h': h,
+        'nvec': direction,
+        'area': self.area if direction is self.nvec else np.full(ndir, 4*np.pi/ndir),
+        'enei': enei,
+        'k': k
+    }
 
-        for ipol in range(npol):
-            # Cross product E × conj(H)
-            poynting = np.cross(e[:, :, ipol], np.conj(h[:, :, ipol]))  # (ndir, 3)
-            # Dot with nvec
-            dsca[:, ipol] = 0.5 * np.real(np.sum(self.nvec * poynting, axis=1))
 
-        # Total scattering: integrate over sphere
-        sca = np.dot(self.area, dsca)  # (npol,)
+def _scattering(self, sig):
+    """
+    Compute scattering cross section.
 
-        if npol == 1:
-            sca = sca[0]
-            dsca = dsca[:, 0]
+    MATLAB:
+        dsca = 0.5 * real(inner(nvec, cross(e, conj(h))))
+        sca = matmul(area, dsca)
 
-        return sca, dsca
+    Parameters
+    ----------
+    sig : dict
+        Solution from BEM solver
 
-    def __repr__(self):
-        return f"SpectrumRet(ndir={self.ndir}, medium={self.medium})"
+    Returns
+    -------
+    sca : ndarray
+        Total scattering cross section
+    dsca : ndarray
+        Differential scattering (per solid angle)
+    """
+    # Get far-field
+    field = self.farfield(sig)
+    e = field['e']  # (ndir, 3, npol)
+    h = field['h']  # (ndir, 3, npol)
+
+    if e.ndim == 2:
+        e = e[:, :, np.newaxis]
+        h = h[:, :, np.newaxis]
+
+    npol = e.shape[2]
+
+    # Poynting vector component in radial direction
+    # dsca = 0.5 * real(nvec · (E × conj(H)))
+    dsca = np.zeros((self.ndir, npol))
+
+    for ipol in range(npol):
+        # Cross product E × conj(H)
+        poynting = np.cross(e[:, :, ipol], np.conj(h[:, :, ipol]))  # (ndir, 3)
+        # Dot with nvec
+        dsca[:, ipol] = 0.5 * np.real(np.sum(self.nvec * poynting, axis=1))
+
+    # Total scattering: integrate over sphere
+    sca = np.dot(self.area, dsca)  # (npol,)
+
+    if npol == 1:
+        sca = sca[0]
+        dsca = dsca[:, 0]
+
+    return sca, dsca
+
+
+def _spectrumret_repr(self):
+    return f"SpectrumRet(ndir={self.ndir}, medium={self.medium})"
+
+
+# Attach methods to SpectrumRet class
+SpectrumRet.farfield = _farfield
+SpectrumRet.scattering = _scattering
+SpectrumRet.__repr__ = _spectrumret_repr

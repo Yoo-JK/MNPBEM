@@ -1,15 +1,51 @@
 """
 Dipole excitation for quasistatic approximation.
 
-Matches MATLAB MNPBEM @dipolestat implementation.
+Matches MATLAB MNPBEM @dipolestat implementation exactly.
 """
 
 import numpy as np
 
 
+class ComPoint:
+    """
+    Simple point container for dipole positions.
+
+    MATLAB: compoint class - stores positions with inout property.
+    """
+
+    def __init__(self, eps, positions, medium=1):
+        """
+        Initialize point container.
+
+        Parameters
+        ----------
+        eps : list
+            Dielectric functions
+        positions : ndarray, shape (n, 3)
+            Point positions
+        medium : int
+            Medium index where points are located
+        """
+        self.eps = eps
+        self.pos = np.atleast_2d(positions).astype(float)
+        self.n = self.pos.shape[0]
+        self.npt = self.n
+        # All points are in the specified medium
+        self.inout = np.full((self.n, 2), medium, dtype=int)
+
+    def eps1(self, enei):
+        """Get dielectric constant at positions."""
+        medium_idx = self.inout[0, 0] - 1  # Convert to 0-indexed
+        eps_val, _ = self.eps[medium_idx](enei)
+        return np.full(self.n, eps_val)
+
+
 class DipoleStat:
     """
     Oscillating dipole excitation within quasistatic approximation.
+
+    MATLAB equivalent: @dipolestat class
 
     Computes the external potential and fields from an oscillating dipole
     for use in BEM simulations. Also calculates total and radiative
@@ -17,17 +53,19 @@ class DipoleStat:
 
     Parameters
     ----------
-    pt_pos : array_like, shape (npt, 3)
-        Position(s) of the dipole(s)
+    pt_pos : array_like, shape (npt, 3) or ComPoint
+        Position(s) of the dipole(s) or ComPoint object
     dip : array_like, shape (3,) or (ndip, 3), optional
         Dipole moment direction(s). Default: eye(3) for x, y, z orientations
-    full : bool, optional
-        If True, dip has shape (npt, 3, ndip) with different moments at each position
+    full : bool or str, optional
+        If True or 'full', dip has shape (npt, 3, ndip) with different moments at each position
+    eps : list, optional
+        Dielectric functions (required if pt_pos is array)
 
     Attributes
     ----------
-    pt_pos : ndarray, shape (npt, 3)
-        Dipole positions
+    pt : ComPoint
+        Point container with dipole positions
     dip : ndarray, shape (npt, 3, ndip)
         Dipole moment directions for each position
     npt : int
@@ -44,60 +82,68 @@ class DipoleStat:
 
     Potential derivative:
         phip = -nvec · E
-
-    Examples
-    --------
-    >>> # Dipole at origin with x-polarization
-    >>> exc = DipoleStat([[0, 0, 20]], [[1, 0, 0]])
-    >>>
-    >>> # Dipole with all three orientations (default)
-    >>> exc = DipoleStat([[0, 0, 20]])
     """
 
     name = 'dipole'
 
-    def __init__(self, pt_pos, dip=None, full=False):
+    def __init__(self, pt_pos, dip=None, full=False, eps=None):
         """
         Initialize dipole excitation.
 
+        MATLAB: dipolestat(pt, dip, op, PropertyPair)
+
         Parameters
         ----------
-        pt_pos : array_like
-            Dipole position(s)
+        pt_pos : array_like or ComPoint
+            Dipole position(s) or point container
         dip : array_like, optional
             Dipole orientation(s)
-        full : bool
-            If True, different dipole at each position
+        full : bool or str
+            If True or 'full', different dipole at each position
+        eps : list, optional
+            Dielectric functions (required if pt_pos is array)
         """
-        # Dipole positions
-        self.pt_pos = np.atleast_2d(pt_pos).astype(float)
-        self.npt = self.pt_pos.shape[0]
+        # Handle pt input - can be ComPoint or array of positions
+        if hasattr(pt_pos, 'pos') and hasattr(pt_pos, 'eps'):
+            # ComPoint or similar
+            self.pt = pt_pos
+        else:
+            # Array of positions - need eps
+            if eps is None:
+                from ..materials import EpsConst
+                eps = [EpsConst(1.0)]
+            positions = np.atleast_2d(pt_pos).astype(float)
+            self.pt = ComPoint(eps, positions, medium=1)
 
-        # Dipole orientations
+        self.npt = self.pt.n
+        self.pt_pos = self.pt.pos  # For backward compatibility
+
+        # Handle dipole orientations - same logic as MATLAB init.m
         if dip is None:
-            # Default: x, y, z orientations
             dip = np.eye(3)
 
         dip = np.asarray(dip, dtype=float)
 
-        if full:
-            # Different dipole at each position: (npt, 3, ndip)
+        # Check for 'full' keyword
+        is_full = full is True or full == 'full'
+
+        if is_full:
+            # Dipole moments given at all positions: shape (npt, 3, ndip)
             if dip.ndim == 2:
-                self.dip = dip[:, :, np.newaxis]
-            else:
-                self.dip = dip
-            self.ndip = self.dip.shape[2]
+                dip = dip[:, :, np.newaxis]
+            self.dip = dip
         else:
-            # Same dipole orientations for all positions
+            # Same dipole moments for all positions
             if dip.ndim == 1:
                 dip = dip[np.newaxis, :]  # (1, 3)
 
-            # Replicate for all positions: (npt, 3, ndip)
+            # MATLAB: repmat(reshape(dip.', [1, fliplr(size(dip))]), [obj.pt.n, 1, 1])
             ndip = dip.shape[0]
             self.dip = np.zeros((self.npt, 3, ndip))
             for i in range(self.npt):
                 self.dip[i, :, :] = dip.T  # (3, ndip)
-            self.ndip = ndip
+
+        self.ndip = self.dip.shape[2]
 
     def field(self, p, enei):
         """
@@ -122,7 +168,7 @@ class DipoleStat:
             - 'enei': wavelength
         """
         pos1 = p.pos   # Field points: (nfaces, 3)
-        pos2 = self.pt_pos  # Dipole positions: (npt, 3)
+        pos2 = self.pt.pos  # Dipole positions: (npt, 3)
 
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
@@ -136,15 +182,12 @@ class DipoleStat:
         e = np.zeros((n1, 3, n2, self.ndip), dtype=complex)
 
         # Distance vectors: pos1 - pos2
-        # x[i,j] = pos1[i,0] - pos2[j,0]
         x = pos1[:, 0:1] - pos2[:, 0:1].T  # (n1, n2)
-        y = pos1[:, 1:2] - pos2[:, 1:2].T  # (n1, n2)
-        z = pos1[:, 2:3] - pos2[:, 2:3].T  # (n1, n2)
+        y = pos1[:, 1:2] - pos2[:, 1:2].T
+        z = pos1[:, 2:3] - pos2[:, 2:3].T
 
         # Distance
         r = np.sqrt(x**2 + y**2 + z**2)
-
-        # Avoid division by zero
         r = np.maximum(r, 1e-30)
 
         # Unit vectors
@@ -154,10 +197,9 @@ class DipoleStat:
 
         # Loop over dipole orientations
         for idip in range(self.ndip):
-            # Dipole moment at each dipole position: (n2, 3)
             dip_vec = self.dip[:, :, idip]  # (npt, 3)
 
-            # Broadcast dipole: dx[i,j] = dip[j, 0]
+            # Broadcast dipole
             dx = np.broadcast_to(dip_vec[:, 0], (n1, n2))
             dy = np.broadcast_to(dip_vec[:, 1], (n1, n2))
             dz = np.broadcast_to(dip_vec[:, 2], (n1, n2))
@@ -165,8 +207,7 @@ class DipoleStat:
             # Inner product: p · r̂
             p_dot_r = x_hat * dx + y_hat * dy + z_hat * dz
 
-            # Electric field [Jackson Eq. (4.13)]:
-            # E = (3(p·r̂)r̂ - p) / (ε·r³)
+            # Electric field [Jackson Eq. (4.13)]
             factor = 1.0 / (eps * r**3)
 
             e[:, 0, :, idip] = factor * (3 * p_dot_r * x_hat - dx)
@@ -184,7 +225,6 @@ class DipoleStat:
         Compute potential of dipole excitation for BEM.
 
         MATLAB: phip = -inner(p.nvec, exc.e)
-            phip = -nvec · E
 
         Parameters
         ----------
@@ -209,8 +249,6 @@ class DipoleStat:
         nvec = p.nvec  # (nfaces, 3)
 
         # Compute phip = -nvec · E
-        # nvec: (nfaces, 3), e: (nfaces, 3, npt, ndip)
-        # Result: (nfaces, npt, ndip)
         phip = -np.einsum('ij,ijkl->ikl', nvec, e)
 
         return {
@@ -224,6 +262,7 @@ class DipoleStat:
         Compute total and radiative decay rates.
 
         MATLAB: decayrate.m
+
         Total decay rate enhancement from imaginary part of induced field.
         Radiative decay rate from induced dipole moment.
 
@@ -248,8 +287,7 @@ class DipoleStat:
         enei = sig['enei']
         surface_charge = sig['sig']  # (nfaces, npt, ndip)
 
-        # Free-space decay rate (Wigner-Weisskopf)
-        # gamma = 4/3 * (2*pi/lambda)^3
+        # Wigner-Weisskopf decay rate in free space
         gamma = 4 / 3 * (2 * np.pi / enei) ** 3
 
         # Get refractive index at dipole position
@@ -257,31 +295,25 @@ class DipoleStat:
         nb = np.sqrt(np.real(eps_val))
 
         # Compute induced dipole moment
-        # dip_ind = sum(area * pos * sig)
+        # MATLAB: indip = matmul(bsxfun(@times, sig.p.pos, sig.p.area)', sig.sig)
         area = p.area  # (nfaces,)
         pos = p.pos    # (nfaces, 3)
-
-        # Weighted positions
         weighted_pos = area[:, np.newaxis] * pos  # (nfaces, 3)
 
         # Initialize output arrays
         tot = np.zeros((self.npt, self.ndip))
         rad = np.zeros((self.npt, self.ndip))
-        rad0 = np.full((self.npt, self.ndip), nb * gamma)
+        rad0 = np.zeros((self.npt, self.ndip))
 
-        # Compute induced field at dipole positions
-        # We need the field induced by the surface charges at the dipole positions
-        # This requires a separate Green function evaluation
-        # For now, compute using direct summation
-
+        # Compute induced field at dipole positions using Green function
+        # For static case, need to compute from surface charges
         for ipt in range(self.npt):
-            pt_pos = self.pt_pos[ipt]  # Dipole position
+            pt_pos = self.pt.pos[ipt]
 
             for idip in range(self.ndip):
-                # Dipole moment
                 dip_vec = self.dip[ipt, :, idip]
 
-                # Surface charge for this position and orientation
+                # Get surface charge for this position and orientation
                 if surface_charge.ndim == 3:
                     sig_vals = surface_charge[:, ipt, idip]
                 elif surface_charge.ndim == 2:
@@ -290,15 +322,15 @@ class DipoleStat:
                     sig_vals = surface_charge
 
                 # Induced dipole moment
+                # MATLAB: indip(:, ipos, idip) = weighted_pos.T @ sig_vals
                 dip_ind = weighted_pos.T @ sig_vals  # (3,)
 
                 # Compute induced field at dipole position
-                # E_ind = sum over faces of (sigma * area * r_hat / r^2 / eps0)
                 r_vec = pt_pos - pos  # (nfaces, 3)
                 r_mag = np.linalg.norm(r_vec, axis=1)
                 r_mag = np.maximum(r_mag, 1e-30)
 
-                # Field from surface charge distribution
+                # Field from surface charge distribution (static Green function)
                 e_ind = np.sum(
                     sig_vals[:, np.newaxis] * area[:, np.newaxis] *
                     r_vec / (r_mag[:, np.newaxis]**3),
@@ -309,7 +341,11 @@ class DipoleStat:
                 tot[ipt, idip] = 1 + np.imag(np.dot(e_ind, dip_vec)) / (0.5 * nb * gamma)
 
                 # Radiative decay rate: |nb^2 * dip_ind + dip|^2
+                # MATLAB: rad(ipos, idip) = norm(nb^2 * indip(:, ipos, idip).' + dip)^2
                 rad[ipt, idip] = np.linalg.norm(nb**2 * dip_ind + dip_vec)**2
+
+                # Free-space decay rate
+                rad0[ipt, idip] = nb * gamma
 
         return tot, rad, rad0
 

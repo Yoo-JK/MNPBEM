@@ -261,6 +261,49 @@ class ComParticle:
         col = 0 if side == 'inside' else 1
         return np.where(self.inout_faces[:, col] == medium)[0]
 
+    @property
+    def n(self):
+        """Number of positions/faces (alias for nfaces, MATLAB compatibility)."""
+        return self.nfaces
+
+    @property
+    def mask(self):
+        """
+        Mask array indicating which particles are active.
+
+        MATLAB: Used in connect() - for now return all True.
+        """
+        return np.ones(len(self.p), dtype=bool)
+
+    def index_func(self, particle_indices):
+        """
+        Get face indices for given particle indices.
+
+        MATLAB: p.index(i) returns indices of faces belonging to particle i.
+
+        Parameters
+        ----------
+        particle_indices : int or array
+            Particle indices (1-indexed like MATLAB)
+
+        Returns
+        -------
+        face_indices : ndarray
+            Face indices corresponding to the particles
+        """
+        if np.isscalar(particle_indices):
+            particle_indices = [particle_indices]
+
+        face_indices = []
+        offset = 0
+
+        for i, part in enumerate(self.p):
+            if (i + 1) in particle_indices:  # Convert to 1-indexed
+                face_indices.extend(range(offset, offset + part.nfaces))
+            offset += part.nfaces
+
+        return np.array(face_indices, dtype=int)
+
     def __repr__(self):
         return (
             f"ComParticle(nparticles={len(self.p)}, "
