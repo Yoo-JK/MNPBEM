@@ -139,7 +139,7 @@ class BEMStat:
 
         return self
 
-    def solve(self, exc):
+    def solve(self, enei_or_exc, exc=None):
         """
         Solve BEM equations for given excitation.
 
@@ -148,34 +148,55 @@ class BEMStat:
 
         Parameters
         ----------
-        exc : dict or object
-            Excitation object with attributes:
-                - enei : wavelength/energy
-                - phip : external potential at boundary (array, shape (nfaces,))
+        enei_or_exc : float or dict
+            Either wavelength (nm) when exc is provided separately,
+            or excitation dict with 'enei' and 'phip' keys
+        exc : dict, optional
+            Excitation dict with 'phip' key (if enei_or_exc is wavelength)
 
         Returns
         -------
         sig : dict
             Dictionary containing:
-                - sig : surface charge distribution (array, shape (nfaces,))
+                - sig : surface charge distribution (array, shape (nfaces,) or (nfaces, npol))
                 - enei : wavelength/energy
                 - p : particle object
 
         Examples
         --------
-        >>> # After creating bem and exc objects
+        >>> # Method 1: excitation as dict
         >>> result = bem.solve(exc)
-        >>> surface_charges = result['sig']
+        >>>
+        >>> # Method 2: enei and exc separately
+        >>> result = bem.solve(enei, exc)
         """
-        # Initialize at excitation energy if needed
-        self.init(exc.enei)
+        # Handle both calling conventions
+        if exc is None:
+            # exc contains both enei and phip
+            exc = enei_or_exc
+            if isinstance(exc, dict):
+                enei = exc['enei']
+                phip = exc['phip']
+            else:
+                enei = exc.enei
+                phip = exc.phip
+        else:
+            # enei_or_exc is the energy, exc is the excitation
+            enei = enei_or_exc
+            if isinstance(exc, dict):
+                phip = exc['phip']
+            else:
+                phip = exc.phip
+
+        # Initialize at this energy
+        self.init(enei)
 
         # Solve: σ = mat · φₚ
-        sig = self.mat @ exc.phip
+        sig = self.mat @ phip
 
         return {
             'sig': sig,
-            'enei': exc.enei,
+            'enei': enei,
             'p': self.p
         }
 
