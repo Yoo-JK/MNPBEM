@@ -18,6 +18,7 @@ __version__ = "0.1.0"
 from .materials import EpsConst, EpsTable
 from .geometry import Particle, ComParticle, trisphere
 from .greenfun import CompGreenStat, CompGreenRet
+from .bem import BEMStat, BEMRet
 from .utils.constants import EV2NM
 
 __all__ = [
@@ -28,5 +29,7 @@ __all__ = [
     "trisphere",
     "CompGreenStat",
     "CompGreenRet",
+    "BEMStat",
+    "BEMRet",
     "EV2NM",
 ]
