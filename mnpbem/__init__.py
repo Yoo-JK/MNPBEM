@@ -16,10 +16,14 @@ Main modules:
 __version__ = "0.1.0"
 
 from .materials import EpsConst, EpsTable
+from .geometry import Particle, ComParticle, trisphere
 from .utils.constants import EV2NM
 
 __all__ = [
     "EpsConst",
     "EpsTable",
+    "Particle",
+    "ComParticle",
+    "trisphere",
     "EV2NM",
 ]
