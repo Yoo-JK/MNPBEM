@@ -270,25 +270,30 @@ def test_dipole_ret_potential():
     sphere = trisphere(144, 10.0)
     p = ComParticle(epstab, [sphere], [[2, 1]])
 
-    # Dipole at z=20nm
-    exc = DipoleRet([[0, 0, 20]], [[1, 0, 0]])
+    # Dipole at z=20nm (outside sphere in vacuum)
+    # Need to pass eps for DipoleRet to work correctly with MATLAB-style connect()
+    exc = DipoleRet([[0, 0, 20]], [[1, 0, 0]], eps=epstab, medium=1)
 
     # Compute potential
     enei = 500.0
     pot = exc.potential(p, enei)
 
     print(f"phi1 shape: {pot['phi1'].shape}")
+    print(f"phi2 shape: {pot['phi2'].shape}")
     print(f"a1 shape: {pot['a1'].shape}")
+    print(f"a2 shape: {pot['a2'].shape}")
 
-    # Check scalar and vector potentials are non-zero
-    phi_norm = np.linalg.norm(pot['phi1'])
-    a_norm = np.linalg.norm(pot['a1'])
+    # Dipole is outside (medium 1), so potential appears on outside surface (phi2/a2)
+    # Inside (phi1/a1) is in metal (medium 2), so it stays zero
+    phi2_norm = np.linalg.norm(pot['phi2'])
+    a2_norm = np.linalg.norm(pot['a2'])
 
-    print(f"phi norm: {phi_norm:.4e}")
-    print(f"a norm: {a_norm:.4e}")
+    print(f"phi2 norm (outside): {phi2_norm:.4e}")
+    print(f"a2 norm (outside): {a2_norm:.4e}")
 
-    assert phi_norm > 0, "Scalar potential should be non-zero"
-    assert a_norm > 0, "Vector potential should be non-zero"
+    # Check that outside potentials are non-zero (dipole excites from outside)
+    assert phi2_norm > 0, "Scalar potential (outside) should be non-zero"
+    assert a2_norm > 0, "Vector potential (outside) should be non-zero"
 
     print("PASSED: DipoleRet potential")
 

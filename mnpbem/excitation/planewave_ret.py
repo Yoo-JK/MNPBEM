@@ -5,6 +5,8 @@ Matches MATLAB MNPBEM @planewaveret implementation.
 """
 
 import numpy as np
+from ..spectrum import SpectrumRet
+from ..geometry import trisphere
 
 
 class PlaneWaveRet:
@@ -47,9 +49,11 @@ class PlaneWaveRet:
 
     name = 'planewave'
 
-    def __init__(self, pol, dir, medium=1):
+    def __init__(self, pol, dir, medium=1, pinfty=None):
         """
         Initialize plane wave excitation.
+
+        MATLAB: planewaveret(pol, dir, op, PropertyPair)
 
         Parameters
         ----------
@@ -59,6 +63,9 @@ class PlaneWaveRet:
             Light propagation direction(s)
         medium : int
             Medium index (1-indexed, MATLAB convention)
+        pinfty : Particle, optional
+            Discretized unit sphere for far-field integration.
+            If None, creates trisphere(256, 2).
         """
         # Convert to numpy arrays
         pol = np.atleast_2d(pol).astype(float)
@@ -83,6 +90,12 @@ class PlaneWaveRet:
             raise ValueError("Polarization and direction must be orthogonal")
 
         self.medium = medium
+
+        # Initialize spectrum for far-field calculations
+        # MATLAB: obj.spec = spectrumret(trisphere(256, 2), 'medium', obj.medium)
+        if pinfty is None:
+            pinfty = trisphere(256, 2.0)
+        self.spec = SpectrumRet(pinfty, medium=medium)
 
     def potential(self, p, enei):
         """
@@ -206,96 +219,44 @@ class PlaneWaveRet:
 
         return ext
 
-    def scattering(self, sig, pinfty=None):
+    def scattering(self, sig):
         """
         Compute scattering cross section.
 
-        MATLAB: Uses spectrum class for integration over unit sphere.
+        MATLAB:
+            [sca, dsca] = scattering(obj.spec, sig)
+            nb = sqrt(sig.p.eps{1}(sig.enei))
+            sca = sca / (0.5 * nb)
 
         Parameters
         ----------
         sig : dict
             Solution containing surface charges and currents
-        pinfty : Particle, optional
-            Discretized unit sphere for integration
 
         Returns
         -------
         sca : ndarray
             Scattering cross section for each polarization
+        dsca : ndarray
+            Differential scattering cross section
         """
-        if pinfty is None:
-            # Simple approximation using forward scattering direction
-            # For accurate results, need proper angular integration
-            return self._simple_scattering(sig)
+        # Get scattering from spectrum
+        sca, dsca = self.spec.scattering(sig)
 
-        # Compute farfield over unit sphere and integrate
-        return self._integrated_scattering(sig, pinfty)
-
-    def _simple_scattering(self, sig):
-        """
-        Simple scattering approximation.
-
-        For accurate scattering, need angular integration over unit sphere.
-        This returns a simplified estimate.
-        """
-        # Get farfield in backward direction
-        field_e, k = self._farfield(sig, -self.dir)
-
-        # Refractive index of medium
+        # Refractive index of embedding medium
         p = sig['p']
         enei = sig['enei']
         eps_val, _ = p.eps[0](enei)
         nb = np.sqrt(np.real(eps_val))
 
-        # Simple estimate based on backward scattering
-        npol = self.pol.shape[0]
-        sca = np.zeros(npol)
+        # Normalize: scattering cross section = radiated power / incoming power
+        # Incoming power proportional to 0.5 * epsb * (clight / nb) = 0.5 * nb
+        sca = sca / (0.5 * nb)
+        dsca = dsca / (0.5 * nb)
 
-        for i in range(npol):
-            if field_e.ndim == 3:
-                e_sca = field_e[i, :, i]
-            else:
-                e_sca = field_e[i, :]
+        return sca, dsca
 
-            # Rough estimate: integrate |E|^2 over 4*pi steradians
-            # Actual integration would require proper angular sampling
-            sca[i] = 8 * np.pi / 3 * np.sum(np.abs(e_sca)**2) / (0.5 * nb)
-
-        return sca
-
-    def _integrated_scattering(self, sig, pinfty):
-        """
-        Scattering with angular integration over unit sphere.
-        """
-        # Get farfield over all directions on unit sphere
-        dirs = pinfty.nvec  # Unit vectors on sphere
-        areas = pinfty.area  # Solid angle elements
-
-        field_e, k = self._farfield(sig, dirs)
-
-        # Refractive index
-        p = sig['p']
-        enei = sig['enei']
-        eps_val, _ = p.eps[0](enei)
-        nb = np.sqrt(np.real(eps_val))
-
-        # Integrate |E|^2 over unit sphere
-        npol = self.pol.shape[0]
-        sca = np.zeros(npol)
-
-        for i in range(npol):
-            if field_e.ndim == 3:
-                # Sum over all directions weighted by solid angle
-                e_squared = np.sum(np.abs(field_e[:, :, i])**2, axis=1)
-            else:
-                e_squared = np.sum(np.abs(field_e)**2, axis=1)
-
-            sca[i] = np.sum(e_squared * areas) / (0.5 * nb)
-
-        return sca
-
-    def absorption(self, sig, pinfty=None):
+    def absorption(self, sig):
         """
         Compute absorption cross section.
 
@@ -305,15 +266,14 @@ class PlaneWaveRet:
         ----------
         sig : dict
             Solution containing surface charges and currents
-        pinfty : Particle, optional
-            Discretized unit sphere for scattering calculation
 
         Returns
         -------
         abs : ndarray
             Absorption cross section for each polarization
         """
-        return self.extinction(sig) - self.scattering(sig, pinfty)
+        sca, _ = self.scattering(sig)
+        return self.extinction(sig) - sca
 
     def _farfield(self, sig, dirs):
         """
