@@ -64,7 +64,7 @@ class CompGreenRet:
     >>> print(f"F matrix shape: {g.F.shape}")
     """
 
-    def __init__(self, p1, p2, enei):
+    def __init__(self, p1, p2, enei, k=None):
         """
         Initialize Green function between p1 and p2 at given energy.
 
@@ -76,15 +76,21 @@ class CompGreenRet:
             Source particle (integration surface)
         enei : float
             Photon energy (eV) or wavelength (nm)
+        k : complex, optional
+            Wavenumber to use. If None, computed from p1.eps[0](enei).
+            This allows specifying the medium for the Green function.
         """
         self.p1 = p1
         self.p2 = p2
         self.enei = enei
 
-        # Get wavenumber from material properties
-        # Use the outside medium (assuming p1 and p2 are the same)
-        eps_out, k = p1.eps[0](enei)  # Get from first material (usually vacuum)
-        self.k = k
+        # Get wavenumber
+        if k is not None:
+            self.k = k
+        else:
+            # Default: use the first material (usually outside/vacuum)
+            eps_out, k_computed = p1.eps[0](enei)
+            self.k = k_computed
 
         # Compute G and F matrices
         self._compute_GF()
