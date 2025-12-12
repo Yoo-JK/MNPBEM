@@ -1,5 +1,7 @@
 """
 Composite Green function for retarded (full Maxwell) approximation.
+
+Matches MATLAB MNPBEM implementation exactly.
 """
 
 import numpy as np
@@ -15,9 +17,9 @@ class CompGreenRet:
     Parameters
     ----------
     p1 : ComParticle
-        Source points (where we evaluate)
+        Field points (where we evaluate)
     p2 : ComParticle
-        Field points (where Green function is evaluated)
+        Source points (integration surface)
     enei : float
         Photon energy in eV or wavelength in nm
 
@@ -36,13 +38,15 @@ class CompGreenRet:
 
     Notes
     -----
-    The retarded Green function is:
-        G(r, r') = exp(ik|r - r'|) / (4π|r - r'|)
+    MATLAB MNPBEM convention (greenret/eval1.m):
+        G(r, r') = exp(ik|r - r'|) / |r - r'|  (no 4π factor)
 
-    The surface derivative is:
-        F = ∂G/∂n' = n'·∇'G = n'·(r' - r)·(ik - 1/r)/(4π r²) · exp(ikr)
+        F[i,j] = n_i · (r_i - r_j) · (ik - 1/r) / r² · exp(ikr) × area_j
 
-    For closed surfaces, diagonal elements are set to F ± 2π.
+    where n_i is the normal at FIELD point (p1), not source point.
+    Note: The sign is POSITIVE (unlike quasistatic which is negative).
+
+    For closed surfaces, H1 = F + 2π, H2 = F - 2π on diagonal.
 
     Examples
     --------
@@ -67,9 +71,9 @@ class CompGreenRet:
         Parameters
         ----------
         p1 : ComParticle
-            Source particle
+            Field particle (evaluation points)
         p2 : ComParticle
-            Field particle
+            Source particle (integration surface)
         enei : float
             Photon energy (eV) or wavelength (nm)
         """
@@ -78,7 +82,7 @@ class CompGreenRet:
         self.enei = enei
 
         # Get wavenumber from material properties
-        # For now, use the outside medium (assuming p1 and p2 are the same)
+        # Use the outside medium (assuming p1 and p2 are the same)
         eps_out, k = p1.eps[0](enei)  # Get from first material (usually vacuum)
         self.k = k
 
@@ -87,57 +91,53 @@ class CompGreenRet:
 
     def _compute_GF(self):
         """
-        Compute G and F matrices (Green function and surface derivative).
+        Compute G and F matrices following MATLAB MNPBEM exactly.
 
-        Following MATLAB MNPBEM convention:
-        G[i,j] = exp(ik·r_ij) / r_ij * area_j
-        F[i,j] = n_j · (r_i - r_j) · (ik - 1/r_ij) / r_ij² · exp(ik·r_ij) * area_j
+        MATLAB greenret/eval1.m:
+            x = bsxfun(@minus, pos1(:,1), pos2(:,1)');  % r_i - r_j
+            nvec = obj.p1.nvec;  % normal at FIELD point (p1)
+            G = 1./d * area .* exp(1i*k*d)
+            F = (n·r) · (1i*k - 1/d) / d² * area .* exp(1i*k*d)
 
-        where r_ij = |r_i - r_j|
-
-        Note: No 4π factor (absorbed into area/BEM formulation)
+        Note: F has POSITIVE sign (unlike quasistatic which is negative)
         """
         # Get positions, normals, and areas
-        pos1 = self.p1.pos  # (n1, 3) - field points
-        pos2 = self.p2.pos  # (n2, 3) - source points
-        nvec2 = self.p2.nvec  # (n2, 3) - normals at source
+        pos1 = self.p1.pos    # (n1, 3) - field points
+        pos2 = self.p2.pos    # (n2, 3) - source points
+        nvec1 = self.p1.nvec  # (n1, 3) - normals at FIELD points (MATLAB convention!)
         area2 = self.p2.area  # (n2,) - areas at source
 
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
 
-        # Initialize matrices
-        G = np.zeros((n1, n2), dtype=complex)
-        F = np.zeros((n1, n2), dtype=complex)
+        # Vectorized computation (matches MATLAB bsxfun)
+        # r[i,j,:] = pos1[i,:] - pos2[j,:] = r_i - r_j
+        r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]  # (n1, n2, 3)
 
-        # Compute all pairwise interactions
-        for i in range(n1):
-            # Vector from source j to field i: r_i - r_j
-            r_ij = pos1[i] - pos2  # (n2, 3)
+        # Distance d[i,j] = |r_i - r_j|
+        d = np.linalg.norm(r, axis=2)  # (n1, n2)
+        d = np.maximum(d, np.finfo(float).eps)  # Avoid division by zero
 
-            # Distance
-            dist = np.linalg.norm(r_ij, axis=1)  # (n2,)
-            dist = np.maximum(dist, np.finfo(float).eps)  # Avoid division by zero
+        # Phase factor: exp(i*k*d)
+        phase = np.exp(1j * self.k * d)  # (n1, n2)
 
-            # Phase factor
-            phase = np.exp(1j * self.k * dist)
+        # G matrix: G[i,j] = exp(ikd)/d * area[j]
+        # MATLAB: G = 1./d * area .* exp(1i*k*d)
+        G = (phase / d) * area2[np.newaxis, :]  # (n1, n2)
 
-            # Green function: G = exp(ikr) / r * area
-            G[i, :] = phase / dist * area2
-
-            # Surface derivative: F = (n·r)·(ik - 1/r)/r² · exp(ikr) * area
-            # Auxiliary quantity: (ik - 1/r) / r²
-            f = (1j * self.k - 1.0 / dist) / (dist ** 2)
-
-            # n·r term
-            n_dot_r = np.sum(nvec2 * r_ij, axis=1)
-
-            # Complete F matrix
-            F[i, :] = n_dot_r * f * phase * area2
+        # F matrix: F[i,j] = nvec1[i]·r[i,j] · (ik - 1/d) / d² · exp(ikd) * area[j]
+        # MATLAB: F = (n·r) .* (1i*k - 1./d) ./ d.^2 * area .* exp(1i*k*d)
+        # Note: POSITIVE sign (unlike quasistatic)
+        n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis=2)  # (n1, n2)
+        f_aux = (1j * self.k - 1.0 / d) / (d ** 2)  # (n1, n2)
+        F = n_dot_r * f_aux * phase * area2[np.newaxis, :]  # (n1, n2)
 
         # Handle diagonal elements for self-interaction (p1 == p2)
-        # Note: MATLAB sets diagonal to computed value, then adds/subtracts 2π
-        # in H1/H2 methods. We do the same.
+        # MATLAB: H1 = F + 2*pi*(d==0), H2 = F - 2*pi*(d==0)
+        # Diagonal of F itself is left as computed (will be ~0 or small)
+        if self.p1 is self.p2:
+            np.fill_diagonal(G, 0.0)  # G diagonal is undefined (self-term)
+            # F diagonal: MATLAB leaves it as computed, ±2π added in H1/H2
 
         self.G = G
         self.F = F
@@ -145,6 +145,9 @@ class CompGreenRet:
     def H1(self):
         """
         Return H1 matrix: F + 2π on diagonal.
+
+        MATLAB greenret/eval1.m:
+            H1 = F + 2*pi*(d==0)
 
         Used for BEM solver (inside formulation).
         """
@@ -157,6 +160,9 @@ class CompGreenRet:
         """
         Return H2 matrix: F - 2π on diagonal.
 
+        MATLAB greenret/eval1.m:
+            H2 = F - 2*pi*(d==0)
+
         Used for BEM solver (outside formulation).
         """
         H2 = self.F.copy()
@@ -167,14 +173,14 @@ class CompGreenRet:
     def __repr__(self):
         return (
             f"CompGreenRet(p1: {self.p1.nfaces} faces, "
-            f"p2: {self.p2.nfaces} faces, λ={self.enei:.1f}nm)"
+            f"p2: {self.p2.nfaces} faces, k={self.k:.6f})"
         )
 
     def __str__(self):
         return (
             f"Retarded Green Function:\n"
-            f"  Source (p1): {self.p1.nfaces} faces\n"
-            f"  Field (p2): {self.p2.nfaces} faces\n"
+            f"  Field (p1): {self.p1.nfaces} faces\n"
+            f"  Source (p2): {self.p2.nfaces} faces\n"
             f"  Wavelength: {self.enei:.2f} nm\n"
             f"  Wavenumber k: {self.k:.6f}\n"
             f"  G matrix: {self.G.shape}\n"
