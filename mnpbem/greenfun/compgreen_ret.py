@@ -89,16 +89,19 @@ class CompGreenRet:
         """
         Compute G and F matrices (Green function and surface derivative).
 
-        G[i,j] = exp(ik·r_ij) / (4π·r_ij)
-        F[i,j] = n_j · (r_j - r_i) · (ik - 1/r_ij) / (4π·r_ij²) · exp(ik·r_ij)
+        Following MATLAB MNPBEM convention:
+        G[i,j] = exp(ik·r_ij) / r_ij * area_j
+        F[i,j] = n_j · (r_i - r_j) · (ik - 1/r_ij) / r_ij² · exp(ik·r_ij) * area_j
 
-        where r_ij = |r_j - r_i|
+        where r_ij = |r_i - r_j|
+
+        Note: No 4π factor (absorbed into area/BEM formulation)
         """
-        # Get positions and normals
-        pos1 = self.p1.pos  # (n1, 3)
-        pos2 = self.p2.pos  # (n2, 3)
-        nvec2 = self.p2.nvec  # (n2, 3)
-        area2 = self.p2.area  # (n2,)
+        # Get positions, normals, and areas
+        pos1 = self.p1.pos  # (n1, 3) - field points
+        pos2 = self.p2.pos  # (n2, 3) - source points
+        nvec2 = self.p2.nvec  # (n2, 3) - normals at source
+        area2 = self.p2.area  # (n2,) - areas at source
 
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
@@ -109,8 +112,8 @@ class CompGreenRet:
 
         # Compute all pairwise interactions
         for i in range(n1):
-            # Vector from point i to all points j
-            r_ij = pos2 - pos1[i]  # (n2, 3)
+            # Vector from source j to field i: r_i - r_j
+            r_ij = pos1[i] - pos2  # (n2, 3)
 
             # Distance
             dist = np.linalg.norm(r_ij, axis=1)  # (n2,)
@@ -119,10 +122,10 @@ class CompGreenRet:
             # Phase factor
             phase = np.exp(1j * self.k * dist)
 
-            # Green function: G = exp(ikr) / (4πr)
-            G[i, :] = phase / (4 * np.pi * dist)
+            # Green function: G = exp(ikr) / r * area
+            G[i, :] = phase / dist * area2
 
-            # Surface derivative: F = n·r·(ik - 1/r)/(4πr²) · exp(ikr)
+            # Surface derivative: F = (n·r)·(ik - 1/r)/r² · exp(ikr) * area
             # Auxiliary quantity: (ik - 1/r) / r²
             f = (1j * self.k - 1.0 / dist) / (dist ** 2)
 
@@ -130,16 +133,11 @@ class CompGreenRet:
             n_dot_r = np.sum(nvec2 * r_ij, axis=1)
 
             # Complete F matrix
-            F[i, :] = n_dot_r * f * phase / (4 * np.pi)
+            F[i, :] = n_dot_r * f * phase * area2
 
         # Handle diagonal elements for self-interaction (p1 == p2)
-        if self.p1 is self.p2:
-            # For closed surfaces, diagonal elements are special
-            # F_diag = F_off_diag ± 2π depending on inside/outside
-            # For the standard formulation, we use -2π for H1 form
-            # This will be handled in the BEM solver (H1 = F + 2π, H2 = F - 2π)
-            # Here we just leave the computed values and handle separately
-            pass
+        # Note: MATLAB sets diagonal to computed value, then adds/subtracts 2π
+        # in H1/H2 methods. We do the same.
 
         self.G = G
         self.F = F
