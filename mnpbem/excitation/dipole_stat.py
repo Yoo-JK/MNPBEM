@@ -149,8 +149,8 @@ class DipoleStat:
         """
         Compute electric field from dipole excitation.
 
-        MATLAB: field.m using Jackson Eq. (4.13)
-            E = (3(p·r̂)r̂ - p) / (ε·r³)
+        MATLAB: field.m
+            e = efield( p.pos, pt.pos, obj.dip, pt.eps1( enei ) );
 
         Parameters
         ----------
@@ -173,10 +173,9 @@ class DipoleStat:
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
 
-        # Get dielectric constant at dipole positions
-        # For simplicity, use the outside medium (eps[0])
-        eps_val, _ = p.eps[0](enei)
-        eps = np.full(n2, complex(eps_val))
+        # MATLAB: pt.eps1(enei) - dielectric constant at dipole positions
+        # Returns (npt,) array - one eps per dipole position
+        eps = self.pt.eps1(enei)  # (npt,)
 
         # Allocate output: (n1, 3, n2, ndip)
         e = np.zeros((n1, 3, n2, self.ndip), dtype=complex)
@@ -208,11 +207,13 @@ class DipoleStat:
             p_dot_r = x_hat * dx + y_hat * dy + z_hat * dz
 
             # Electric field [Jackson Eq. (4.13)]
-            factor = 1.0 / (eps * r**3)
+            # MATLAB: bsxfun(@times, r.^3, eps.') - eps broadcast along columns (dipole positions)
+            # factor(i,j) = r(i,j)^3 * eps(j)
+            factor = r**3 * eps[np.newaxis, :]  # (n1, n2)
 
-            e[:, 0, :, idip] = factor * (3 * p_dot_r * x_hat - dx)
-            e[:, 1, :, idip] = factor * (3 * p_dot_r * y_hat - dy)
-            e[:, 2, :, idip] = factor * (3 * p_dot_r * z_hat - dz)
+            e[:, 0, :, idip] = (3 * p_dot_r * x_hat - dx) / factor
+            e[:, 1, :, idip] = (3 * p_dot_r * y_hat - dy) / factor
+            e[:, 2, :, idip] = (3 * p_dot_r * z_hat - dz) / factor
 
         return {
             'e': e,
@@ -290,9 +291,8 @@ class DipoleStat:
         # Wigner-Weisskopf decay rate in free space
         gamma = 4 / 3 * (2 * np.pi / enei) ** 3
 
-        # Get refractive index at dipole position
-        eps_val, _ = p.eps[0](enei)
-        nb = np.sqrt(np.real(eps_val))
+        # Note: nb is computed per position inside the loop below
+        # MATLAB: nb = sqrt(subsref(obj.pt.eps1(sig.enei), substruct('()', {ipos})))
 
         # Compute induced dipole moment
         # MATLAB: indip = matmul(bsxfun(@times, sig.p.pos, sig.p.area)', sig.sig)
@@ -305,10 +305,21 @@ class DipoleStat:
         rad = np.zeros((self.npt, self.ndip))
         rad0 = np.zeros((self.npt, self.ndip))
 
+        # Get eps at all dipole positions
+        # MATLAB: obj.pt.eps1(sig.enei)
+        pt_eps = self.pt.eps1(enei)  # (npt,)
+
         # Compute induced field at dipole positions using Green function
         # For static case, need to compute from surface charges
         for ipt in range(self.npt):
             pt_pos = self.pt.pos[ipt]
+
+            # Refractive index at this dipole position
+            # MATLAB: nb = sqrt(subsref(obj.pt.eps1(sig.enei), substruct('()', {ipos})))
+            nb = np.sqrt(np.real(pt_eps[ipt]))
+            if np.imag(pt_eps[ipt]) != 0:
+                import warnings
+                warnings.warn('Dipole embedded in medium with complex dielectric function')
 
             for idip in range(self.ndip):
                 dip_vec = self.dip[ipt, :, idip]
@@ -331,11 +342,12 @@ class DipoleStat:
                 r_mag = np.maximum(r_mag, 1e-30)
 
                 # Field from surface charge distribution (static Green function)
+                eps_at_pt = pt_eps[ipt]
                 e_ind = np.sum(
                     sig_vals[:, np.newaxis] * area[:, np.newaxis] *
                     r_vec / (r_mag[:, np.newaxis]**3),
                     axis=0
-                ) / eps_val
+                ) / eps_at_pt
 
                 # Total decay rate: 1 + Im(E · dip) / (0.5 * nb * gamma)
                 tot[ipt, idip] = 1 + np.imag(np.dot(e_ind, dip_vec)) / (0.5 * nb * gamma)

@@ -214,46 +214,55 @@ class DipoleRet:
         a2p = np.zeros((n1, 3, n2, ndip), dtype=complex)
 
         # MATLAB logic: loop over inout (inside/outside)
-        # con[i][j] is connectivity matrix where value > 0 means connected via that medium
+        # con is a 2D list: con[i][j] where i is p's inout column, j is pt's inout column
+        # MATLAB uses linear indexing on cell array: con{inout} where
+        #   inout=1 -> con{1,1} = con[0][0] in Python
+        #   inout=2 -> con{2,1} = con[1][0] in Python (column-major linear indexing)
         for inout_idx in range(2):
-            # Get connectivity matrix for this inout
-            # MATLAB indexes: con{inout}(ip, ipt) for particle ip and point ipt
-            # In Python we use con[inout_p][inout_pt] which is (nfaces, npt)
-            # For simplicity, use con[inout_idx][inout_idx]
-            conn_matrix = con[inout_idx][inout_idx]
+            # MATLAB: con{inout} with linear indexing on 2D cell
+            # con{1} = con{1,1}, con{2} = con{2,1}
+            conn_matrix = con[inout_idx][0]  # Always use first column (j=0)
 
             # Find all connected face-point pairs
-            for face_idx in range(n1):
-                for pt_idx in range(n2):
+            # MATLAB: for ip = 1:size(con{inout}, 1), for ipt = 1:size(con{inout}, 2)
+            for ip in range(conn_matrix.shape[0]):
+                for ipt in range(conn_matrix.shape[1]):
                     # Check if connected (medium index > 0)
-                    medium_idx = conn_matrix[face_idx, pt_idx]
+                    # MATLAB: ind = con{inout}(ip, ipt)
+                    ind = conn_matrix[ip, ipt]
 
-                    if medium_idx > 0:
-                        # Get eps and k for this medium
-                        eps = eps_list[medium_idx - 1]
-                        k = k_list[medium_idx - 1]
+                    if ind != 0:
+                        # MATLAB: ind1 = p.index(ip); ind2 = pt.index(ipt)
+                        # For simple particles, index is identity
+                        ind1 = ip
+                        ind2 = ipt
+
+                        # Get eps and k for connecting medium
+                        eps = eps_list[ind - 1]
+                        k = k_list[ind - 1]
 
                         # Compute potentials for this face-point pair
-                        pos1 = p.pos[face_idx:face_idx+1]
-                        pos2 = self.pt.pos[pt_idx:pt_idx+1]
-                        nvec = p.nvec[face_idx:face_idx+1]
-                        dip_vals = self.dip[pt_idx:pt_idx+1, :, :]
+                        pos1 = p.pos[ind1:ind1+1]
+                        pos2 = self.pt.pos[ind2:ind2+1]
+                        nvec = p.nvec[ind1:ind1+1]
+                        dip_vals = self.dip[ind2:ind2+1, :, :]
 
                         phi, phip, a, ap = self._compute_pot(
                             pos1, pos2, nvec, dip_vals, eps, k
                         )
 
                         # Store in appropriate array based on inout
-                        if inout_idx == 0:  # Inside surface
-                            phi1[face_idx, pt_idx, :] = phi.flatten()
-                            phi1p[face_idx, pt_idx, :] = phip.flatten()
-                            a1[face_idx, :, pt_idx, :] = a.reshape(3, ndip)
-                            a1p[face_idx, :, pt_idx, :] = ap.reshape(3, ndip)
-                        else:  # Outside surface
-                            phi2[face_idx, pt_idx, :] = phi.flatten()
-                            phi2p[face_idx, pt_idx, :] = phip.flatten()
-                            a2[face_idx, :, pt_idx, :] = a.reshape(3, ndip)
-                            a2p[face_idx, :, pt_idx, :] = ap.reshape(3, ndip)
+                        # MATLAB: switch inout, case 1: phi1/a1, case 2: phi2/a2
+                        if inout_idx == 0:  # Inside surface (inout=1 in MATLAB)
+                            phi1[ind1, ind2, :] = phi.flatten()
+                            phi1p[ind1, ind2, :] = phip.flatten()
+                            a1[ind1, :, ind2, :] = a.reshape(3, ndip)
+                            a1p[ind1, :, ind2, :] = ap.reshape(3, ndip)
+                        else:  # Outside surface (inout=2 in MATLAB)
+                            phi2[ind1, ind2, :] = phi.flatten()
+                            phi2p[ind1, ind2, :] = phip.flatten()
+                            a2[ind1, :, ind2, :] = a.reshape(3, ndip)
+                            a2p[ind1, :, ind2, :] = ap.reshape(3, ndip)
 
         return {
             'phi1': phi1, 'phi1p': phi1p,

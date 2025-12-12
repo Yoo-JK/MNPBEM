@@ -340,25 +340,45 @@ class PlaneWaveRet:
 
         npol = h1.shape[2]
 
+        # Get inout array for each face
+        inout_faces = p.inout_faces  # (nfaces, 2): column 0=inside, 1=outside
+
         # Phase factor: exp(-i*k*dir·pos) * area
-        # dirs: (ndir, 3), pos: (nfaces, 3)
-        # dir·pos: (ndir, nfaces)
+        # MATLAB: phase = exp(-1i * k * dir * p.pos') * spdiag(p.area)
         phase = np.exp(-1j * k * np.dot(dirs, pos.T)) * area  # (ndir, nfaces)
 
         # Electric far-field
         e = np.zeros((ndir, 3, npol), dtype=complex)
 
+        # MATLAB: separates contributions by inout
+        # ind = p.index(find(p.inout(:, 1) == obj.medium)') for inner
+        # ind = p.index(find(p.inout(:, 2) == obj.medium)') for outer
+
+        # Inner surface: faces where inside medium == self.medium
+        ind1 = np.where(inout_faces[:, 0] == self.medium)[0]
+        # Outer surface: faces where outside medium == self.medium
+        ind2 = np.where(inout_faces[:, 1] == self.medium)[0]
+
         for ipol in range(npol):
-            # Contribution from surface current: i*k0 * phase @ h
-            # phase: (ndir, nfaces), h: (nfaces, 3)
-            current_term = 1j * k0 * np.dot(phase, h1[:, :, ipol] + h2[:, :, ipol])
+            # Contribution from inner surface (h1, sig1)
+            if len(ind1) > 0:
+                phase1 = phase[:, ind1]  # (ndir, nind1)
+                # Current term: i*k0 * phase @ h1
+                current_term1 = 1j * k0 * np.dot(phase1, h1[ind1, :, ipol])
+                # Charge term: -i*k * dir * (phase @ sig1)
+                sig_sum1 = np.dot(phase1, sig1[ind1, ipol])
+                charge_term1 = -1j * k * dirs * sig_sum1[:, np.newaxis]
+                e[:, :, ipol] += current_term1 + charge_term1
 
-            # Contribution from surface charge: -i*k * dir * (phase @ sig)
-            # phase @ sig: (ndir,) for each component
-            charge_sum = np.dot(phase, sig1[:, ipol] + sig2[:, ipol])  # (ndir,)
-            charge_term = -1j * k * dirs * charge_sum[:, np.newaxis]
-
-            e[:, :, ipol] = current_term + charge_term
+            # Contribution from outer surface (h2, sig2)
+            if len(ind2) > 0:
+                phase2 = phase[:, ind2]  # (ndir, nind2)
+                # Current term: i*k0 * phase @ h2
+                current_term2 = 1j * k0 * np.dot(phase2, h2[ind2, :, ipol])
+                # Charge term: -i*k * dir * (phase @ sig2)
+                sig_sum2 = np.dot(phase2, sig2[ind2, ipol])
+                charge_term2 = -1j * k * dirs * sig_sum2[:, np.newaxis]
+                e[:, :, ipol] += current_term2 + charge_term2
 
         # Squeeze if single polarization
         if npol == 1:

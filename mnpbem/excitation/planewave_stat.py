@@ -60,11 +60,9 @@ class PlaneWaveStat:
             Medium index (1-indexed, MATLAB convention)
         """
         # Convert to numpy array
+        # MATLAB: obj.pol = pol (no normalization!)
         pol = np.atleast_2d(pol).astype(float)
-
-        # Normalize polarization vectors
-        norms = np.linalg.norm(pol, axis=1, keepdims=True)
-        self.pol = pol / norms
+        self.pol = pol
 
         # Medium index (1-indexed like MATLAB)
         self.medium = medium
