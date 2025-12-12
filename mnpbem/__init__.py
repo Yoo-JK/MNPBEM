@@ -19,6 +19,7 @@ from .materials import EpsConst, EpsTable
 from .geometry import Particle, ComParticle, trisphere
 from .greenfun import CompGreenStat, CompGreenRet
 from .bem import BEMStat, BEMRet
+from .excitation import PlaneWaveStat, PlaneWaveRet
 from .utils.constants import EV2NM
 
 __all__ = [
@@ -31,5 +32,7 @@ __all__ = [
     "CompGreenRet",
     "BEMStat",
     "BEMRet",
+    "PlaneWaveStat",
+    "PlaneWaveRet",
     "EV2NM",
 ]
