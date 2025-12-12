@@ -72,13 +72,16 @@ class CompGreenStat:
         """
         Compute F matrix (surface derivative of Green function).
 
-        F[i,j] = ∂G/∂n_j (r_i, r_j)
-               = n_j · (r_j - r_i) / (4π|r_j - r_i|³)
+        Following MATLAB MNPBEM convention:
+        F[i,j] = - n_j · (r_i - r_j) / |r_i - r_j|³ * area_j
+
+        Note: No 4π factor (absorbed into area/BEM formulation)
         """
-        # Get positions and normals
-        pos1 = self.p1.pos  # (n1, 3)
-        pos2 = self.p2.pos  # (n2, 3)
-        nvec2 = self.p2.nvec  # (n2, 3)
+        # Get positions, normals, and areas
+        pos1 = self.p1.pos  # (n1, 3) - field points
+        pos2 = self.p2.pos  # (n2, 3) - source points
+        nvec2 = self.p2.nvec  # (n2, 3) - normals at source
+        area2 = self.p2.area  # (n2,) - areas at source
 
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
@@ -87,25 +90,25 @@ class CompGreenStat:
         F = np.zeros((n1, n2))
 
         # Compute all pairwise interactions
-        # For efficiency, we vectorize over one dimension
         for i in range(n1):
-            # Vector from point i to all points j
-            r_ij = pos2 - pos1[i]  # (n2, 3)
+            # Vector from source j to field i: r_i - r_j
+            r_ij = pos1[i] - pos2  # (n2, 3)
 
             # Distance
             dist = np.linalg.norm(r_ij, axis=1)  # (n2,)
 
             # Avoid division by zero for diagonal elements (handled separately)
             with np.errstate(divide='ignore', invalid='ignore'):
-                # F = n · r / (4π * r³)
+                # F = - (n · r) / r³ * area
+                # Minus sign is part of MATLAB convention
                 dist3 = dist**3
-                F[i, :] = np.sum(nvec2 * r_ij, axis=1) / (4 * np.pi * dist3)
+                n_dot_r = np.sum(nvec2 * r_ij, axis=1)
+                F[i, :] = - n_dot_r / dist3 * area2
 
         # Handle diagonal elements for self-interaction (p1 == p2)
         if self.p1 is self.p2:
             # For closed surfaces, diagonal should be -2π
-            # This is derived from the discontinuity of the normal derivative
-            # See Fuchs & Liu, PRB 14, 5521 (1976)
+            # This is the discontinuity from the solid angle
             np.fill_diagonal(F, -2.0 * np.pi)
 
         self.F = F
