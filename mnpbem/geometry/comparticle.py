@@ -221,6 +221,46 @@ class ComParticle:
         """All vertices (concatenated)."""
         return np.vstack([part.verts for part in self.p])
 
+    @property
+    def inout_faces(self):
+        """
+        Get inside/outside material indices for each face.
+
+        Returns array of shape (nfaces, 2) where:
+        - Column 0: inside material index (1-indexed like MATLAB)
+        - Column 1: outside material index (1-indexed like MATLAB)
+
+        This matches MATLAB's p.inout property expanded to all faces.
+        """
+        inout_arr = np.zeros((self.nfaces, 2), dtype=int)
+        offset = 0
+
+        for i, part in enumerate(self.p):
+            inout_arr[offset:offset + part.nfaces, 0] = self.inout[i, 0]
+            inout_arr[offset:offset + part.nfaces, 1] = self.inout[i, 1]
+            offset += part.nfaces
+
+        return inout_arr
+
+    def get_face_indices(self, medium, side='outside'):
+        """
+        Get indices of faces where the specified medium is on the given side.
+
+        Parameters
+        ----------
+        medium : int
+            Material index (1-indexed like MATLAB)
+        side : str
+            'inside' (column 0) or 'outside' (column 1)
+
+        Returns
+        -------
+        indices : ndarray
+            Array of face indices where the medium is on the specified side
+        """
+        col = 0 if side == 'inside' else 1
+        return np.where(self.inout_faces[:, col] == medium)[0]
+
     def __repr__(self):
         return (
             f"ComParticle(nparticles={len(self.p)}, "

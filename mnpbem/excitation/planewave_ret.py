@@ -92,6 +92,9 @@ class PlaneWaveRet:
             a = exp(1i*k*pos*dir')/(1i*k0) * pol
             ap = (1i*k * nvec*dir') .* a * pol
 
+        The potential is only set on faces where the specified medium
+        is on the inside (a1) or outside (a2) of the boundary.
+
         Parameters
         ----------
         p : ComParticle
@@ -122,34 +125,41 @@ class PlaneWaveRet:
         nvec = p.nvec    # (nfaces, 3)
         npol = self.pol.shape[0]
 
-        # Initialize potentials
+        # Initialize potentials (zero by default)
         a1 = np.zeros((nfaces, 3, npol), dtype=complex)
         a1p = np.zeros((nfaces, 3, npol), dtype=complex)
         a2 = np.zeros((nfaces, 3, npol), dtype=complex)
         a2p = np.zeros((nfaces, 3, npol), dtype=complex)
 
-        # In the Python implementation, we handle single material interface
-        # For each polarization, compute phase factor and potentials
-        for i in range(npol):
-            # Phase factor: exp(i*k*pos·dir) / (i*k0)
-            # pos·dir: (nfaces, 3) · (3,) -> (nfaces,)
-            phase = np.exp(1j * k * np.dot(pos, self.dir[i])) / (1j * k0)
+        # Get inout array for each face
+        inout_faces = p.inout_faces  # (nfaces, 2): column 0=inside, 1=outside
 
-            # Vector potential: a = phase * pol
-            # Broadcast: (nfaces, 1) * (1, 3) -> (nfaces, 3)
-            a = phase[:, np.newaxis] * self.pol[i]
+        # Loop over inside (inout=0) and outside (inout=1)
+        for inout_col in range(2):
+            # Find faces where this medium is on this side
+            # MATLAB: ind = find(p.inout(:, inout) == obj.medium)
+            ind = np.where(inout_faces[:, inout_col] == self.medium)[0]
 
-            # Surface derivative: ap = (i*k * nvec·dir) * phase * pol
-            # nvec·dir: (nfaces, 3) · (3,) -> (nfaces,)
-            nvec_dot_dir = np.dot(nvec, self.dir[i])
-            ap = (1j * k * nvec_dot_dir)[:, np.newaxis] * phase[:, np.newaxis] * self.pol[i]
+            if len(ind) > 0:
+                # Compute potentials only for these faces
+                for i in range(npol):
+                    # Phase factor: exp(i*k*pos·dir) / (i*k0)
+                    phase = np.exp(1j * k * np.dot(pos[ind], self.dir[i])) / (1j * k0)
 
-            # Store in both a1/a2 (for simple single interface)
-            # In MATLAB, this is done based on p.inout
-            a1[:, :, i] = a
-            a1p[:, :, i] = ap
-            a2[:, :, i] = a
-            a2p[:, :, i] = ap
+                    # Vector potential: a = phase * pol
+                    a_vals = phase[:, np.newaxis] * self.pol[i]
+
+                    # Surface derivative: ap = (i*k * nvec·dir) * phase * pol
+                    nvec_dot_dir = np.dot(nvec[ind], self.dir[i])
+                    ap_vals = (1j * k * nvec_dot_dir)[:, np.newaxis] * phase[:, np.newaxis] * self.pol[i]
+
+                    # Store in appropriate array based on inside/outside
+                    if inout_col == 0:  # Inside
+                        a1[ind, :, i] = a_vals
+                        a1p[ind, :, i] = ap_vals
+                    else:  # Outside
+                        a2[ind, :, i] = a_vals
+                        a2p[ind, :, i] = ap_vals
 
         return {
             'a1': a1,
