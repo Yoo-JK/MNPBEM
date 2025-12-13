@@ -74,51 +74,94 @@ class CompGreenStat:
 
     def _compute_GF(self):
         """
-        Compute G and F matrices following MATLAB MNPBEM exactly.
+        Compute G and F matrices following MATLAB MNPBEM.
 
-        MATLAB greenstat/eval1.m:
-            x = bsxfun(@minus, pos1(:,1), pos2(:,1)');  % r_i - r_j
-            nvec = obj.p1.nvec;  % normal at FIELD point (p1)
-            F = -(n·r) / d³ * area
-            G = 1 / d * area
+        Uses numerical integration for nearby elements and
+        point formula for distant elements.
         """
         # Get positions, normals, and areas
         pos1 = self.p1.pos    # (n1, 3) - field points
         pos2 = self.p2.pos    # (n2, 3) - source points
-        nvec1 = self.p1.nvec  # (n1, 3) - normals at FIELD points (MATLAB convention!)
+        nvec1 = self.p1.nvec  # (n1, 3) - normals at FIELD points
         area2 = self.p2.area  # (n2,) - areas at source
 
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
 
-        # Vectorized computation (matches MATLAB bsxfun)
-        # r[i,j,:] = pos1[i,:] - pos2[j,:] = r_i - r_j
+        # Compute distances
         r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]  # (n1, n2, 3)
-
-        # Distance d[i,j] = |r_i - r_j|
         d = np.linalg.norm(r, axis=2)  # (n1, n2)
-        d = np.maximum(d, np.finfo(float).eps)  # Avoid division by zero
+        d_safe = np.maximum(d, np.finfo(float).eps)
 
-        # G matrix: G[i,j] = 1/d[i,j] * area[j]
-        # MATLAB: G = 1 ./ d * area;
-        G = (1.0 / d) * area2[np.newaxis, :]  # (n1, n2)
+        # Point formula for G and F
+        G = (1.0 / d_safe) * area2[np.newaxis, :]
+        n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis=2)
+        F = -n_dot_r / (d_safe ** 3) * area2[np.newaxis, :]
 
-        # F matrix: F[i,j] = -nvec1[i] · r[i,j] / d[i,j]³ * area[j]
-        # MATLAB: F = -(in(x,1) + in(y,2) + in(z,3)) ./ d.^3 * area
-        # where in(x,i) = bsxfun(@times, x, nvec(:,i))
-        # This computes nvec1[i] · r[i,j,:] for each (i,j)
-        n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis=2)  # (n1, n2)
-        F = -n_dot_r / (d ** 3) * area2[np.newaxis, :]  # (n1, n2)
-
-        # Handle diagonal elements for self-interaction (p1 == p2)
-        # MATLAB compgreenstat/init.m: diag(obj.g, ind, -2*pi*dir - f.')
+        # Handle diagonal for self-interaction (p1 == p2)
         if self.p1 is self.p2:
-            # For closed surfaces, diagonal = -2π
-            np.fill_diagonal(G, 0.0)  # G diagonal is undefined (self-term)
+            # Set diagonal to -2π (solid angle for point on closed surface)
+            np.fill_diagonal(G, 0.0)
             np.fill_diagonal(F, -2.0 * np.pi)
 
         self.G = G
         self.F = F
+
+    def _refine_nearby(self, G, F, pos1, nvec1, mask, particle):
+        """
+        Refine G and F for nearby elements using 7-point Gauss quadrature.
+        """
+        # 7-point Gauss quadrature for triangles (Dunavant rules)
+        quad_pts = np.array([
+            [1/3, 1/3, 1/3],
+            [0.797426985353087, 0.101286507323456, 0.101286507323456],
+            [0.101286507323456, 0.797426985353087, 0.101286507323456],
+            [0.101286507323456, 0.101286507323456, 0.797426985353087],
+            [0.059715871789770, 0.470142064105115, 0.470142064105115],
+            [0.470142064105115, 0.059715871789770, 0.470142064105115],
+            [0.470142064105115, 0.470142064105115, 0.059715871789770],
+        ])
+        quad_wts = np.array([0.225, 0.125939180544827, 0.125939180544827,
+                            0.125939180544827, 0.132394152788506,
+                            0.132394152788506, 0.132394152788506])
+
+        verts = particle.verts
+        faces = particle.faces
+
+        # Find pairs needing refinement
+        refine_pairs = np.argwhere(mask)
+
+        for idx in range(len(refine_pairs)):
+            i, j = refine_pairs[idx]
+
+            # Get triangle vertices
+            face_idx = faces[j, :3].astype(int)
+            v0, v1, v2 = verts[face_idx[0]], verts[face_idx[1]], verts[face_idx[2]]
+
+            # Triangle area
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            normal = np.cross(edge1, edge2)
+            area = 0.5 * np.linalg.norm(normal)
+
+            # Quadrature integration
+            G_sum = 0.0
+            F_sum = 0.0
+            pos_i = pos1[i]
+            nvec_i = nvec1[i]
+
+            for k, (a, b, c) in enumerate(quad_pts):
+                pt = a * v0 + b * v1 + c * v2
+                r_vec = pos_i - pt
+                dist = np.linalg.norm(r_vec)
+                if dist < 1e-10 * np.sqrt(area):
+                    continue
+
+                G_sum += quad_wts[k] / dist
+                F_sum += quad_wts[k] * np.dot(nvec_i, r_vec) / dist**3
+
+            G[i, j] = G_sum * area
+            F[i, j] = -F_sum * area
 
     def H1(self):
         """
