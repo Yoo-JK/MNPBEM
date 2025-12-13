@@ -171,6 +171,58 @@ def test_bemret_solve():
     return sig, bem
 
 
+def test_bemret_field():
+    """Test BEMRet.field() for electric/magnetic field computation."""
+    print("\n=== Test: BEMRet.field() ===")
+
+    sig, bem = test_bemret_solve()
+
+    # Compute field outside particle
+    field_out = bem.field(sig, inout=2)
+
+    print(f"E-field shape: {field_out['e'].shape}")
+    print(f"H-field shape: {field_out['h'].shape}")
+    print(f"E-field magnitude range: {np.abs(field_out['e']).min():.4e} to {np.abs(field_out['e']).max():.4e}")
+
+    # Verify field is non-zero and has correct shape
+    assert field_out['e'].shape[0] == bem.p.nfaces, "Field should have nfaces rows"
+    assert field_out['e'].shape[1] == 3, "Field should have 3 components (xyz)"
+    assert np.any(field_out['e'] != 0), "Electric field should be non-zero"
+
+    # Compute field inside particle
+    field_in = bem.field(sig, inout=1)
+    print(f"Inside E-field magnitude range: {np.abs(field_in['e']).min():.4e} to {np.abs(field_in['e']).max():.4e}")
+
+    print("PASSED: BEMRet.field()")
+
+
+def test_bemret_potential():
+    """Test BEMRet.potential() for potential computation."""
+    print("\n=== Test: BEMRet.potential() ===")
+
+    sig, bem = test_bemret_solve()
+
+    # Compute potential outside
+    pot_out = bem.potential(sig, inout=2)
+
+    print(f"phi2 shape: {pot_out['phi2'].shape}")
+    print(f"a2 shape: {pot_out['a2'].shape}")
+    print(f"phi2 range: {np.abs(pot_out['phi2']).min():.4e} to {np.abs(pot_out['phi2']).max():.4e}")
+
+    assert 'phi2' in pot_out, "Should have phi2 key"
+    assert 'phi2p' in pot_out, "Should have phi2p key"
+    assert 'a2' in pot_out, "Should have a2 key"
+    assert 'a2p' in pot_out, "Should have a2p key"
+    assert np.any(pot_out['phi2'] != 0) or np.any(pot_out['a2'] != 0), "Potential should be non-zero"
+
+    # Compute potential inside
+    pot_in = bem.potential(sig, inout=1)
+    assert 'phi1' in pot_in, "Should have phi1 key"
+    assert 'a1' in pot_in, "Should have a1 key"
+
+    print("PASSED: BEMRet.potential()")
+
+
 def test_bemstat_scattering_workflow():
     """Test complete quasistatic scattering workflow."""
     print("\n=== Test: Complete Quasistatic Workflow ===")
@@ -351,6 +403,8 @@ def run_all_tests():
     test_bemstat_field()
     test_bemstat_potential()
     test_bemret_solve()
+    test_bemret_field()
+    test_bemret_potential()
     test_bemstat_scattering_workflow()
     test_bemret_scattering_workflow()
     test_multiple_polarizations()
@@ -364,6 +418,8 @@ def run_all_tests():
     print("  - BEMRet.solve(): Retarded surface charge/current calculation")
     print("  - BEMStat.field(): Electric field from surface charges")
     print("  - BEMStat.potential(): Potential from surface charges")
+    print("  - BEMRet.field(): Electric/magnetic field from surface charges/currents")
+    print("  - BEMRet.potential(): Scalar/vector potential from surface charges/currents")
     print("  - Complete workflow: excitation -> solve -> cross sections")
 
 

@@ -106,6 +106,10 @@ class BEMRet:
         self.Deltai = None
         self.Sigmai = None
 
+        # Green function objects (for field/potential computation)
+        self.g_in = None
+        self.g_out = None
+
         # Initialize at specific energy if provided
         if enei is not None:
             self.init(enei)
@@ -169,14 +173,14 @@ class BEMRet:
         # MATLAB: G1 = g{1,1}.G - g{2,1}.G (inside medium, k_in)
         #         G2 = g{2,2}.G - g{1,2}.G (outside medium, k_out)
         # For single particle, cross terms are 0
-        g_in = CompGreenRet(self.p, self.p, enei, k=k_in)   # inside Green function
-        g_out = CompGreenRet(self.p, self.p, enei, k=k_out) # outside Green function
+        self.g_in = CompGreenRet(self.p, self.p, enei, k=k_in)   # inside Green function
+        self.g_out = CompGreenRet(self.p, self.p, enei, k=k_out) # outside Green function
 
-        G1 = g_in.G   # inside Green function
-        G2 = g_out.G  # outside Green function
+        G1 = self.g_in.G   # inside Green function
+        G2 = self.g_out.G  # outside Green function
 
-        H1_mat = g_in.H1()   # H1 with inside k
-        H2_mat = g_out.H2()  # H2 with outside k
+        H1_mat = self.g_in.H1()   # H1 with inside k
+        H2_mat = self.g_out.H2()  # H2 with outside k
 
         # Compute inverses
         self.G1i = np.linalg.inv(G1)
@@ -539,6 +543,170 @@ class BEMRet:
             'sig2': sig2_all,
             'h1': h1_all,
             'h2': h2_all,
+            'enei': enei,
+            'p': self.p
+        }
+
+    def potential(self, sig, inout=2):
+        """
+        Compute potentials and surface derivatives inside/outside of particle.
+
+        MATLAB: bemret/potential.m -> compgreenret/potential.m
+
+        Parameters
+        ----------
+        sig : dict
+            Solution containing 'sig1', 'sig2', 'h1', 'h2', 'enei', 'p'
+        inout : int
+            1 for inside, 2 for outside (default)
+
+        Returns
+        -------
+        pot : dict
+            Potentials: phi1/phi2, phi1p/phi2p, a1/a2, a1p/a2p
+        """
+        enei = sig['enei']
+        self.init(enei)
+
+        sig1 = sig['sig1']
+        sig2 = sig['sig2']
+        h1 = sig['h1']
+        h2 = sig['h2']
+
+        # Get Green function matrices
+        G_in = self.g_in.G
+        G_out = self.g_out.G
+
+        if inout == 1:
+            # Inside: use H1 (F + 2π)
+            H_in = self.g_in.H1()
+            H_out = self.g_out.H1()
+        else:
+            # Outside: use H2 (F - 2π)
+            H_in = self.g_in.H2()
+            H_out = self.g_out.H2()
+
+        # Scalar potential: phi = G_in * sig1 + G_out * sig2
+        # For single particle: G_in for inside charges, G_out for outside
+        if sig1.ndim == 1:
+            phi = G_in @ sig1 + G_out @ sig2
+            phip = H_in @ sig1 + H_out @ sig2
+            # Vector potential: a = G_in * h1 + G_out * h2
+            a = G_in @ h1 + G_out @ h2
+            ap = H_in @ h1 + H_out @ h2
+        else:
+            # Multiple polarizations
+            npol = sig1.shape[1]
+            nfaces = sig1.shape[0]
+            phi = np.zeros((nfaces, npol), dtype=complex)
+            phip = np.zeros((nfaces, npol), dtype=complex)
+            a = np.zeros((nfaces, 3, npol), dtype=complex)
+            ap = np.zeros((nfaces, 3, npol), dtype=complex)
+
+            for ipol in range(npol):
+                phi[:, ipol] = G_in @ sig1[:, ipol] + G_out @ sig2[:, ipol]
+                phip[:, ipol] = H_in @ sig1[:, ipol] + H_out @ sig2[:, ipol]
+                a[:, :, ipol] = G_in @ h1[:, :, ipol] + G_out @ h2[:, :, ipol]
+                ap[:, :, ipol] = H_in @ h1[:, :, ipol] + H_out @ h2[:, :, ipol]
+
+        # Return with appropriate keys
+        if inout == 1:
+            return {
+                'phi1': phi, 'phi1p': phip,
+                'a1': a, 'a1p': ap,
+                'enei': enei, 'p': self.p
+            }
+        else:
+            return {
+                'phi2': phi, 'phi2p': phip,
+                'a2': a, 'a2p': ap,
+                'enei': enei, 'p': self.p
+            }
+
+    def field(self, sig, inout=2):
+        """
+        Compute electric and magnetic fields inside/outside of particle.
+
+        MATLAB: bemret/field.m -> compgreenret/field.m
+
+        Parameters
+        ----------
+        sig : dict
+            Solution containing 'sig1', 'sig2', 'h1', 'h2', 'enei', 'p'
+        inout : int
+            1 for inside, 2 for outside (default)
+
+        Returns
+        -------
+        field : dict
+            Fields: 'e' (electric), 'h' (magnetic), 'enei', 'p'
+
+        Notes
+        -----
+        MATLAB formula:
+            e = i*k*(G1*h1 + G2*h2) - H1p*sig1 - H2p*sig2
+            h = cross(H1p, h1) + cross(H2p, h2)
+
+        where H1p, H2p are Cartesian derivatives of Green function.
+        """
+        enei = sig['enei']
+        self.init(enei)
+
+        k = self.k
+        sig1 = sig['sig1']
+        sig2 = sig['sig2']
+        h1 = sig['h1']
+        h2 = sig['h2']
+
+        # Get Green function matrices
+        G_in = self.g_in.G
+        G_out = self.g_out.G
+
+        # For field computation, we need H1p/H2p (Cartesian derivatives)
+        # These are not yet implemented in CompGreenRet
+        # For now, compute E from vector potential: E = i*k*A - grad(phi)
+        # Using surface derivatives for the gradient term
+
+        if inout == 1:
+            H_in = self.g_in.H1()
+            H_out = self.g_out.H1()
+        else:
+            H_in = self.g_in.H2()
+            H_out = self.g_out.H2()
+
+        if sig1.ndim == 1:
+            # Vector potential contribution: E = i*k*A
+            a_vec = G_in @ h1 + G_out @ h2  # (nfaces, 3)
+            e = 1j * k * a_vec
+
+            # Scalar potential contribution: -grad(phi)
+            # Using nvec * phip as approximation for the normal component
+            phip = H_in @ sig1 + H_out @ sig2  # (nfaces,)
+            e = e - self.nvec * phip[:, np.newaxis]
+
+            # Magnetic field: h = curl(A) ≈ cross(nvec, ap)
+            ap = H_in @ h1 + H_out @ h2  # (nfaces, 3)
+            mag_h = np.cross(self.nvec, ap)
+        else:
+            # Multiple polarizations
+            npol = sig1.shape[1]
+            nfaces = sig1.shape[0]
+            e = np.zeros((nfaces, 3, npol), dtype=complex)
+            mag_h = np.zeros((nfaces, 3, npol), dtype=complex)
+
+            for ipol in range(npol):
+                a_vec = G_in @ h1[:, :, ipol] + G_out @ h2[:, :, ipol]
+                e[:, :, ipol] = 1j * k * a_vec
+
+                phip = H_in @ sig1[:, ipol] + H_out @ sig2[:, ipol]
+                e[:, :, ipol] = e[:, :, ipol] - self.nvec * phip[:, np.newaxis]
+
+                ap = H_in @ h1[:, :, ipol] + H_out @ h2[:, :, ipol]
+                mag_h[:, :, ipol] = np.cross(self.nvec, ap)
+
+        return {
+            'e': e,
+            'h': mag_h,
             'enei': enei,
             'p': self.p
         }
