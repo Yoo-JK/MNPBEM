@@ -63,21 +63,21 @@ print("\n" + "-" * 70)
 print("Test 2: Basis Vector Orthogonality")
 print("-" * 70)
 
-# vec1 ⊥ vec2
-dot_v1_v2 = np.sum(sphere.vec1 * sphere.vec2, axis=1)
-print(f"vec1 · vec2 (should be 0):")
+# tvec1 ⊥ tvec2 (matches MATLAB obj.tvec1, obj.tvec2)
+dot_v1_v2 = np.sum(sphere.tvec1 * sphere.tvec2, axis=1)
+print(f"tvec1 · tvec2 (should be 0):")
 print(f"  Mean: {dot_v1_v2.mean():.6e}")
 print(f"  Max |dot|: {np.abs(dot_v1_v2).max():.6e}")
 
-# vec1 ⊥ nvec
-dot_v1_n = np.sum(sphere.vec1 * sphere.nvec, axis=1)
-print(f"vec1 · nvec (should be 0):")
+# tvec1 ⊥ nvec
+dot_v1_n = np.sum(sphere.tvec1 * sphere.nvec, axis=1)
+print(f"tvec1 · nvec (should be 0):")
 print(f"  Mean: {dot_v1_n.mean():.6e}")
 print(f"  Max |dot|: {np.abs(dot_v1_n).max():.6e}")
 
-# vec2 ⊥ nvec
-dot_v2_n = np.sum(sphere.vec2 * sphere.nvec, axis=1)
-print(f"vec2 · nvec (should be 0):")
+# tvec2 ⊥ nvec
+dot_v2_n = np.sum(sphere.tvec2 * sphere.nvec, axis=1)
+print(f"tvec2 · nvec (should be 0):")
 print(f"  Mean: {dot_v2_n.mean():.6e}")
 print(f"  Max |dot|: {np.abs(dot_v2_n).max():.6e}")
 
