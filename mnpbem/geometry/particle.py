@@ -31,17 +31,22 @@ class Particle:
         Face indices (triangles have NaN in 4th column)
     pos : ndarray, shape (nfaces, 3)
         Centroid positions of faces
-    nvec : ndarray, shape (nfaces, 3)
-        Outward normal vectors (unit vectors)
-    vec1 : ndarray, shape (nfaces, 3)
-        First tangent vector (unit vector)
-    vec2 : ndarray, shape (nfaces, 3)
-        Second tangent vector (unit vector, vec2 = nvec × vec1)
+    vec : list of ndarray
+        Basis vectors [vec1, vec2, nvec] (matches MATLAB obj.vec cell array)
+        vec[0] : First tangent vector (shape: nfaces, 3)
+        vec[1] : Second tangent vector (shape: nfaces, 3)
+        vec[2] : Normal vector (shape: nfaces, 3)
     area : ndarray, shape (nfaces,)
         Area of each face
-    nverts : int
+    nvec : property -> vec[2]
+        Outward normal vectors (matches MATLAB obj.nvec)
+    tvec1 : property -> vec[0]
+        First tangent vector (matches MATLAB obj.tvec1)
+    tvec2 : property -> vec[1]
+        Second tangent vector (matches MATLAB obj.tvec2)
+    nverts : property
         Number of vertices
-    nfaces : int
+    nfaces : property
         Number of faces
 
     Examples
@@ -177,11 +182,31 @@ class Particle:
                 all_nvec.append(nvec)
                 all_area.append(area)
 
-        # Store as arrays
-        self.vec1 = np.array(all_vec1)
-        self.vec2 = np.array(all_vec2)
-        self.nvec = np.array(all_nvec)
+        # Store as list (matching MATLAB cell array structure: obj.vec = {vec1, vec2, nvec})
+        # MATLAB uses 1-based indexing: vec{1}, vec{2}, vec{3}
+        # Python uses 0-based indexing: vec[0], vec[1], vec[2]
+        vec1_array = np.array(all_vec1)
+        vec2_array = np.array(all_vec2)
+        nvec_array = np.array(all_nvec)
+
+        self.vec = [vec1_array, vec2_array, nvec_array]
         self.area = np.array(all_area)
+
+    # Properties matching MATLAB subsref interface
+    @property
+    def nvec(self):
+        """Normal vectors (matches MATLAB obj.nvec -> obj.vec{3})."""
+        return self.vec[2]
+
+    @property
+    def tvec1(self):
+        """First tangent vector (matches MATLAB obj.tvec1 -> obj.vec{1})."""
+        return self.vec[0]
+
+    @property
+    def tvec2(self):
+        """Second tangent vector (matches MATLAB obj.tvec2 -> obj.vec{2})."""
+        return self.vec[1]
 
     @property
     def nverts(self):
