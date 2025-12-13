@@ -139,11 +139,19 @@ class CompGreenRet:
         F = n_dot_r * f_aux * phase * area2[np.newaxis, :]  # (n1, n2)
 
         # Handle diagonal elements for self-interaction (p1 == p2)
-        # MATLAB: H1 = F + 2*pi*(d==0), H2 = F - 2*pi*(d==0)
-        # Diagonal of F itself is left as computed (will be ~0 or small)
+        # For closed surfaces, the solid angle is 2π (Fuchs & Liu, PRB 14, 5521, 1976)
+        # MATLAB applies this correction in compgreenret/initclosed.m
         if self.p1 is self.p2:
-            np.fill_diagonal(G, 0.0)  # G diagonal is undefined (self-term)
-            # F diagonal: MATLAB leaves it as computed, ±2π added in H1/H2
+            # G diagonal: point formula gives 1/eps (very large)
+            # MATLAB uses quadpol for proper integration
+            # For now, leave as computed (will be large but finite)
+            # This is needed for matrix inversion in BEMRet
+
+            # F diagonal: set to -2π for closed surfaces
+            # Same convention as quasistatic (CompGreenStat)
+            # At d → 0: F → -n·r/d³ × area, but n·r = 0, so F = 0 from point formula
+            # The correct physical value is -2π from solid angle argument
+            np.fill_diagonal(F, -2.0 * np.pi)
 
         self.G = G
         self.F = F
