@@ -42,10 +42,13 @@ class EpsDrude:
     -----
     MATLAB equivalent: @epsdrude class
 
-    Common Drude parameters:
-    - Gold (Au):   eps0=9.5,  wp=8.95 eV, gammad=0.069 eV
-    - Silver (Ag): eps0=3.7,  wp=9.17 eV, gammad=0.021 eV
-    - Aluminum (Al): eps0=1.0, wp=15.0 eV, gammad=0.6 eV
+    MATLAB-compatible Drude parameters (calculated from Jellium model):
+    - Gold (Au):   eps0=10,   wp=9.071 eV, gammad=0.066 eV
+    - Silver (Ag): eps0=3.3,  wp=9.071 eV, gammad=0.022 eV
+    - Aluminum (Al): eps0=1.0, wp=15.826 eV, gammad=1.060 eV
+
+    Use EpsDrude.gold(), EpsDrude.silver(), or EpsDrude.aluminum() for
+    MATLAB-compatible parameters, or specify custom values directly.
     """
 
     def __init__(self, eps0, wp, gammad, name=None):
@@ -124,40 +127,95 @@ class EpsDrude:
     @classmethod
     def gold(cls):
         """
-        Create Drude model for gold (Au).
+        Create Drude model for gold (Au) - MATLAB compatible.
+
+        Uses MATLAB @epsdrude/init.m calculation (Jellium model).
 
         Returns
         -------
         EpsDrude
             Gold dielectric function
         """
-        # Drude parameters for gold
-        # From Johnson & Christy / typical literature values
-        return cls(eps0=9.5, wp=8.95, gammad=0.069, name='Au')
+        return cls._init_from_matlab_model('Au')
 
     @classmethod
     def silver(cls):
         """
-        Create Drude model for silver (Ag).
+        Create Drude model for silver (Ag) - MATLAB compatible.
+
+        Uses MATLAB @epsdrude/init.m calculation (Jellium model).
 
         Returns
         -------
         EpsDrude
             Silver dielectric function
         """
-        return cls(eps0=3.7, wp=9.17, gammad=0.021, name='Ag')
+        return cls._init_from_matlab_model('Ag')
 
     @classmethod
     def aluminum(cls):
         """
-        Create Drude model for aluminum (Al).
+        Create Drude model for aluminum (Al) - MATLAB compatible.
+
+        Uses MATLAB @epsdrude/init.m calculation (Jellium model).
 
         Returns
         -------
         EpsDrude
             Aluminum dielectric function
         """
-        return cls(eps0=1.0, wp=15.0, gammad=0.6, name='Al')
+        return cls._init_from_matlab_model('Al')
+
+    @classmethod
+    def _init_from_matlab_model(cls, name):
+        """
+        Initialize Drude parameters using MATLAB @epsdrude/init.m calculation.
+
+        This replicates the exact calculation from MATLAB init.m:
+        - Jellium model with electron gas parameter rs
+        - Atomic units conversion
+        - Density calculation: density = 3 / (4*pi*rs^3)
+        - Plasma frequency: wp = sqrt(4*pi*density)
+
+        Parameters
+        ----------
+        name : str
+            Material name: 'Au', 'gold', 'Ag', 'silver', 'Al', or 'aluminum'
+
+        Returns
+        -------
+        EpsDrude
+            Drude dielectric function with MATLAB-calculated parameters
+        """
+        # MATLAB init.m line 5-6: atomic units
+        hartree = 27.2116  # 2 * Rydberg in eV
+        tunit = 0.66 / hartree  # time unit in fs
+
+        # MATLAB init.m line 8-23: switch case
+        if name in ['Au', 'gold']:
+            rs = 3                  # electron gas parameter
+            eps0 = 10               # background dielectric constant
+            gammad = tunit / 10     # Drude relaxation rate
+        elif name in ['Ag', 'silver']:
+            rs = 3
+            eps0 = 3.3
+            gammad = tunit / 30
+        elif name in ['Al', 'aluminum']:
+            rs = 2.07
+            eps0 = 1
+            gammad = 1.06 / hartree
+        else:
+            raise ValueError(f"Material name unknown: {name}")
+
+        # MATLAB init.m line 25-28: density and plasmon energy
+        density = 3 / (4 * np.pi * rs ** 3)  # density in atomic units
+        wp = np.sqrt(4 * np.pi * density)    # plasmon energy
+
+        # MATLAB init.m line 31-32: save values (convert to eV)
+        gammad_ev = gammad * hartree
+        wp_ev = wp * hartree
+
+        return cls(eps0=eps0, wp=wp_ev, gammad=gammad_ev, name=name)
 
     def __repr__(self):
         if self.name:
