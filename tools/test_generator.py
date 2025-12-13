@@ -1,0 +1,496 @@
+#!/usr/bin/env python3
+"""
+MATLAB vs Python 비교 테스트 자동 생성 도구
+
+목적: 변환된 Python 클래스에 대해 MATLAB 기준 데이터와 비교하는 테스트 자동 생성
+"""
+
+import json
+from pathlib import Path
+from textwrap import dedent
+
+
+class TestGenerator:
+    """테스트 코드 자동 생성기"""
+
+    def __init__(self, mapping_file):
+        """초기화"""
+        with open(mapping_file, 'r') as f:
+            self.mapping = json.load(f)
+
+        # 변환된 항목만 필터링
+        self.converted = [
+            m for m in self.mapping
+            if m['python_status'] in ['✅', '⚠️']
+        ]
+
+    def generate_unit_test(self, module, class_name, method_name):
+        """단위 테스트 코드 생성"""
+
+        test_name = f"test_{class_name.lower()}_{method_name}"
+        if method_name == '__init__':
+            test_name = f"test_{class_name.lower()}_init"
+
+        template = dedent(f'''
+        def {test_name}():
+            """
+            Test {class_name}.{method_name}() against MATLAB {class_name}/{method_name}.m
+
+            Verification Strategy:
+            1. Load MATLAB reference data from tests/references/{class_name.lower()}_{method_name}_ref.mat
+            2. Create identical Python inputs
+            3. Execute Python method
+            4. Compare outputs with rtol=1e-10
+            """
+            # TODO: Generate MATLAB reference data first
+            # Run: matlab -batch "generate_{class_name.lower()}_{method_name}_reference"
+
+            # 1. Load MATLAB reference
+            matlab_ref = scipy.io.loadmat('tests/references/{class_name.lower()}_{method_name}_ref.mat')
+
+            # 2. Create Python inputs (example - adjust based on actual signature)
+            # obj = {class_name}(...)
+
+            # 3. Execute Python method
+            # result = obj.{method_name}(...)
+
+            # 4. Compare outputs
+            # np.testing.assert_allclose(result, matlab_ref['expected'], rtol=1e-10)
+
+            # TODO: Implement this test
+            pytest.skip("Test template generated - needs implementation")
+        ''')
+
+        return template.strip()
+
+    def generate_matlab_reference_script(self, module, class_name, method_name):
+        """MATLAB 기준 데이터 생성 스크립트"""
+
+        script_name = f"generate_{class_name.lower()}_{method_name}_reference.m"
+
+        template = dedent(f'''
+        % Generate reference data for {class_name}.{method_name}()
+        %
+        % This script runs the MATLAB version and saves outputs for Python comparison
+
+        function generate_{class_name.lower()}_{method_name}_reference()
+            % Setup
+            addpath(genpath('../'));
+
+            % Create test inputs (example - adjust based on actual requirements)
+            % obj = {class_name}(...);
+
+            % Execute method
+            % result = {method_name}(obj, ...);
+
+            % Save reference data
+            save('../../tests/references/{class_name.lower()}_{method_name}_ref.mat', ...
+                 'result', '-v7.3');
+
+            fprintf('Reference data saved to {class_name.lower()}_{method_name}_ref.mat\\n');
+        end
+        ''')
+
+        return template.strip()
+
+    def generate_integration_test(self, workflow_name, classes):
+        """통합 테스트 생성"""
+
+        test_name = f"test_{workflow_name}_workflow"
+
+        class_list = ', '.join(classes)
+
+        template = dedent(f'''
+        def {test_name}():
+            """
+            Integration test for {workflow_name} workflow
+
+            Tests the complete workflow: {class_list}
+
+            Verification Strategy:
+            1. Run complete workflow in MATLAB and save all intermediate results
+            2. Run identical workflow in Python
+            3. Compare all intermediate and final results
+            """
+            # TODO: Implement workflow test
+            pytest.skip("Integration test template - needs implementation")
+        ''')
+
+        return template.strip()
+
+    def generate_test_suite(self, output_dir):
+        """전체 테스트 스위트 생성"""
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # 모듈별로 그룹화
+        by_module = {}
+        for item in self.converted:
+            module = item['python_file'].split('/')[0] if '/' in item['python_file'] else 'unknown'
+            if module not in by_module:
+                by_module[module] = []
+            by_module[module].append(item)
+
+        # 각 모듈별 테스트 파일 생성
+        for module, items in by_module.items():
+            if module == 'Not converted':
+                continue
+
+            test_file = output_path / 'unit' / f'test_{module}.py'
+            test_file.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(test_file, 'w') as f:
+                # Header
+                f.write(dedent('''
+                """
+                Unit tests for {} module
+
+                These tests verify that Python implementations match MATLAB behavior.
+                Generated by test_generator.py
+                """
+
+                import numpy as np
+                import scipy.io
+                import pytest
+                from mnpbem.{} import *
+
+                '''.format(module, module)))
+
+                # 각 메소드별 테스트 생성
+                seen = set()
+                for item in items:
+                    class_name = item['python_class']
+                    method_name = item['python_method']
+
+                    # 중복 제거
+                    key = f"{class_name}.{method_name}"
+                    if key in seen or 'Missing' in method_name:
+                        continue
+                    seen.add(key)
+
+                    test_code = self.generate_unit_test(
+                        module, class_name, method_name
+                    )
+                    f.write('\n\n')
+                    f.write(test_code)
+
+            print(f"✅ Generated {test_file}")
+
+        # MATLAB 기준 데이터 생성 스크립트들
+        matlab_dir = output_path.parent / 'matlab_references'
+        matlab_dir.mkdir(parents=True, exist_ok=True)
+
+        for module, items in by_module.items():
+            if module == 'Not converted':
+                continue
+
+            seen = set()
+            for item in items:
+                matlab_class = item['matlab_class']
+                matlab_method = item['matlab_method']
+                class_name = item['python_class']
+                method_name = item['python_method']
+
+                key = f"{matlab_class}.{matlab_method}"
+                if key in seen or 'Missing' in method_name:
+                    continue
+                seen.add(key)
+
+                script = self.generate_matlab_reference_script(
+                    module, matlab_class, matlab_method
+                )
+
+                script_file = matlab_dir / f"generate_{matlab_class.lower()}_{matlab_method}_reference.m"
+                with open(script_file, 'w') as f:
+                    f.write(script)
+
+                print(f"✅ Generated MATLAB script {script_file}")
+
+        # 통합 테스트 생성
+        integration_file = output_path / 'integration' / 'test_workflows.py'
+        integration_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(integration_file, 'w') as f:
+            f.write(dedent('''
+            """
+            Integration tests for complete workflows
+
+            These tests verify end-to-end simulations match MATLAB.
+            """
+
+            import numpy as np
+            import scipy.io
+            import pytest
+
+            '''))
+
+            # 주요 워크플로우들
+            workflows = [
+                ('gold_nanosphere_static', ['EpsTable', 'Particle', 'CompGreenStat', 'BEMStat', 'PlaneWaveStat', 'SpectrumStat']),
+                ('gold_nanosphere_retarded', ['EpsTable', 'Particle', 'CompGreenRet', 'BEMRet', 'PlaneWaveRet', 'SpectrumRet']),
+                ('dipole_decay_rate', ['EpsConst', 'Particle', 'CompGreenStat', 'BEMStat', 'DipoleStat']),
+            ]
+
+            for workflow_name, classes in workflows:
+                test_code = self.generate_integration_test(workflow_name, classes)
+                f.write('\n\n')
+                f.write(test_code)
+
+        print(f"✅ Generated {integration_file}")
+
+        # pytest 설정 파일
+        conftest = output_path.parent / 'conftest.py'
+        with open(conftest, 'w') as f:
+            f.write(dedent('''
+            """
+            Pytest configuration for MNPBEM tests
+            """
+
+            import numpy as np
+            import pytest
+
+
+            @pytest.fixture
+            def matlab_reference_dir():
+                """Path to MATLAB reference data directory"""
+                return 'tests/references'
+
+
+            @pytest.fixture
+            def rtol():
+                """Relative tolerance for numerical comparisons"""
+                return 1e-10
+
+
+            @pytest.fixture
+            def atol():
+                """Absolute tolerance for numerical comparisons"""
+                return 1e-12
+
+
+            def assert_allclose_complex(a, b, rtol=1e-10, atol=1e-12):
+                """Assert two complex arrays are close"""
+                np.testing.assert_allclose(a.real, b.real, rtol=rtol, atol=atol, err_msg="Real parts differ")
+                np.testing.assert_allclose(a.imag, b.imag, rtol=rtol, atol=atol, err_msg="Imaginary parts differ")
+
+
+            def compare_with_matlab(python_result, matlab_file, var_name='result', rtol=1e-10):
+                """
+                Generic comparison function
+
+                Args:
+                    python_result: Result from Python code
+                    matlab_file: Path to .mat file with MATLAB results
+                    var_name: Variable name in .mat file
+                    rtol: Relative tolerance
+                """
+                import scipy.io
+
+                matlab_data = scipy.io.loadmat(matlab_file)
+                matlab_result = matlab_data[var_name]
+
+                # Handle complex arrays
+                if np.iscomplexobj(python_result) or np.iscomplexobj(matlab_result):
+                    assert_allclose_complex(python_result, matlab_result, rtol=rtol)
+                else:
+                    np.testing.assert_allclose(python_result, matlab_result, rtol=rtol)
+
+                # Statistical report
+                relative_error = np.abs((python_result - matlab_result) / (matlab_result + 1e-16))
+                print(f"  Max relative error: {np.max(relative_error):.2e}")
+                print(f"  Mean relative error: {np.mean(relative_error):.2e}")
+
+                return True
+            '''))
+
+        print(f"✅ Generated {conftest}")
+
+        # README
+        readme = output_path.parent / 'README_TESTS.md'
+        with open(readme, 'w') as f:
+            f.write(dedent('''
+            # MNPBEM 검증 테스트 가이드
+
+            ## 디렉토리 구조
+
+            ```
+            tests/
+            ├── unit/                 # 단위 테스트 (메소드별)
+            │   ├── test_materials.py
+            │   ├── test_geometry.py
+            │   ├── test_greenfun.py
+            │   ├── test_bem.py
+            │   ├── test_excitation.py
+            │   └── test_spectrum.py
+            ├── integration/          # 통합 테스트 (워크플로우)
+            │   └── test_workflows.py
+            ├── references/           # MATLAB 기준 데이터 (.mat 파일)
+            │   └── (생성 필요)
+            ├── matlab_references/    # MATLAB 기준 데이터 생성 스크립트
+            │   └── generate_*.m
+            └── conftest.py           # pytest 설정
+            ```
+
+            ## 사용 방법
+
+            ### 1단계: MATLAB 기준 데이터 생성
+
+            ```bash
+            cd tests/matlab_references
+            matlab -batch "run('generate_all_references.m')"
+            ```
+
+            또는 개별 생성:
+            ```bash
+            matlab -batch "generate_bemstat_solve_reference"
+            ```
+
+            ### 2단계: Python 테스트 실행
+
+            ```bash
+            # 모든 테스트 실행
+            pytest tests/ -v
+
+            # 특정 모듈만 테스트
+            pytest tests/unit/test_bem.py -v
+
+            # 통합 테스트만 실행
+            pytest tests/integration/ -v
+
+            # 커버리지 리포트 생성
+            pytest tests/ --cov=mnpbem --cov-report=html
+            ```
+
+            ### 3단계: 결과 확인
+
+            ```bash
+            # 커버리지 리포트 보기
+            open htmlcov/index.html
+            ```
+
+            ## 테스트 구현 가이드
+
+            각 테스트 파일에는 템플릿이 생성되어 있습니다. 다음 순서로 구현하세요:
+
+            1. **MATLAB 기준 데이터 생성 스크립트 완성**
+               - `tests/matlab_references/generate_*.m` 파일 수정
+               - 적절한 입력 데이터로 MATLAB 코드 실행
+               - 결과를 .mat 파일로 저장
+
+            2. **Python 테스트 구현**
+               - 동일한 입력으로 Python 코드 실행
+               - `compare_with_matlab()` 함수로 비교
+               - 필요시 추가 검증 로직 작성
+
+            3. **pytest 실행 및 디버깅**
+               - 실패한 테스트 분석
+               - 수치 오차 확인 (rtol 조정 필요 여부)
+               - 알고리즘 차이 확인
+
+            ## 예시: bemstat solve 테스트 구현
+
+            ### MATLAB 스크립트 (generate_bemstat_solve_reference.m)
+
+            ```matlab
+            function generate_bemstat_solve_reference()
+                addpath(genpath('../../'));
+
+                % Create test geometry
+                diameter = 30;  % nm
+                epstab = epstable('gold.dat');
+                p = comparticle({{epsconst(1), epstab}}, {{trisphere(144, diameter)}}, [2, 1], 1);
+
+                % Create BEM solver
+                bem = bemstat(p, 'waitbar', 0);
+
+                % Create excitation
+                enei = 600;  % nm
+                exc = planewavestat([0, 0, 1], [1, 0, 0]);
+
+                % Solve
+                sig = exc.potential(p, enei);
+                sig = bem \\ sig;
+
+                % Save
+                save('../../tests/references/bemstat_solve_ref.mat', 'sig', 'p', 'enei', '-v7.3');
+            end
+            ```
+
+            ### Python 테스트 (test_bem.py)
+
+            ```python
+            def test_bemstat_solve():
+                # Load MATLAB reference
+                ref = scipy.io.loadmat('tests/references/bemstat_solve_ref.mat')
+
+                # Create identical setup
+                diameter = 30
+                eps_gold = EpsTable('gold.dat')
+                p = ComParticle([EpsConst(1), eps_gold], [trisphere(144, diameter)], [2, 1])
+
+                # BEM solver
+                bem_stat = BEMStat(p)
+
+                # Excitation
+                enei = 600
+                exc = PlaneWaveStat([0, 0, 1], [1, 0, 0])
+
+                # Solve
+                sig = exc.potential(p, enei)
+                sig = bem_stat.solve(sig, enei)
+
+                # Compare
+                compare_with_matlab(sig, 'tests/references/bemstat_solve_ref.mat', 'sig')
+            ```
+
+            ## 팁
+
+            - MATLAB 1-based indexing → Python 0-based indexing 주의
+            - MATLAB struct → Python dict/object 변환 확인
+            - 복소수 배열 비교 시 real/imag 각각 확인
+            - 수치 안정성 문제 시 rtol 조정 (기본 1e-10)
+            '''))
+
+        print(f"✅ Generated {readme}")
+
+        print()
+        print("=" * 60)
+        print("✅ 테스트 스위트 생성 완료!")
+        print("=" * 60)
+        print(f"생성된 파일:")
+        print(f"  - 단위 테스트: {output_path / 'unit'}")
+        print(f"  - 통합 테스트: {output_path / 'integration'}")
+        print(f"  - MATLAB 스크립트: {matlab_dir}")
+        print(f"  - pytest 설정: {conftest}")
+        print(f"  - README: {readme}")
+
+
+def main():
+    """메인 실행 함수"""
+    import sys
+
+    if len(sys.argv) < 2:
+        mapping_file = '/home/user/MNPBEM/conversion_mapping.json'
+        output_dir = '/home/user/MNPBEM/tests'
+    else:
+        mapping_file = sys.argv[1]
+        output_dir = sys.argv[2] if len(sys.argv) > 2 else './tests'
+
+    print("=" * 60)
+    print("MATLAB vs Python 비교 테스트 생성 도구")
+    print("=" * 60)
+    print(f"Mapping file: {mapping_file}")
+    print(f"Output dir: {output_dir}")
+    print()
+
+    generator = TestGenerator(mapping_file)
+
+    print(f"변환된 항목: {len(generator.converted)}개")
+    print()
+
+    generator.generate_test_suite(output_dir)
+
+
+if __name__ == '__main__':
+    main()
