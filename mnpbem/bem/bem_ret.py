@@ -222,19 +222,159 @@ class BEMRet:
 
         return self
 
+    def _excitation(self, exc):
+        """
+        Process excitation to get phi, a, alpha, De.
+
+        MATLAB: bemret/private/excitation.m
+
+        Parameters
+        ----------
+        exc : dict
+            Excitation with fields phi1, phi2, a1, a2, phi1p, phi2p, a1p, a2p
+
+        Returns
+        -------
+        phi, a, alpha, De : ndarray
+            Processed excitation variables for BEM equations
+        """
+        enei = exc['enei']
+
+        # Default values for potentials
+        nfaces = self.p.nfaces
+
+        # Helper to get field with default of 0
+        def get_field(name, default_shape=None):
+            val = exc.get(name, 0)
+            if isinstance(val, np.ndarray):
+                return val
+            elif val == 0 and default_shape is not None:
+                return np.zeros(default_shape, dtype=complex)
+            return val
+
+        # Get potential values with defaults of 0
+        phi1 = get_field('phi1')
+        phi1p = get_field('phi1p')
+        a1 = get_field('a1')
+        a1p = get_field('a1p')
+        phi2 = get_field('phi2')
+        phi2p = get_field('phi2p')
+        a2 = get_field('a2')
+        a2p = get_field('a2p')
+
+        # Wavenumber of light in vacuum
+        k = 2 * np.pi / enei
+
+        # Dielectric functions
+        eps1 = self.p.eps1(enei)  # (nfaces,)
+        eps2 = self.p.eps2(enei)  # (nfaces,)
+
+        # Outer surface normal
+        nvec = self.nvec
+
+        # External excitation - Garcia de Abajo and Howie, PRB 65, 115418 (2002)
+
+        # Eqs. (10,11): potential jumps
+        phi = self._subtract(phi2, phi1)
+        a = self._subtract(a2, a1)
+
+        # Eq. (15): alpha = a2p - a1p - 1i*k*(outer(nvec, phi2)*eps2 - outer(nvec, phi1)*eps1)
+        outer_term2 = self._outer_eps(nvec, phi2, eps2)
+        outer_term1 = self._outer_eps(nvec, phi1, eps1)
+        alpha = self._subtract(a2p, a1p) - 1j * k * self._subtract(outer_term2, outer_term1)
+
+        # Eq. (18): De = eps2*phi2p - eps1*phi1p - 1i*k*(inner(nvec,a2)*eps2 - inner(nvec,a1)*eps1)
+        matmul_term2 = self._matmul_eps(eps2, phi2p)
+        matmul_term1 = self._matmul_eps(eps1, phi1p)
+        inner_term2 = self._inner_eps(nvec, a2, eps2)
+        inner_term1 = self._inner_eps(nvec, a1, eps1)
+
+        De = self._subtract(matmul_term2, matmul_term1) - 1j * k * self._subtract(inner_term2, inner_term1)
+
+        return phi, a, alpha, De
+
+    def _subtract(self, a, b):
+        """Subtract b from a, handling scalars and arrays."""
+        if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+            return a - b
+        elif isinstance(a, np.ndarray):
+            if b == 0:
+                return a
+            return a - b
+        elif isinstance(b, np.ndarray):
+            if a == 0:
+                return -b
+            return a - b
+        else:
+            return a - b
+
+    def _outer_eps(self, nvec, phi, eps):
+        """Compute outer(nvec, phi) * eps. Returns (nfaces, 3) or (nfaces, 3, npol)."""
+        if isinstance(phi, np.ndarray):
+            if phi.ndim == 1:
+                # phi is (nfaces,), eps is (nfaces,)
+                return nvec * (phi * eps)[:, np.newaxis]  # (nfaces, 3)
+            else:
+                # phi is (nfaces, npol)
+                npol = phi.shape[1]
+                result = np.zeros((len(nvec), 3, npol), dtype=complex)
+                for ipol in range(npol):
+                    result[:, :, ipol] = nvec * (phi[:, ipol] * eps)[:, np.newaxis]
+                return result
+        elif phi == 0:
+            return 0
+        else:
+            return nvec * (phi * eps)
+
+    def _inner_eps(self, nvec, a, eps):
+        """Compute inner(nvec, a) * eps. Returns (nfaces,) or (nfaces, npol)."""
+        if isinstance(a, np.ndarray) and a.ndim >= 2:
+            if a.ndim == 2:
+                # a is (nfaces, 3), nvec is (nfaces, 3)
+                dot = np.sum(nvec * a, axis=1)  # (nfaces,)
+                return dot * eps
+            else:
+                # a is (nfaces, 3, npol)
+                npol = a.shape[2]
+                result = np.zeros((len(nvec), npol), dtype=complex)
+                for ipol in range(npol):
+                    dot = np.sum(nvec * a[:, :, ipol], axis=1)
+                    result[:, ipol] = dot * eps
+                return result
+        elif isinstance(a, np.ndarray) and a.size == 0:
+            return 0
+        elif not isinstance(a, np.ndarray) and a == 0:
+            return 0
+        else:
+            return 0
+
+    def _matmul_eps(self, eps, phi_p):
+        """Compute eps * phi_p (element-wise for diagonal eps)."""
+        if isinstance(phi_p, np.ndarray):
+            if phi_p.ndim == 1:
+                return eps * phi_p
+            else:
+                # (nfaces, npol)
+                return eps[:, np.newaxis] * phi_p
+        elif phi_p == 0:
+            return 0
+        else:
+            return eps * phi_p
+
     def solve(self, exc):
         """
         Solve BEM equations for given excitation.
 
         Computes surface charges and currents from external fields.
-        Follows MATLAB bemret/mldivide.m exactly.
+        MATLAB: bemret/mldivide.m
 
         Parameters
         ----------
-        exc : dict or object
-            Excitation object with fields:
+        exc : dict
+            Excitation dictionary with fields:
                 - enei : wavelength/energy
-                - phi, a, alpha, De : excitation potentials/fields
+                - phi1, phi2, a1, a2 : potentials (optional, default 0)
+                - phi1p, phi2p, a1p, a2p : potential derivatives
 
         Returns
         -------
@@ -249,14 +389,14 @@ class BEMRet:
         -----
         This implements Equations (19-20) from Garcia de Abajo & Howie (2002).
         """
-        # Initialize at excitation energy if needed
-        self.init(exc.enei)
+        enei = exc['enei']
 
-        # Extract excitation fields
-        phi = exc.phi
-        a = exc.a
-        alpha = exc.alpha
-        De = exc.De
+        # Initialize at excitation energy if needed
+        self.init(enei)
+
+        # Compute excitation variables from raw inputs
+        # MATLAB: [phi, a, alpha, De] = excitation(obj, exc)
+        phi, a, alpha, De = self._excitation(exc)
 
         # Get stored variables
         k = self.k
@@ -268,49 +408,138 @@ class BEMRet:
         Sigma1 = self.Sigma1
         Deltai = self.Deltai
         Sigmai = self.Sigmai
+        nfaces = self.p.nfaces
 
-        # Modify alpha and De [Eqs. before (19)]
-        if np.isscalar(L1):
-            L1_phi = L1 * phi
-            L1_a = L1 * a
+        # Ensure phi, a have proper shapes
+        if not isinstance(phi, np.ndarray) or phi.ndim == 0 or (isinstance(phi, np.ndarray) and phi.size == 1 and phi == 0):
+            phi = np.zeros(nfaces, dtype=complex)
+        if not isinstance(a, np.ndarray) or a.ndim == 0 or (isinstance(a, np.ndarray) and a.size == 1 and a == 0):
+            a = np.zeros((nfaces, 3), dtype=complex)
+        if not isinstance(alpha, np.ndarray):
+            alpha = np.zeros((nfaces, 3), dtype=complex)
+        if not isinstance(De, np.ndarray):
+            De = np.zeros(nfaces, dtype=complex)
+
+        # Determine number of polarizations from array with most dimensions
+        npol = 1
+        if isinstance(a, np.ndarray) and a.ndim == 3:
+            npol = a.shape[2]
+        elif isinstance(alpha, np.ndarray) and alpha.ndim == 3:
+            npol = alpha.shape[2]
+        elif isinstance(phi, np.ndarray) and phi.ndim == 2:
+            npol = phi.shape[1]
+        elif isinstance(De, np.ndarray) and De.ndim == 2:
+            npol = De.shape[1]
+
+        # Squeeze arrays if npol == 1 (single polarization case)
+        if npol == 1:
+            if isinstance(a, np.ndarray) and a.ndim == 3:
+                a = a[:, :, 0]
+            if isinstance(alpha, np.ndarray) and alpha.ndim == 3:
+                alpha = alpha[:, :, 0]
+            if isinstance(phi, np.ndarray) and phi.ndim == 2:
+                phi = phi[:, 0]
+            if isinstance(De, np.ndarray) and De.ndim == 2:
+                De = De[:, 0]
+
+        # Allocate output arrays
+        if npol == 1:
+            sig1_all = np.zeros(nfaces, dtype=complex)
+            sig2_all = np.zeros(nfaces, dtype=complex)
+            h1_all = np.zeros((nfaces, 3), dtype=complex)
+            h2_all = np.zeros((nfaces, 3), dtype=complex)
+
+            # Modify alpha and De [Eqs. before (19)]
+            # MATLAB: L1_phi = matmul(L1, phi)
+            if np.isscalar(L1):
+                L1_phi = L1 * phi
+                L1_a = L1 * a
+            else:
+                L1_phi = L1 @ phi
+                L1_a = L1 @ a
+
+            # alpha = alpha - matmul(Sigma1, a) + 1i*k*outer(nvec, L1*phi)
+            alpha_mod = alpha - (Sigma1 @ a) + 1j * k * (nvec * L1_phi[:, np.newaxis])
+            # De = De - matmul(Sigma1, matmul(L1, phi)) + 1i*k*inner(nvec, L1*a)
+            if np.isscalar(L1):
+                De_mod = De - Sigma1 @ (L1 * phi) + 1j * k * np.sum(nvec * L1_a, axis=1)
+            else:
+                De_mod = De - Sigma1 @ L1 @ phi + 1j * k * np.sum(nvec * L1_a, axis=1)
+
+            # Eq. (19): surface charge
+            L_diff = L1 - L2
+            if np.isscalar(L_diff):
+                inner_term = np.sum(nvec * (L_diff * (Deltai @ alpha_mod)), axis=1)
+            else:
+                inner_term = np.sum(nvec * (L_diff @ (Deltai @ alpha_mod)), axis=1)
+
+            sig2 = Sigmai @ (De_mod + 1j * k * inner_term)
+
+            # Eq. (20): surface current
+            if np.isscalar(L_diff):
+                outer_term = nvec * (L_diff * sig2)[:, np.newaxis]
+            else:
+                outer_term = nvec * (L_diff @ sig2)[:, np.newaxis]
+            h2 = Deltai @ (1j * k * outer_term + alpha_mod)
+
+            # Surface charges and currents [from Eqs. (10-11)]
+            sig1_all = G1i @ (sig2 + phi)
+            h1_all = G1i @ (h2 + a)
+            sig2_all = G2i @ sig2
+            h2_all = G2i @ h2
+
         else:
-            L1_phi = L1 @ phi
-            L1_a = L1 @ a
+            # Multiple polarizations
+            sig1_all = np.zeros((nfaces, npol), dtype=complex)
+            sig2_all = np.zeros((nfaces, npol), dtype=complex)
+            h1_all = np.zeros((nfaces, 3, npol), dtype=complex)
+            h2_all = np.zeros((nfaces, 3, npol), dtype=complex)
 
-        # MATLAB: alpha = alpha - Sigma1*a + 1i*k*outer(nvec, L1*phi)
-        alpha_mod = alpha - Sigma1 @ a + 1j * k * np.outer(nvec, L1_phi).T
-        # MATLAB: De = De - Sigma1*L1*phi + 1i*k*inner(nvec, L1*a)
-        De_mod = De - Sigma1 @ L1_phi + 1j * k * np.sum(nvec * L1_a[:, np.newaxis], axis=1)
+            for ipol in range(npol):
+                phi_i = phi[:, ipol] if phi.ndim > 1 else phi
+                a_i = a[:, :, ipol] if a.ndim > 2 else a
+                alpha_i = alpha[:, :, ipol] if alpha.ndim > 2 else alpha
+                De_i = De[:, ipol] if De.ndim > 1 else De
 
-        # Eq. (19): surface charge
-        L_diff = L1 - L2
+                # Same computation as single polarization
+                if np.isscalar(L1):
+                    L1_phi = L1 * phi_i
+                    L1_a = L1 * a_i
+                else:
+                    L1_phi = L1 @ phi_i
+                    L1_a = L1 @ a_i
 
-        if np.isscalar(L_diff):
-            nvec_dot_term = np.sum(nvec * (L_diff * Deltai @ alpha_mod)[:, np.newaxis], axis=1)
-        else:
-            nvec_dot_term = np.sum(nvec * (L_diff @ Deltai @ alpha_mod)[:, np.newaxis], axis=1)
+                alpha_mod = alpha_i - (Sigma1 @ a_i) + 1j * k * (nvec * L1_phi[:, np.newaxis])
+                if np.isscalar(L1):
+                    De_mod = De_i - Sigma1 @ (L1 * phi_i) + 1j * k * np.sum(nvec * L1_a, axis=1)
+                else:
+                    De_mod = De_i - Sigma1 @ L1 @ phi_i + 1j * k * np.sum(nvec * L1_a, axis=1)
 
-        sig2 = Sigmai @ (De_mod + 1j * k * nvec_dot_term)
+                L_diff = L1 - L2
+                if np.isscalar(L_diff):
+                    inner_term = np.sum(nvec * (L_diff * (Deltai @ alpha_mod)), axis=1)
+                else:
+                    inner_term = np.sum(nvec * (L_diff @ (Deltai @ alpha_mod)), axis=1)
 
-        # Eq. (20): surface current
-        if np.isscalar(L_diff):
-            L_diff_sig2 = L_diff * sig2
-        else:
-            L_diff_sig2 = L_diff @ sig2
-        h2 = Deltai @ (1j * k * np.outer(nvec, L_diff_sig2).T + alpha_mod)
+                sig2 = Sigmai @ (De_mod + 1j * k * inner_term)
 
-        # Surface charges and currents [from Eqs. (10-11)]
-        sig1 = G1i @ (sig2 + phi)
-        h1 = G1i @ (h2 + a)
-        sig2_out = G2i @ sig2
-        h2_out = G2i @ h2
+                if np.isscalar(L_diff):
+                    outer_term = nvec * (L_diff * sig2)[:, np.newaxis]
+                else:
+                    outer_term = nvec * (L_diff @ sig2)[:, np.newaxis]
+                h2 = Deltai @ (1j * k * outer_term + alpha_mod)
+
+                sig1_all[:, ipol] = G1i @ (sig2 + phi_i)
+                h1_all[:, :, ipol] = G1i @ (h2 + a_i)
+                sig2_all[:, ipol] = G2i @ sig2
+                h2_all[:, :, ipol] = G2i @ h2
 
         return {
-            'sig1': sig1,
-            'sig2': sig2_out,
-            'h1': h1,
-            'h2': h2_out,
-            'enei': exc.enei,
+            'sig1': sig1_all,
+            'sig2': sig2_all,
+            'h1': h1_all,
+            'h2': h2_all,
+            'enei': enei,
             'p': self.p
         }
 
