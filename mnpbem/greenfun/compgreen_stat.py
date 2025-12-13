@@ -144,6 +144,80 @@ class CompGreenStat:
             np.fill_diagonal(H2, np.diag(self.F) - 2.0 * np.pi)
         return H2
 
+    def _compute_Gp(self):
+        """
+        Compute Cartesian derivative of Green function.
+
+        MATLAB greenstat/eval1.m (case 'cart'):
+            Gp = -[x/d³, y/d³, z/d³] * area
+        """
+        if hasattr(self, '_Gp'):
+            return self._Gp
+
+        pos1 = self.p1.pos
+        pos2 = self.p2.pos
+        area2 = self.p2.area
+
+        # Position difference: r[i,j,:] = pos1[i] - pos2[j]
+        r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]  # (n1, n2, 3)
+        d = np.linalg.norm(r, axis=2)
+        d = np.maximum(d, np.finfo(float).eps)
+
+        # Gp[i,j,:] = -r[i,j,:] / d[i,j]³ * area[j]
+        # Shape: (n1, n2, 3)
+        Gp = -r / (d[:, :, np.newaxis] ** 3) * area2[np.newaxis, :, np.newaxis]
+
+        # Reshape to (n1, 3, n2) to match MATLAB convention
+        self._Gp = np.transpose(Gp, (0, 2, 1))
+
+        return self._Gp
+
+    def H1p(self):
+        """
+        Return H1p matrix: Gp + 2π*outer(nvec, d==0).
+
+        MATLAB greenstat/eval1.m:
+            H1p = Gp + 2*pi*outer(nvec, d==0)
+
+        Returns
+        -------
+        H1p : ndarray, shape (n1, 3, n2)
+            Cartesian derivative + 2π term on diagonal
+        """
+        Gp = self._compute_Gp()
+        H1p = Gp.copy()
+
+        if self.p1 is self.p2:
+            # Add 2π * nvec[i] for diagonal elements (i == j)
+            nvec = self.p1.nvec
+            for i in range(len(nvec)):
+                H1p[i, :, i] += 2 * np.pi * nvec[i]
+
+        return H1p
+
+    def H2p(self):
+        """
+        Return H2p matrix: Gp - 2π*outer(nvec, d==0).
+
+        MATLAB greenstat/eval1.m:
+            H2p = Gp - 2*pi*outer(nvec, d==0)
+
+        Returns
+        -------
+        H2p : ndarray, shape (n1, 3, n2)
+            Cartesian derivative - 2π term on diagonal
+        """
+        Gp = self._compute_Gp()
+        H2p = Gp.copy()
+
+        if self.p1 is self.p2:
+            # Subtract 2π * nvec[i] for diagonal elements (i == j)
+            nvec = self.p1.nvec
+            for i in range(len(nvec)):
+                H2p[i, :, i] -= 2 * np.pi * nvec[i]
+
+        return H2p
+
     def __repr__(self):
         return (
             f"CompGreenStat(p1: {self.p1.nfaces} faces, "

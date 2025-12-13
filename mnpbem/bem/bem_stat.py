@@ -192,13 +192,125 @@ class BEMStat:
         self.init(enei)
 
         # Solve: σ = mat · φₚ
-        sig = self.mat @ phip
+        # Handle multi-dimensional phip (e.g., from DipoleStat with shape (nfaces, npt, ndip))
+        if phip.ndim == 1:
+            # (nfaces,) -> (nfaces,)
+            sig = self.mat @ phip
+        elif phip.ndim == 2:
+            # (nfaces, npol) -> (nfaces, npol)
+            sig = self.mat @ phip
+        else:
+            # (nfaces, npt, ndip) or higher dimensions
+            # Use einsum: result[i, j, k, ...] = sum_m mat[i, m] * phip[m, j, k, ...]
+            original_shape = phip.shape
+            nfaces = original_shape[0]
+            # Reshape to (nfaces, -1)
+            phip_reshaped = phip.reshape(nfaces, -1)
+            sig_reshaped = self.mat @ phip_reshaped
+            # Reshape back
+            sig = sig_reshaped.reshape(original_shape)
 
         return {
             'sig': sig,
             'enei': enei,
             'p': self.p
         }
+
+    def field(self, sig, inout=2):
+        """
+        Compute electric field inside/outside of particle surface.
+
+        MATLAB: bemstat/field.m
+
+        Parameters
+        ----------
+        sig : dict
+            Solution containing 'sig' (surface charges), 'enei', 'p'
+        inout : int, optional
+            1 for inside, 2 for outside (default: 2)
+
+        Returns
+        -------
+        field : dict
+            Dictionary with 'e' electric field, shape (nfaces, 3) or (nfaces, 3, npol)
+        """
+        surface_charge = sig['sig']
+        enei = sig['enei']
+
+        # Compute electric field from Green function derivative
+        # MATLAB: e = -matmul(Hp, sig.sig)
+        # Hp has shape (n1, 3, n2), sig has shape (n2,) or (n2, npol)
+        if inout == 1:
+            # Inside: use H1p (derivative toward inside)
+            Hp = self.green.H1p()  # (n1, 3, n2)
+        else:
+            # Outside: use H2p (derivative toward outside)
+            Hp = self.green.H2p()  # (n1, 3, n2)
+
+        # Electric field: e = -Hp @ sig
+        # Result: (n1, 3) or (n1, 3, npol)
+        if surface_charge.ndim == 1:
+            # Single polarization: e[i, xyz] = -sum_j Hp[i, xyz, j] * sig[j]
+            e = -np.einsum('ijk,k->ij', Hp, surface_charge)
+        else:
+            # Multiple polarizations: e[i, xyz, pol] = -sum_j Hp[i, xyz, j] * sig[j, pol]
+            e = -np.einsum('ijk,kp->ijp', Hp, surface_charge)
+
+        return {
+            'e': e,
+            'enei': enei,
+            'p': self.p
+        }
+
+    def potential(self, sig, inout=2):
+        """
+        Compute potential and surface derivative inside/outside of particle.
+
+        MATLAB: bemstat/potential.m
+
+        Parameters
+        ----------
+        sig : dict
+            Solution containing 'sig' (surface charges), 'enei', 'p'
+        inout : int, optional
+            1 for inside, 2 for outside (default: 2)
+
+        Returns
+        -------
+        pot : dict
+            Dictionary with potential and surface derivative:
+            - phi1/phi2: scalar potential
+            - phi1p/phi2p: surface derivative
+        """
+        surface_charge = sig['sig']
+        enei = sig['enei']
+
+        # Get Green function and surface derivative
+        G = self.green.G
+
+        if inout == 1:
+            H = self.green.H1()
+        else:
+            H = self.green.H2()
+
+        # Potential and surface derivative
+        phi = G @ surface_charge
+        phip = H @ surface_charge
+
+        if inout == 1:
+            return {
+                'phi1': phi,
+                'phi1p': phip,
+                'enei': enei,
+                'p': self.p
+            }
+        else:
+            return {
+                'phi2': phi,
+                'phi2p': phip,
+                'enei': enei,
+                'p': self.p
+            }
 
     def __call__(self, enei):
         """
