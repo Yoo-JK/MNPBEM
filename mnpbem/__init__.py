@@ -15,19 +15,21 @@ Main modules:
 
 __version__ = "0.1.0"
 
-from .materials import EpsConst, EpsTable
-from .geometry import Particle, ComParticle, trisphere
+from .materials import EpsConst, EpsTable, EpsDrude
+from .geometry import Particle, ComParticle, ComPoint, trisphere
 from .greenfun import CompGreenStat, CompGreenRet
 from .bem import BEMStat, BEMRet
-from .excitation import PlaneWaveStat, PlaneWaveRet, DipoleStat, DipoleRet
-from .spectrum import SpectrumRet
+from .simulation import PlaneWaveStat, PlaneWaveRet, DipoleStat, DipoleRet
+from .spectrum import SpectrumRet, SpectrumStat
 from .utils.constants import EV2NM
 
 __all__ = [
     "EpsConst",
     "EpsTable",
+    "EpsDrude",
     "Particle",
     "ComParticle",
+    "ComPoint",
     "trisphere",
     "CompGreenStat",
     "CompGreenRet",
@@ -38,5 +40,6 @@ __all__ = [
     "DipoleStat",
     "DipoleRet",
     "SpectrumRet",
+    "SpectrumStat",
     "EV2NM",
 ]
