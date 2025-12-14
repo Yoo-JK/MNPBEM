@@ -16,8 +16,8 @@ Main modules:
 __version__ = "0.1.0"
 
 from .materials import EpsConst, EpsTable, EpsDrude
-from .geometry import Particle, ComParticle, ComPoint, trisphere
-from .greenfun import CompGreenStat, CompGreenRet
+from .geometry import Particle, ComParticle, trisphere
+from .greenfun import CompGreenStat, CompGreenRet, CompStruct
 from .bem import BEMStat, BEMRet
 from .simulation import PlaneWaveStat, PlaneWaveRet, DipoleStat, DipoleRet
 from .spectrum import SpectrumRet, SpectrumStat
@@ -29,10 +29,10 @@ __all__ = [
     "EpsDrude",
     "Particle",
     "ComParticle",
-    "ComPoint",
     "trisphere",
     "CompGreenStat",
     "CompGreenRet",
+    "CompStruct",
     "BEMStat",
     "BEMRet",
     "PlaneWaveStat",
