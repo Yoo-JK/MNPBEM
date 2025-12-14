@@ -2,11 +2,12 @@
 Excitation module for MNPBEM.
 
 Provides plane wave and dipole excitation classes for BEM simulations.
+
+Note: All excitation classes are now in the simulation module.
+For backward compatibility, they are imported here.
 """
 
-from .planewave_stat import PlaneWaveStat
-from .planewave_ret import PlaneWaveRet
-from .dipole_stat import DipoleStat
-from .dipole_ret import DipoleRet
+# Import all excitation classes from simulation module
+from ..simulation import PlaneWaveStat, PlaneWaveRet, DipoleStat, DipoleRet
 
 __all__ = ['PlaneWaveStat', 'PlaneWaveRet', 'DipoleStat', 'DipoleRet']
