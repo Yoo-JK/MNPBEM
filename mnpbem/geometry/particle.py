@@ -840,7 +840,7 @@ class Particle:
             phi = np.arctan2(y, x)
             r = np.sqrt(x**2 + y**2 + z**2)
             theta = np.arctan2(np.sqrt(x**2 + y**2), z)
-            idx = np.where(sphfun(phi, theta, r))[0]
+            idx = np.where(sphfun(phi, np.pi/2 - theta, r))[0]
         else:
             raise ValueError("Must specify index, carfun, polfun, or sphfun")
 
@@ -1521,6 +1521,436 @@ class Particle:
         # Simplified: just use linear midpoints
         self._midpoints('flat')
 
+    def _vertex_neighbours(self):
+        """
+        Find neighboring vertices for each vertex.
+
+        MATLAB: vertex_neighbours.m
+
+        Returns
+        -------
+        neighbours : list of ndarray
+            List where neighbours[i] contains indices of vertices adjacent to vertex i
+        """
+        # Only works with triangular faces
+        ind3, ind4 = self.index34()
+
+        if len(ind4) > 0:
+            # Convert quads to triangles for neighbor finding
+            faces_tri, _ = self._totriangles_flat()
+        else:
+            faces_tri = self.faces[:, :3]
+
+        faces_tri = faces_tri.astype(int)
+
+        # Neighbor cell array
+        neighbours = [[] for _ in range(self.nverts)]
+
+        # Loop through all faces
+        for face in faces_tri:
+            if not np.isnan(face).any():
+                v1, v2, v3 = face[:3]
+                # Add neighbors for each vertex
+                neighbours[v1].extend([v2, v3])
+                neighbours[v2].extend([v3, v1])
+                neighbours[v3].extend([v1, v2])
+
+        # Sort neighbors in rotational order
+        for i in range(self.nverts):
+            if not neighbours[i]:
+                neighbours[i] = np.array([], dtype=int)
+                continue
+
+            neigh_flat = np.array(neighbours[i])
+
+            # Find starting edge (for boundary vertices)
+            start = 0
+            for idx in range(0, len(neigh_flat), 2):
+                found = False
+                for idx2 in range(1, len(neigh_flat), 2):
+                    if neigh_flat[idx] == neigh_flat[idx2]:
+                        found = True
+                        break
+                if not found:
+                    start = idx
+                    break
+
+            # Build ordered neighbor list
+            ordered = []
+            if len(neigh_flat) >= 2:
+                ordered.append(neigh_flat[start])
+                ordered.append(neigh_flat[start + 1])
+
+                # Add remaining neighbors in rotational order
+                for _ in range(len(neigh_flat) // 2 - 1):
+                    found = False
+                    for idx in range(0, len(neigh_flat), 2):
+                        if neigh_flat[idx] == ordered[-1]:
+                            if neigh_flat[idx + 1] not in ordered:
+                                ordered.append(neigh_flat[idx + 1])
+                                found = True
+                                break
+                    if not found:
+                        # Handle boundary vertices
+                        for val in neigh_flat:
+                            if val not in ordered:
+                                ordered.append(val)
+
+            neighbours[i] = np.array(ordered, dtype=int)
+
+        return neighbours
+
+    def _edge_tangents(self, neighbours):
+        """
+        Compute edge tangent vectors and velocities.
+
+        MATLAB: edge_tangents.m
+
+        Parameters
+        ----------
+        neighbours : list of ndarray
+            Neighbor list from _vertex_neighbours
+
+        Returns
+        -------
+        tangents : ndarray, shape (n_edges, 3)
+            Tangent vectors for each edge
+        velocities : ndarray, shape (n_edges,)
+            Edge velocities
+        edge_index : ndarray, shape (n_edges, 2)
+            Edge vertex indices [v1, v2]
+        """
+        tangents = []
+        velocities = []
+        edge_index = []
+
+        for i in range(self.nverts):
+            P = self.verts[i]
+            Pneig_idx = neighbours[i]
+
+            if len(Pneig_idx) == 0:
+                continue
+
+            # Find opposite vertices
+            n_neigh = len(Pneig_idx)
+            Pn = np.zeros((n_neigh, 3))
+            Pnop = np.zeros((n_neigh, 3))
+
+            for k in range(n_neigh):
+                Pn[k] = self.verts[Pneig_idx[k]]
+
+                if n_neigh % 2 == 0:
+                    # Even number of neighbors
+                    opp_idx = (k + n_neigh // 2) % n_neigh
+                    Pnop[k] = self.verts[Pneig_idx[opp_idx]]
+                else:
+                    # Odd number - interpolate
+                    opp = k + n_neigh / 2
+                    idx1 = int(np.floor(opp)) % n_neigh
+                    idx2 = int(np.ceil(opp)) % n_neigh
+                    Pnop[k] = 0.5 * (self.verts[Pneig_idx[idx1]] +
+                                     self.verts[Pneig_idx[idx2]])
+
+            # Compute tangent for each edge
+            for j in range(n_neigh):
+                # Edge lengths
+                Ec = np.linalg.norm(Pn[j] - P) + 1e-14
+                Eb = np.linalg.norm(Pnop[j] - P) + 1e-14
+                Ea = np.linalg.norm(Pn[j] - Pnop[j]) + 1e-14
+
+                # Triangle area using Heron's formula
+                s = (Ea + Eb + Ec) / 2
+                h = (2 / Ea) * np.sqrt(s * (s - Ea) * (s - Eb) * (s - Ec)) + 1e-14
+                x = (Ea**2 - Eb**2 + Ec**2) / (2 * Ea)
+
+                # 2D triangle tangent
+                Np = np.array([-h, x])
+                Np = Np / (np.linalg.norm(Np) + 1e-14)
+                Ns = np.array([h, Ea - x])
+                Ns = Ns / (np.linalg.norm(Ns) + 1e-14)
+                Nb = Np + Ns
+                Tb = np.array([Nb[1], -Nb[0]])
+
+                # Back to 3D coordinates
+                Pm = (Pn[j] * x + Pnop[j] * (Ea - x)) / Ea
+                X3 = (Pn[j] - Pnop[j]) / Ea
+                Y3 = (P - Pm) / h
+
+                # 2D tangent to 3D tangent
+                Tb3D = X3 * Tb[0] + Y3 * Tb[1]
+                Tb3D = Tb3D / (np.linalg.norm(Tb3D) + 1e-14)
+
+                # Edge velocity
+                Vv = 0.5 * (Ec + 0.5 * Ea)
+
+                tangents.append(Tb3D)
+                velocities.append(Vv)
+                edge_index.append([i, Pneig_idx[j]])
+
+        return (np.array(tangents), np.array(velocities),
+                np.array(edge_index, dtype=int))
+
+    def _make_halfway_vertices(self, tangents, velocities, edge_index, neighbours):
+        """
+        Create halfway vertices using B-spline interpolation.
+
+        MATLAB: make_halfway_vertices.m
+
+        Returns
+        -------
+        verts_out : ndarray
+            Extended vertex array including halfway points
+        halfway_map : dict
+            Map from edge tuple to halfway vertex index
+        """
+        # Build edge lookup
+        edge_lookup = {}
+        for idx, (v1, v2) in enumerate(edge_index):
+            edge_lookup[(v1, v2)] = idx
+
+        verts_out = [self.verts.copy()]
+        halfway_map = {}
+
+        for i in range(self.nverts):
+            Pneig = neighbours[i]
+
+            for j in Pneig:
+                edge = tuple(sorted([i, j]))
+                if edge in halfway_map:
+                    continue
+
+                # Get tangent and velocity for edge i -> j
+                if (i, j) in edge_lookup:
+                    idx_a = edge_lookup[(i, j)]
+                    Va, Ea = velocities[idx_a], tangents[idx_a]
+                else:
+                    Va, Ea = 0, np.zeros(3)
+
+                # Get tangent and velocity for edge j -> i
+                if (j, i) in edge_lookup:
+                    idx_b = edge_lookup[(j, i)]
+                    Vb, Eb = velocities[idx_b], tangents[idx_b]
+                else:
+                    Vb, Eb = 0, np.zeros(3)
+
+                # B-spline control points
+                P0 = self.verts[i]
+                P3 = self.verts[j]
+                P1 = P0 + Ea * Va / 3
+                P2 = P3 + Eb * Vb / 3
+
+                # Cubic Bezier at t=0.5
+                c = 3 * (P1 - P0)
+                b = 3 * (P2 - P1) - c
+                a = P3 - P0 - c - b
+
+                halfway = a * 0.125 + b * 0.25 + c * 0.5 + P0
+
+                halfway_idx = len(verts_out[0]) + len(halfway_map)
+                halfway_map[edge] = halfway_idx
+                verts_out.append(halfway[np.newaxis, :])
+
+        return np.vstack(verts_out), halfway_map
+
+    def _makenewfacelist(self, halfway_map):
+        """
+        Create new face list using 4-split method.
+
+        MATLAB: makenewfacelist.m
+
+        Parameters
+        ----------
+        halfway_map : dict
+            Map from edge tuple to halfway vertex index
+
+        Returns
+        -------
+        faces_new : ndarray
+            New refined face list (4x original faces)
+        """
+        ind3, _ = self.index34()
+
+        if len(ind3) == 0:
+            return self.faces
+
+        faces_new = []
+
+        for i in ind3:
+            face = self.faces[i, :3].astype(int)
+            v1, v2, v3 = face
+
+            # Get halfway vertices
+            e12 = tuple(sorted([v1, v2]))
+            e23 = tuple(sorted([v2, v3]))
+            e31 = tuple(sorted([v3, v1]))
+
+            va = halfway_map.get(e12, v1)
+            vb = halfway_map.get(e23, v2)
+            vc = halfway_map.get(e31, v3)
+
+            # Create 4 new triangles
+            faces_new.append([v1, va, vc])
+            faces_new.append([va, v2, vb])
+            faces_new.append([vc, vb, v3])
+            faces_new.append([va, vb, vc])
+
+        return np.array(faces_new)
+
+    # ==================== Curvature computation ====================
+
+    def curvature(self):
+        """
+        Compute curvature of discretized particle surface.
+
+        MATLAB: curvature(obj)
+
+        Returns
+        -------
+        curv : dict
+            Dictionary with curvature information:
+            - mean: Mean curvature at vertices
+            - gauss: Gaussian curvature at vertices
+            - dir1: First principal direction
+            - dir2: Second principal direction
+            - lambda1: First principal curvature
+            - lambda2: Second principal curvature
+
+        Note
+        ----
+        This is a simplified implementation. MATLAB version uses patchcurvature
+        which implements more sophisticated curvature estimation algorithms.
+        """
+        # Get triangular faces only
+        ind3, ind4 = self.index34()
+
+        # Convert to triangles
+        faces = self.faces[ind3, :3].copy()
+        if len(ind4) > 0:
+            # Split quads into triangles
+            quad_faces = self.faces[ind4, :4]
+            tri1 = quad_faces[:, [0, 1, 2]]
+            tri2 = quad_faces[:, [2, 3, 0]]
+            faces = np.vstack([faces, tri1, tri2])
+
+        # Clean the mesh
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            temp_particle = Particle(self.verts, faces)
+            temp_particle = temp_particle.clean()
+
+        # Simplified curvature calculation using discrete operators
+        nverts = temp_particle.nverts
+        nfaces = temp_particle.nfaces
+
+        # Initialize outputs
+        mean_curv = np.zeros(nverts)
+        gauss_curv = np.zeros(nverts)
+        dir1 = np.zeros((nverts, 3))
+        dir2 = np.zeros((nverts, 3))
+        lambda1 = np.zeros(nverts)
+        lambda2 = np.zeros(nverts)
+
+        # Compute vertex normals by averaging face normals
+        vert_normals = np.zeros((nverts, 3))
+        vert_area = np.zeros(nverts)
+
+        for i in range(nfaces):
+            face = temp_particle.faces[i, :3].astype(int)
+            v0, v1, v2 = temp_particle.verts[face]
+
+            # Face normal (already computed in temp_particle.nvec)
+            normal = temp_particle.nvec[i]
+            area = temp_particle.area[i]
+
+            # Add weighted normal to each vertex
+            for v_idx in face:
+                vert_normals[v_idx] += normal * area
+                vert_area[v_idx] += area
+
+        # Normalize vertex normals
+        vert_area[vert_area == 0] = 1
+        vert_normals = vert_normals / vert_area[:, np.newaxis]
+        vert_normals = vert_normals / (np.linalg.norm(vert_normals, axis=1, keepdims=True) + 1e-14)
+
+        # Estimate curvature using angle defect and edge-based methods
+        neighbours = temp_particle._vertex_neighbours()
+
+        for i in range(nverts):
+            neigh = neighbours[i]
+            if len(neigh) < 3:
+                continue
+
+            # Local coordinate system
+            n = vert_normals[i]
+            p = temp_particle.verts[i]
+
+            # Create local tangent vectors
+            edge = temp_particle.verts[neigh[0]] - p
+            edge = edge - np.dot(edge, n) * n
+            edge_norm = np.linalg.norm(edge)
+            if edge_norm > 1e-10:
+                u = edge / edge_norm
+                v = np.cross(n, u)
+
+                # Compute mean curvature using edge-based method
+                H = 0
+                K = 2 * np.pi  # Start with full angle for Gaussian curvature
+                total_area = 0
+
+                for j in range(len(neigh)):
+                    v_j = temp_particle.verts[neigh[j]]
+                    edge_j = v_j - p
+                    len_j = np.linalg.norm(edge_j)
+
+                    if len_j > 1e-10:
+                        edge_j = edge_j / len_j
+                        # Angle with normal (for mean curvature)
+                        angle = np.arcsin(np.clip(np.dot(edge_j, n), -1, 1))
+                        H += angle * len_j
+
+                        # Angle defect for Gaussian curvature
+                        if j < len(neigh) - 1:
+                            v_next = temp_particle.verts[neigh[j + 1]]
+                            e1 = v_j - p
+                            e2 = v_next - p
+                            len_e1 = np.linalg.norm(e1)
+                            len_e2 = np.linalg.norm(e2)
+                            if len_e1 > 1e-10 and len_e2 > 1e-10:
+                                cos_angle = np.dot(e1, e2) / (len_e1 * len_e2)
+                                angle_at_vertex = np.arccos(np.clip(cos_angle, -1, 1))
+                                K -= angle_at_vertex
+                                total_area += 0.5 * len_e1 * len_e2 * np.sin(angle_at_vertex)
+
+                # Normalize
+                if total_area > 1e-10:
+                    mean_curv[i] = H / total_area
+                    gauss_curv[i] = K / total_area
+
+                # Principal curvatures from mean and Gaussian
+                H_val = mean_curv[i]
+                K_val = gauss_curv[i]
+                discriminant = H_val**2 - K_val
+                if discriminant >= 0:
+                    lambda1[i] = H_val + np.sqrt(discriminant)
+                    lambda2[i] = H_val - np.sqrt(discriminant)
+                else:
+                    lambda1[i] = H_val
+                    lambda2[i] = H_val
+
+                # Principal directions (simplified - use local coords)
+                dir1[i] = u
+                dir2[i] = v
+
+        return {
+            'mean': mean_curv,
+            'gauss': gauss_curv,
+            'dir1': dir1,
+            'dir2': dir2,
+            'lambda1': lambda1,
+            'lambda2': lambda2
+        }
+
     # ==================== Mesh cleaning ====================
 
     def clean(self, cutoff=1e-10):
@@ -1586,6 +2016,127 @@ class Particle:
 
         return self
 
+    # ==================== Derivatives ====================
+
+    def deriv(self, v):
+        """
+        Tangential derivative of function defined on surface.
+
+        MATLAB: [v1, v2, t1, t2] = deriv(obj, v)
+
+        Parameters
+        ----------
+        v : ndarray, shape (nverts,) or (nverts, n)
+            Function values given at vertices
+
+        Returns
+        -------
+        v1, v2 : ndarray
+            Derivatives along tvec at boundary centroids
+        t1, t2 : ndarray
+            Triangular or quadrilateral direction vectors
+        """
+        # Array size and reshape
+        v = np.atleast_2d(v)
+        if v.shape[0] == 1:
+            v = v.T
+        original_shape = v.shape
+        v_reshaped = v.reshape(v.shape[0], -1)
+
+        # Index to triangles and quadrilaterals
+        ind3, ind4 = self.index34()
+
+        n = self.nfaces
+        ncols = v_reshaped.shape[1]
+
+        # Initialize outputs
+        v1 = np.zeros((n, ncols))
+        v2 = np.zeros((n, ncols))
+        t1 = np.zeros((n, 3))
+        t2 = np.zeros((n, 3))
+
+        # Function derivative - triangles
+        if len(ind3) > 0:
+            # Linear triangle shape function derivatives at centroid (1/3, 1/3)
+            # dN/dy = [0, 1, -1]
+            # dN/dx = [1, 0, -1]
+            faces3 = self.faces[ind3, :3].astype(int)
+            v1[ind3] = (0 * v_reshaped[faces3[:, 0]] +
+                        1 * v_reshaped[faces3[:, 1]] +
+                        (-1) * v_reshaped[faces3[:, 2]])
+            v2[ind3] = (1 * v_reshaped[faces3[:, 0]] +
+                        0 * v_reshaped[faces3[:, 1]] +
+                        (-1) * v_reshaped[faces3[:, 2]])
+
+        # Function derivative - quadrilaterals
+        if len(ind4) > 0:
+            # Bilinear quad shape function derivatives at center (0, 0)
+            # dN/dy = [-0.25, -0.25, 0.25, 0.25]
+            # dN/dx = [-0.25, 0.25, 0.25, -0.25]
+            faces4 = self.faces[ind4, :4].astype(int)
+            v1[ind4] = (-0.25 * v_reshaped[faces4[:, 0]] +
+                        -0.25 * v_reshaped[faces4[:, 1]] +
+                        0.25 * v_reshaped[faces4[:, 2]] +
+                        0.25 * v_reshaped[faces4[:, 3]])
+            v2[ind4] = (-0.25 * v_reshaped[faces4[:, 0]] +
+                        0.25 * v_reshaped[faces4[:, 1]] +
+                        0.25 * v_reshaped[faces4[:, 2]] +
+                        -0.25 * v_reshaped[faces4[:, 3]])
+
+        # Tangential vectors - derivatives of position
+        if self.interp == 'flat':
+            # Flat boundary elements
+            if len(ind3) > 0:
+                faces3 = self.faces[ind3, :3].astype(int)
+                t1[ind3] = (0 * self.verts[faces3[:, 0]] +
+                           1 * self.verts[faces3[:, 1]] +
+                           (-1) * self.verts[faces3[:, 2]])
+                t2[ind3] = (1 * self.verts[faces3[:, 0]] +
+                           0 * self.verts[faces3[:, 1]] +
+                           (-1) * self.verts[faces3[:, 2]])
+
+            if len(ind4) > 0:
+                faces4 = self.faces[ind4, :4].astype(int)
+                t1[ind4] = (-0.25 * self.verts[faces4[:, 0]] +
+                           -0.25 * self.verts[faces4[:, 1]] +
+                           0.25 * self.verts[faces4[:, 2]] +
+                           0.25 * self.verts[faces4[:, 3]])
+                t2[ind4] = (-0.25 * self.verts[faces4[:, 0]] +
+                           0.25 * self.verts[faces4[:, 1]] +
+                           0.25 * self.verts[faces4[:, 2]] +
+                           -0.25 * self.verts[faces4[:, 3]])
+
+        else:  # curved
+            # Curved boundary elements
+            if len(ind3) > 0:
+                # 6-node triangle shape function derivatives at centroid
+                faces_idx = self.faces2[ind3][:, [0, 1, 2, 4, 5, 6]].astype(int)
+                # Use 6-node shape derivatives
+                dx, dy = self._tri6_deriv(np.array([1/3]), np.array([1/3]))
+                for i, idx in enumerate(ind3):
+                    face = faces_idx[i]
+                    t1[idx] = dy[0] @ self.verts2[face]
+                    t2[idx] = dx[0] @ self.verts2[face]
+
+            if len(ind4) > 0:
+                # 9-node quad shape function derivatives at center
+                faces_idx = self.faces2[ind4, :9].astype(int)
+                dx, dy = self._quad9_deriv(np.array([0]), np.array([0]))
+                for i, idx in enumerate(ind4):
+                    face = faces_idx[i]
+                    t1[idx] = dy[0] @ self.verts2[face]
+                    t2[idx] = dx[0] @ self.verts2[face]
+
+        # Reshape output arrays
+        if original_shape[1] == 1 or len(original_shape) == 1:
+            v1 = v1.flatten()
+            v2 = v2.flatten()
+        else:
+            v1 = v1.reshape(n, *original_shape[1:])
+            v2 = v2.reshape(n, *original_shape[1:])
+
+        return v1, v2, t1, t2
+
     # ==================== Interpolation ====================
 
     def interp_values(self, v, method='area'):
@@ -1650,36 +2201,6 @@ class Particle:
                         cols.extend(faces3[:, j].tolist())
                         data.extend([1/3] * len(ind3))
 
-        # Store as list (matching MATLAB cell array structure: obj.vec = {vec1, vec2, nvec})
-        # MATLAB uses 1-based indexing: vec{1}, vec{2}, vec{3}
-        # Python uses 0-based indexing: vec[0], vec[1], vec[2]
-        vec1_array = np.array(all_vec1)
-        vec2_array = np.array(all_vec2)
-        nvec_array = np.array(all_nvec)
-
-        self.vec = [vec1_array, vec2_array, nvec_array]
-        self.area = np.array(all_area)
-
-    # Properties matching MATLAB subsref interface
-    @property
-    def nvec(self):
-        """Normal vectors (matches MATLAB obj.nvec -> obj.vec{3})."""
-        return self.vec[2]
-
-    @property
-    def tvec1(self):
-        """First tangent vector (matches MATLAB obj.tvec1 -> obj.vec{1})."""
-        return self.vec[0]
-
-    @property
-    def tvec2(self):
-        """Second tangent vector (matches MATLAB obj.tvec2 -> obj.vec{2})."""
-        return self.vec[1]
-
-    @property
-    def nverts(self):
-        """Number of vertices."""
-        return len(self.verts)
                 if len(ind4) > 0:
                     for j in range(4):
                         rows.extend(ind4.tolist())
@@ -1710,6 +2231,172 @@ class Particle:
         return vi, mat
 
     # ==================== Visualization ====================
+
+    def plot2(self, val=None, **kwargs):
+        """
+        Advanced plot of discretized particle surface with vectors and cones.
+
+        MATLAB: plot2(obj, val, 'PropertyName', PropertyValue, ...)
+
+        Parameters
+        ----------
+        val : ndarray, optional
+            Values to display on surface (nfaces x 3 or nverts x 3 RGB colors)
+        **kwargs : dict
+            Plotting options:
+            - EdgeColor: Color of edges ('none', 'k', or RGB)
+            - FaceAlpha: Transparency (0-1)
+            - FaceColor: Face color override
+            - nvec: Plot normal vectors (True/False)
+            - vec: nfaces x 3 vector array to plot
+            - cone: nfaces x 3 vector array for cone plot
+            - color: Color for vectors
+            - scale: Scale factor for vectors
+        """
+        try:
+            import matplotlib.pyplot as plt
+            from mpl_toolkits.mplot3d import Axes3D
+            from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        except ImportError:
+            print("matplotlib not available for plotting")
+            return None
+
+        # Check if new figure is needed
+        if plt.get_fignums():
+            fig = plt.gcf()
+            if fig.axes:
+                ax = fig.axes[0]
+                new_plot = False
+            else:
+                ax = fig.add_subplot(111, projection='3d')
+                new_plot = True
+        else:
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            new_plot = True
+
+        # Default values
+        face_alpha = kwargs.get('FaceAlpha', 1.0)
+        edge_color = kwargs.get('EdgeColor', 'none')
+
+        # Handle value input
+        if val is None:
+            val = np.array([1.0, 0.7, 0.0])
+
+        if 'FaceColor' in kwargs:
+            val = kwargs['FaceColor']
+
+        # Interpolate face values to vertices if needed
+        if val.ndim == 1:
+            val = np.tile(val, (self.nverts, 1))
+        elif val.shape[0] == self.nfaces:
+            # Interpolate from faces to vertices
+            val, _ = self.interp_values(val)
+        elif val.shape[0] != self.nverts:
+            val = np.tile(val, (self.nverts, 1))
+
+        # Get face vertices
+        face_verts = []
+        for i in range(self.nfaces):
+            face = self.faces[i]
+            idx = face[~np.isnan(face)].astype(int)
+            face_verts.append(self.verts[idx])
+
+        # Create 3D collection
+        if val.ndim > 1 and val.shape[1] == 3:
+            # RGB colors
+            collection = Poly3DCollection(face_verts,
+                                          facecolors=val,
+                                          edgecolor='none',
+                                          alpha=face_alpha)
+        else:
+            # Single color
+            from matplotlib.colors import Normalize
+            from matplotlib.cm import ScalarMappable, viridis
+
+            if val.ndim == 1:
+                norm = Normalize(vmin=np.min(val), vmax=np.max(val))
+                mapper = ScalarMappable(norm=norm, cmap=viridis)
+                facecolors = [mapper.to_rgba(val[i]) for i in range(self.nverts)]
+            else:
+                facecolors = [[0.8, 0.8, 0.9]] * self.nverts
+
+            collection = Poly3DCollection(face_verts,
+                                          facecolors=facecolors,
+                                          edgecolor='none',
+                                          alpha=face_alpha)
+
+        ax.add_collection3d(collection)
+
+        # Plot edges if requested
+        if edge_color != 'none':
+            net, _ = self.edges()
+            for edge in net:
+                v1, v2 = edge.astype(int)
+                points = np.array([self.verts[v1], self.verts[v2]])
+                if isinstance(edge_color, str):
+                    ax.plot3D(points[:, 0], points[:, 1], points[:, 2],
+                              color=edge_color, linewidth=0.5)
+                else:
+                    ax.plot3D(points[:, 0], points[:, 1], points[:, 2],
+                              color=edge_color, linewidth=0.5)
+
+        # Plot normal vectors if requested
+        if kwargs.get('nvec', False):
+            scale = kwargs.get('scale', 0.1)
+            color = kwargs.get('color', 'r')
+            for i in range(self.nfaces):
+                start = self.pos[i]
+                direction = self.nvec[i] * scale
+                ax.quiver(start[0], start[1], start[2],
+                         direction[0], direction[1], direction[2],
+                         color=color, arrow_length_ratio=0.3)
+
+        # Plot custom vectors if requested
+        if 'vec' in kwargs:
+            vec = kwargs['vec']
+            scale = kwargs.get('scale', 0.1)
+            color = kwargs.get('color', 'b')
+            for i in range(min(self.nfaces, vec.shape[0])):
+                start = self.pos[i]
+                direction = vec[i] * scale
+                ax.quiver(start[0], start[1], start[2],
+                         direction[0], direction[1], direction[2],
+                         color=color, arrow_length_ratio=0.3)
+
+        # Plot cones if requested
+        if 'cone' in kwargs:
+            cone = kwargs['cone']
+            scale = kwargs.get('scale', 0.1)
+            color = kwargs.get('color', 'g')
+            # Simplified cone plot as quiver
+            for i in range(min(self.nfaces, cone.shape[0])):
+                start = self.pos[i]
+                direction = cone[i] * scale
+                length = np.linalg.norm(direction)
+                if length > 1e-10:
+                    ax.quiver(start[0], start[1], start[2],
+                             direction[0], direction[1], direction[2],
+                             color=color, arrow_length_ratio=0.5,
+                             linewidth=2)
+
+        # Set axis properties
+        if new_plot:
+            all_verts = self.verts
+            max_range = np.max(all_verts.max(axis=0) - all_verts.min(axis=0)) / 2
+            mid = (all_verts.max(axis=0) + all_verts.min(axis=0)) / 2
+
+            ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
+            ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
+            ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_zlabel('Z')
+            ax.view_init(elev=40, azim=1)
+
+        plt.draw()
+        return fig, ax
 
     def plot(self, val=None, **kwargs):
         """
