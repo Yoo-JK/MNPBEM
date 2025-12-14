@@ -398,8 +398,7 @@ class BEMRet:
         >>> sig, bem = bem \ exc
         """
         # MATLAB: [sig, obj] = mldivide(obj, exc)
-        sig = self.solve(exc)
-        return sig, self
+        return self.solve(exc)
 
     def __mul__(self, sig):
         """
@@ -472,6 +471,12 @@ class BEMRet:
                 - h1, h2 : surface current distributions (inside/outside)
                 - enei : wavelength/energy
                 - p : particle object
+        obj : BEMRet
+            Updated BEM solver object
+
+        Examples
+        --------
+        >>> sig, bem = bem.solve(exc)
 
         Notes
         -----
@@ -622,7 +627,7 @@ class BEMRet:
                 sig2_all[:, ipol] = G2i @ sig2
                 h2_all[:, :, ipol] = G2i @ h2
 
-        return {
+        sig = {
             'sig1': sig1_all,
             'sig2': sig2_all,
             'h1': h1_all,
@@ -630,6 +635,9 @@ class BEMRet:
             'enei': enei,
             'p': self.p
         }
+
+        # MATLAB: [sig, obj] = mldivide(obj, exc)
+        return sig, self
 
     def potential(self, sig, inout=2):
         """
