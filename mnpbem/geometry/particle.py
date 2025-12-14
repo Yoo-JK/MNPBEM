@@ -1460,17 +1460,27 @@ class Particle:
             'flat' or 'curv' for midpoint computation
         """
         if self.verts2 is None:
-            self._midpoints(key)
+            self.midpoints(key)
 
         self.interp = 'curv'
         self._norm()
         return self
 
-    def _midpoints(self, key='flat'):
+    def midpoints(self, key='flat'):
         """
         Add midpoints for curved particle boundaries.
 
         MATLAB: obj = midpoints(obj, key)
+
+        Parameters
+        ----------
+        key : str
+            'flat' or 'curv' for midpoint computation
+
+        Returns
+        -------
+        self : Particle
+            Particle with added midpoints
         """
         self.interp = key
 
@@ -1512,6 +1522,8 @@ class Particle:
         if self.interp == 'curv':
             self._norm()
 
+        return self
+
     def _refine(self):
         """
         Refine particle boundary using curvature (B-spline interpolation).
@@ -1519,7 +1531,7 @@ class Particle:
         MATLAB: refine.m (simplified version)
         """
         # Simplified: just use linear midpoints
-        self._midpoints('flat')
+        self.midpoints('flat')
 
     def _vertex_neighbours(self):
         """
