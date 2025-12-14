@@ -289,9 +289,9 @@ class BEMStat:
             #           case 1: e = -outer(obj.p.nvec, matmul(obj.g.H1, sig.sig))
             #           case 2: e = -outer(obj.p.nvec, matmul(obj.g.H2, sig.sig))
             if inout == 1:
-                H = self.g.H1()
+                H = self.g.H1
             else:
-                H = self.g.H2()
+                H = self.g.H2
 
             # e = -outer(nvec, H @ sig.sig)
             # MATLAB outer(nvec, scalar) creates (n, 3) matrix
