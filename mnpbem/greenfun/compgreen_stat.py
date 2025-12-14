@@ -690,6 +690,30 @@ class CompStruct:
                 object.__setattr__(self, 'val', {})
             self.val[name] = value
 
+    def set(self, **kwargs):
+        """
+        Set field names of compstruct object.
+
+        MATLAB: @compstruct/set.m
+
+        Parameters
+        ----------
+        **kwargs : dict
+            Field name-value pairs to set
+
+        Returns
+        -------
+        self : CompStruct
+            Updated compstruct object
+
+        Examples
+        --------
+        >>> exc = exc.set(a1=a, a1p=ap)
+        """
+        for key, value in kwargs.items():
+            self.val[key] = value
+        return self
+
     def __repr__(self):
         """String representation."""
         fields = ', '.join(self.val.keys())
