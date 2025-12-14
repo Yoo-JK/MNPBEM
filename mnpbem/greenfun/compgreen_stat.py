@@ -710,6 +710,27 @@ class CompStruct:
         else:
             self.val[key] = value
 
+    def get(self, key, default=None):
+        """
+        Dictionary-style get method with default value.
+
+        Parameters
+        ----------
+        key : str
+            Field name to retrieve
+        default : any, optional
+            Default value if key not found (default: None)
+
+        Returns
+        -------
+        value : any
+            Field value or default if not found
+        """
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
     def set(self, **kwargs):
         """
         Set field names of compstruct object.
