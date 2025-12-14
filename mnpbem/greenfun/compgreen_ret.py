@@ -170,7 +170,7 @@ class CompGreenRet:
                 # Loop over particles
                 for i in range(len(p1.p)):
                     # Index to particle faces
-                    ind = p1.index(i)
+                    ind = p1.index_func(i + 1)  # 1-indexed in MATLAB
 
                     # Select particle and closed particle surface
                     part = p1.p[i]
@@ -405,8 +405,8 @@ class CompGreenRet:
                 for i2 in range(n2):
                     if self.con[i1][i2] is not None and self.con[i1][i2] > 0:
                         # Get indices for this block
-                        idx1 = self.p1.index(i1)
-                        idx2 = self.p2.index(i2)
+                        idx1 = self.p1.index_func(i1 + 1)  # 1-indexed in MATLAB
+                        idx2 = self.p2.index_func(i2 + 1)  # 1-indexed in MATLAB
 
                         # Get wavenumber for this connection
                         k_block = k_list[self.con[i1][i2] - 1]
@@ -428,8 +428,8 @@ class CompGreenRet:
                 for i2 in range(n2):
                     if self.con[i1][i2] is not None and self.con[i1][i2] > 0:
                         # Get indices for this block
-                        idx1 = self.p1.index(i1)
-                        idx2 = self.p2.index(i2)
+                        idx1 = self.p1.index_func(i1 + 1)  # 1-indexed in MATLAB
+                        idx2 = self.p2.index_func(i2 + 1)  # 1-indexed in MATLAB
 
                         # Get wavenumber for this connection
                         k_block = k_list[self.con[i1][i2] - 1]

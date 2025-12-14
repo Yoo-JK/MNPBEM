@@ -185,7 +185,7 @@ class CompGreenStat:
         # Loop over particles
         for i in range(len(p1.p)):
             # Index to particle faces
-            ind = p1.index(i)
+            ind = p1.index_func(i + 1)  # 1-indexed in MATLAB
 
             # Select particle and closed particle surface
             part = p1.p[i]
