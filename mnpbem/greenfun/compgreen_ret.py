@@ -714,6 +714,60 @@ class CompGreenRet:
         else:
             raise ValueError("CompGreenRet indexing requires (i, j) tuple")
 
+    def G(self, enei):
+        """
+        Green function matrix for full composite.
+
+        MATLAB: obj.g{i,j}.G(enei)
+
+        Parameters
+        ----------
+        enei : float
+            Light wavelength in vacuum (nm)
+
+        Returns
+        -------
+        g : ndarray
+            Green function matrix
+        """
+        return self.eval(0, 0, 'G', enei)
+
+    def H1(self, enei):
+        """
+        Surface derivative H1 matrix for full composite.
+
+        MATLAB: obj.g{i,j}.H1(enei)
+
+        Parameters
+        ----------
+        enei : float
+            Light wavelength in vacuum (nm)
+
+        Returns
+        -------
+        h1 : ndarray
+            H1 matrix
+        """
+        return self.eval(0, 0, 'H1', enei)
+
+    def H2(self, enei):
+        """
+        Surface derivative H2 matrix for full composite.
+
+        MATLAB: obj.g{i,j}.H2(enei)
+
+        Parameters
+        ----------
+        enei : float
+            Light wavelength in vacuum (nm)
+
+        Returns
+        -------
+        h2 : ndarray
+            H2 matrix
+        """
+        return self.eval(0, 0, 'H2', enei)
+
     def __repr__(self):
         """String representation."""
         return (

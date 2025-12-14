@@ -111,9 +111,8 @@ class BEMRet:
         self.Deltai = None
         self.Sigmai = None
 
-        # Green function objects (for field/potential computation)
-        self.g_in = None
-        self.g_out = None
+        # Green function object (for field/potential computation)
+        self.g = None
 
         # Initialize at specific energy if provided
         if enei is not None:
@@ -174,18 +173,20 @@ class BEMRet:
             self.eps1 = np.diag(eps1_vals)
             self.eps2 = np.diag(eps2_vals)
 
-        # Create Green functions with correct wavenumbers
-        # MATLAB: G1 = g{1,1}.G - g{2,1}.G (inside medium, k_in)
-        #         G2 = g{2,2}.G - g{1,2}.G (outside medium, k_out)
-        # For single particle, cross terms are 0
-        self.g_in = CompGreenRet(self.p, self.p)   # inside Green function
-        self.g_out = CompGreenRet(self.p, self.p) # outside Green function
+        # Create Green function (single object for all material combinations)
+        # MATLAB: obj.g = compgreenret(p, p, op)
+        if not hasattr(self, 'g') or self.g is None:
+            self.g = CompGreenRet(self.p, self.p)
 
-        G1 = self.g_in.G   # inside Green function
-        G2 = self.g_out.G  # outside Green function
+        # Compute Green function matrices at this wavelength
+        # MATLAB: G1 = g{1,1}.G(enei) - g{2,1}.G(enei)
+        #         G2 = g{2,2}.G(enei) - g{1,2}.G(enei)
+        # For single particle: G1 = g{1,1}.G(enei), G2 = g{2,2}.G(enei)
+        G1 = self.g.G(enei)   # Simplified: single particle case
+        G2 = self.g.G(enei)   # Both use same Green function
 
-        H1_mat = self.g_in.H1()   # H1 with inside k
-        H2_mat = self.g_out.H2()  # H2 with outside k
+        H1_mat = self.g.H1(enei)
+        H2_mat = self.g.H2(enei)
 
         # Compute inverses
         self.G1i = np.linalg.inv(G1)
