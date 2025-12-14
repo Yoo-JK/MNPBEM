@@ -111,13 +111,17 @@ class PlaneWaveRet:
 
         # MATLAB: init.m lines 26-30
         # Initialize spectrum (for scattering calculations)
-        # Note: This would require spectrumret implementation
-        # For now, we'll store None and implement when needed
-        self.spec = options.get('pinfty', None)
-        if self.spec is None:
-            # MATLAB creates default spectrum with trisphere(256, 2)
-            # We'll defer this until spectrum is needed
-            pass
+        pinfty_arg = options.get('pinfty', None)
+        if pinfty_arg is not None:
+            # User provided pinfty
+            from ..spectrum import SpectrumRet
+            self.spec = SpectrumRet(pinfty_arg, medium=self.medium)
+        else:
+            # MATLAB: obj.spec = spectrumret(trisphere(256, 2), 'medium', obj.medium)
+            from ..geometry import trisphere
+            from ..spectrum import SpectrumRet
+            default_pinfty = trisphere(256, 2)
+            self.spec = SpectrumRet(default_pinfty, medium=self.medium)
 
     def field(self, p, enei, inout=1):
         """
