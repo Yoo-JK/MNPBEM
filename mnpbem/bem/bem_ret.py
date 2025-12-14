@@ -12,7 +12,7 @@ Matches MATLAB MNPBEM implementation exactly.
 """
 
 import numpy as np
-from ..greenfun import CompGreenRet
+from ..greenfun import CompGreenRet, CompStruct
 
 
 class BEMRet:
@@ -78,6 +78,11 @@ class BEMRet:
     >>> # Initialize at specific wavelength
     >>> bem.init(600.0)
     """
+
+    # Class constants
+    # MATLAB: @bemret line 10-13
+    name = 'bemsolver'
+    needs = {'sim': 'ret'}
 
     def __init__(self, p, enei=None):
         """
@@ -364,6 +369,84 @@ class BEMRet:
             return 0
         else:
             return eps * phi_p
+
+    def __truediv__(self, exc):
+        """
+        Surface charges and currents for given excitation.
+
+        MATLAB: bemret/mldivide.m
+
+        Usage
+        -----
+        sig = obj \ exc
+
+        Parameters
+        ----------
+        exc : CompStruct
+            compstruct with fields for external excitation
+
+        Returns
+        -------
+        sig : CompStruct
+            compstruct with fields for surface charges and currents
+        obj : BEMRet
+            Updated BEM solver object
+
+        Examples
+        --------
+        >>> sig, bem = bem \ exc
+        """
+        # MATLAB: [sig, obj] = mldivide(obj, exc)
+        sig = self.solve(exc)
+        return sig, self
+
+    def __mul__(self, sig):
+        """
+        Induced potential for given surface charge.
+
+        MATLAB: bemret/mtimes.m
+
+        Usage
+        -----
+        phi = obj * sig
+
+        Parameters
+        ----------
+        sig : dict or CompStruct
+            Surface charges and currents
+
+        Returns
+        -------
+        phi : dict
+            Combined potentials from inside and outside
+
+        Examples
+        --------
+        >>> phi = bem * sig
+        """
+        # MATLAB: phi = potential(obj, sig, 1) + potential(obj, sig, 2)
+        pot1 = self.potential(sig, 1)
+        pot2 = self.potential(sig, 2)
+
+        # Combine potentials from inside and outside
+        # pot1 has phi1, phi1p, a1, a1p
+        # pot2 has phi2, phi2p, a2, a2p
+        # Extract enei from sig (dict or CompStruct)
+        enei = sig['enei'] if isinstance(sig, dict) else sig.enei
+
+        phi = {
+            'phi1': pot1['phi1'],
+            'phi1p': pot1['phi1p'],
+            'a1': pot1['a1'],
+            'a1p': pot1['a1p'],
+            'phi2': pot2['phi2'],
+            'phi2p': pot2['phi2p'],
+            'a2': pot2['a2'],
+            'a2p': pot2['a2p'],
+            'enei': enei,
+            'p': self.p
+        }
+        return phi
 
     def solve(self, exc):
         """
@@ -711,19 +794,50 @@ class BEMRet:
             'p': self.p
         }
 
-    def __call__(self, enei):
+    def clear(self):
         """
-        Initialize solver at specific energy (alternative syntax).
+        Clear Green functions and auxiliary matrices.
 
-        Parameters
-        ----------
-        enei : float
-            Photon energy or wavelength
+        MATLAB: bemret/clear.m
 
         Returns
         -------
         self : BEMRet
             Returns self for chaining
+
+        Examples
+        --------
+        >>> bem = bem.clear()
+        """
+        # MATLAB: [obj.G1i, obj.G2i, obj.L1, obj.L2, obj.Sigma1, obj.Deltai, obj.Sigmai] = deal([])
+        self.G1i = None
+        self.G2i = None
+        self.L1 = None
+        self.L2 = None
+        self.Sigma1 = None
+        self.Deltai = None
+        self.Sigmai = None
+        return self
+
+    def __call__(self, enei):
+        """
+        Computes resolvent matrices for later use in mldivide.
+
+        MATLAB: bemret/subsref.m case '()'
+
+        Parameters
+        ----------
+        enei : float
+            Light wavelength in vacuum
+
+        Returns
+        -------
+        self : BEMRet
+            Returns self for chaining
+
+        Examples
+        --------
+        >>> bem = bem(600.0)
         """
         return self.init(enei)
 
