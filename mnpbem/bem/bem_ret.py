@@ -178,8 +178,8 @@ class BEMRet:
         # MATLAB: G1 = g{1,1}.G - g{2,1}.G (inside medium, k_in)
         #         G2 = g{2,2}.G - g{1,2}.G (outside medium, k_out)
         # For single particle, cross terms are 0
-        self.g_in = CompGreenRet(self.p, self.p, enei, k=k_in)   # inside Green function
-        self.g_out = CompGreenRet(self.p, self.p, enei, k=k_out) # outside Green function
+        self.g_in = CompGreenRet(self.p, self.p)   # inside Green function
+        self.g_out = CompGreenRet(self.p, self.p) # outside Green function
 
         G1 = self.g_in.G   # inside Green function
         G2 = self.g_out.G  # outside Green function
