@@ -1,6 +1,9 @@
 """
 BEM solver for quasistatic approximation.
 
+MATLAB: BEM/@bemstat/
+100% identical to MATLAB MNPBEM implementation.
+
 Given an external excitation, BEMStat computes the surface charges
 such that the boundary conditions of Maxwell's equations in the
 quasistatic approximation are fulfilled.
@@ -11,52 +14,50 @@ Reference:
 """
 
 import numpy as np
-from ..greenfun import CompGreenStat
+from ..greenfun import CompGreenStat, CompStruct
 
 
 class BEMStat:
     """
     BEM solver for quasistatic approximation.
 
-    Solves the boundary element method equations in the quasistatic regime
-    to find surface charges given an external potential.
+    MATLAB: @bemstat
 
-    Parameters
+    Properties
     ----------
+    name : str
+        'bemsolver' (constant)
+    needs : dict
+        {'sim': 'stat'} (constant)
     p : ComParticle
-        Composite particle with geometry and material properties
-    enei : float, optional
-        Photon energy (eV) or wavelength (nm) for pre-initialization
-
-    Attributes
-    ----------
-    p : ComParticle
-        The particle object
-    green : CompGreenStat
-        Green function object
+        Composite particle (see comparticle)
     F : ndarray
-        Surface derivative of Green function matrix
+        Surface derivative of Green function
     enei : float or None
-        Current wavelength/energy (None if not initialized)
-    mat : ndarray or None
-        BEM resolvent matrix: -inv(Λ + F)
+        Light wavelength in vacuum
+    g : CompGreenStat (private)
+        Green function (needed in bemstat/field)
+    mat : ndarray (private)
+        -inv(Lambda + F)
 
-    Notes
-    -----
-    The BEM equation in quasistatic approximation is:
-        (Λ + F) · σ = -φₚ
-
-    where:
-        Λ[i] = 2π(ε₁ + ε₂)/(ε₁ - ε₂)  (diagonal matrix)
-        F = surface derivative of Green function
-        σ = surface charge distribution
-        φₚ = external potential
-
-    The resolvent matrix is:
-        mat = -inv(Λ + F)
-
-    So the solution is:
-        σ = mat · φₚ
+    Methods
+    -------
+    __init__(p, enei=None, **options)
+        Initialize quasistatic BEM solver
+    solve(exc)
+        Solve BEM equations for given excitation
+    __truediv__(exc)
+        Surface charge for given excitation (operator \)
+    __mul__(sig)
+        Induced potential for given surface charge (operator *)
+    field(sig, inout=2)
+        Electric field inside/outside of particle surface
+    potential(sig, inout=2)
+        Potentials and surface derivatives inside/outside of particle
+    clear()
+        Clear auxiliary matrices
+    __call__(enei)
+        Computes resolvent matrix for later use in __truediv__
 
     Examples
     --------
@@ -71,275 +72,409 @@ class BEMStat:
     >>> # Create BEM solver
     >>> bem = BEMStat(p)
     >>>
-    >>> # Initialize at specific wavelength
-    >>> bem.init(600.0)
+    >>> # Solve for excitation
+    >>> sig = bem \ exc  # or sig = bem.solve(exc)
     >>>
-    >>> # Or initialize during construction
-    >>> bem = BEMStat(p, enei=600.0)
+    >>> # Get induced potential
+    >>> phi = bem * sig
     """
 
-    def __init__(self, p, enei=None):
+    # Class constants
+    name = 'bemsolver'
+    needs = {'sim': 'stat'}
+
+    def __init__(self, p, enei=None, **options):
         """
-        Initialize BEM solver for quasistatic approximation.
+        Initialize quasistatic BEM solver.
+
+        MATLAB: bemstat.m, private/init.m
 
         Parameters
         ----------
         p : ComParticle
-            Composite particle
+            Compound of particles (see comparticle)
         enei : float, optional
-            Photon energy (eV) or wavelength (nm) for pre-initialization
+            Light wavelength in vacuum
+        **options : dict
+            Additional options passed to CompGreenStat
+
+        Examples
+        --------
+        >>> bem = BEMStat(p)
+        >>> bem = BEMStat(p, enei=600.0)
         """
+        # Save particle
         self.p = p
+
+        # Initialize properties
         self.enei = None
         self.mat = None
 
-        # Create Green function
-        self.green = CompGreenStat(p, p)
-        self.F = self.green.F
+        # Green function
+        # MATLAB: obj.g = compgreenstat(p, p, varargin{:})
+        self.g = CompGreenStat(p, p, **options)
 
-        # Initialize at specific energy if provided
+        # Surface derivative of Green function
+        # MATLAB: obj.F = subsref(obj.g, substruct('.', 'F'))
+        self.F = self.g.F
+
+        # Initialize for given wavelength
+        # MATLAB: if exist('enei', 'var') && ~isempty(enei)
         if enei is not None:
-            self.init(enei)
+            self(enei)
 
-    def init(self, enei):
+    def _init_matrices(self, enei):
         """
-        Initialize BEM solver for specific wavelength/energy.
+        Initialize matrices for BEM solver.
 
-        Computes the resolvent matrix mat = -inv(Λ + F) for later use
-        in solving the BEM equations.
+        MATLAB: bemstat/subsref.m case '()'
 
         Parameters
         ----------
         enei : float
-            Photon energy (eV) or wavelength (nm)
-
-        Returns
-        -------
-        self : BEMStat
-            Returns self for chaining
+            Light wavelength in vacuum
         """
-        # Skip if already initialized at this energy
-        if self.enei is not None and np.isclose(self.enei, enei):
-            return self
+        # Use previously computed matrices?
+        # MATLAB: if isempty(obj.enei) || obj.enei ~= enei
+        if self.enei is None or self.enei != enei:
+            # Inside and outside dielectric function
+            # MATLAB: eps1 = obj.p.eps1(enei); eps2 = obj.p.eps2(enei);
+            eps1 = self.p.eps1(enei)
+            eps2 = self.p.eps2(enei)
 
-        # Get inside and outside dielectric functions
-        eps1 = self.p.eps1(enei)  # (nfaces,)
-        eps2 = self.p.eps2(enei)  # (nfaces,)
+            # Lambda [Garcia de Abajo, Eq. (23)]
+            # MATLAB: lambda = 2 * pi * (eps1 + eps2) ./ (eps1 - eps2)
+            lambda_diag = 2 * np.pi * (eps1 + eps2) / (eps1 - eps2)
 
-        # Lambda matrix [Garcia de Abajo, Eq. (23)]
-        # Λ = 2π(ε₁ + ε₂)/(ε₁ - ε₂)
-        lambda_diag = 2 * np.pi * (eps1 + eps2) / (eps1 - eps2)
+            # BEM resolvent matrix
+            # MATLAB: obj.mat = -inv(diag(lambda) + obj.F)
+            Lambda = np.diag(lambda_diag)
+            self.mat = -np.linalg.inv(Lambda + self.F)
 
-        # BEM resolvent matrix: mat = -inv(Λ + F)
-        Lambda = np.diag(lambda_diag)
-        self.mat = -np.linalg.inv(Lambda + self.F)
-
-        # Save energy
-        self.enei = enei
+            # Save energy
+            # MATLAB: obj.enei = enei
+            self.enei = enei
 
         return self
 
-    def solve(self, enei_or_exc, exc=None):
+    def solve(self, exc):
         """
         Solve BEM equations for given excitation.
 
-        Computes surface charges σ from external potential φₚ:
-            σ = mat · φₚ = -inv(Λ + F) · φₚ
+        MATLAB: bemstat/solve.m
 
         Parameters
         ----------
-        enei_or_exc : float or dict
-            Either wavelength (nm) when exc is provided separately,
-            or excitation dict with 'enei' and 'phip' keys
-        exc : dict, optional
-            Excitation dict with 'phip' key (if enei_or_exc is wavelength)
+        exc : CompStruct
+            compstruct with fields for external excitation
 
         Returns
         -------
-        sig : dict
-            Dictionary containing:
-                - sig : surface charge distribution (array, shape (nfaces,) or (nfaces, npol))
-                - enei : wavelength/energy
-                - p : particle object
+        sig : CompStruct
+            compstruct with fields for surface charge
+        obj : BEMStat
+            Updated BEM solver object
 
         Examples
         --------
-        >>> # Method 1: excitation as dict
-        >>> result = bem.solve(exc)
-        >>>
-        >>> # Method 2: enei and exc separately
-        >>> result = bem.solve(enei, exc)
+        >>> sig, bem = bem.solve(exc)
         """
-        # Handle both calling conventions
-        if exc is None:
-            # exc contains both enei and phip
-            exc = enei_or_exc
-            if isinstance(exc, dict):
-                enei = exc['enei']
-                phip = exc['phip']
-            else:
-                enei = exc.enei
-                phip = exc.phip
-        else:
-            # enei_or_exc is the energy, exc is the excitation
-            enei = enei_or_exc
-            if isinstance(exc, dict):
-                phip = exc['phip']
-            else:
-                phip = exc.phip
+        # MATLAB: [sig, obj] = mldivide(obj, exc)
+        return self.__truediv__(exc)
 
-        # Initialize at this energy
-        self.init(enei)
+    def __truediv__(self, exc):
+        """
+        Surface charge for given excitation.
+
+        MATLAB: bemstat/mldivide.m
+
+        Usage
+        -----
+        sig = obj \ exc
+
+        Parameters
+        ----------
+        exc : CompStruct
+            compstruct with field 'phip' for external excitation
+
+        Returns
+        -------
+        sig : CompStruct
+            compstruct with field for surface charge
+        obj : BEMStat
+            Updated BEM solver object
+
+        Examples
+        --------
+        >>> sig, bem = bem \ exc
+        """
+        # Initialize BEM solver (if needed)
+        # MATLAB: obj = subsref(obj, substruct('()', {exc.enei}))
+        self._init_matrices(exc.enei)
 
         # Solve: σ = mat · φₚ
-        # Handle multi-dimensional phip (e.g., from DipoleStat with shape (nfaces, npt, ndip))
-        if phip.ndim == 1:
-            # (nfaces,) -> (nfaces,)
-            sig = self.mat @ phip
-        elif phip.ndim == 2:
-            # (nfaces, npol) -> (nfaces, npol)
-            sig = self.mat @ phip
-        else:
-            # (nfaces, npt, ndip) or higher dimensions
-            # Use einsum: result[i, j, k, ...] = sum_m mat[i, m] * phip[m, j, k, ...]
-            original_shape = phip.shape
-            nfaces = original_shape[0]
-            # Reshape to (nfaces, -1)
-            phip_reshaped = phip.reshape(nfaces, -1)
-            sig_reshaped = self.mat @ phip_reshaped
-            # Reshape back
-            sig = sig_reshaped.reshape(original_shape)
+        # MATLAB: sig = compstruct(obj.p, exc.enei, 'sig', matmul(obj.mat, exc.phip))
+        sig_result = self._matmul(self.mat, exc.phip)
+        sig = CompStruct(self.p, exc.enei, sig=sig_result)
 
-        return {
-            'sig': sig,
-            'enei': enei,
-            'p': self.p
-        }
+        return sig, self
+
+    def __mul__(self, sig):
+        """
+        Induced potential for given surface charge.
+
+        MATLAB: bemstat/mtimes.m
+
+        Usage
+        -----
+        phi = obj * sig
+
+        Parameters
+        ----------
+        sig : CompStruct
+            compstruct with fields for surface charge
+
+        Returns
+        -------
+        phi : CompStruct
+            compstruct with fields for induced potential
+
+        Examples
+        --------
+        >>> phi = bem * sig
+        """
+        # MATLAB: phi = potential(obj, sig, 1) + potential(obj, sig, 2)
+        pot1 = self.potential(sig, 1)
+        pot2 = self.potential(sig, 2)
+
+        # Combine potentials
+        # pot1 has phi1, phi1p; pot2 has phi2, phi2p
+        # Return combined result
+        phi = CompStruct(self.p, sig.enei,
+                        phi1=pot1.phi1, phi1p=pot1.phi1p,
+                        phi2=pot2.phi2, phi2p=pot2.phi2p)
+        return phi
 
     def field(self, sig, inout=2):
         """
-        Compute electric field inside/outside of particle surface.
+        Electric field inside/outside of particle surface.
 
         MATLAB: bemstat/field.m
 
         Parameters
         ----------
-        sig : dict
-            Solution containing 'sig' (surface charges), 'enei', 'p'
+        sig : CompStruct
+            COMPSTRUCT object with surface charges
         inout : int, optional
-            1 for inside, 2 for outside (default: 2)
+            Electric field inside (inout=1) or outside (inout=2, default) of particle
 
         Returns
         -------
-        field : dict
-            Dictionary with 'e' electric field, shape (nfaces, 3) or (nfaces, 3, npol)
+        field : CompStruct
+            COMPSTRUCT object with electric field
+
+        Examples
+        --------
+        >>> field = bem.field(sig, inout=2)
         """
-        surface_charge = sig['sig']
-        enei = sig['enei']
+        # Compute field from derivative of Green function or from potential interpolation
+        # MATLAB: switch obj.g.deriv
+        if self.g.deriv == 'cart':
+            # MATLAB: field = obj.g.field(sig, inout)
+            return self.g.field(sig, inout)
 
-        # Compute electric field from Green function derivative
-        # MATLAB: e = -matmul(Hp, sig.sig)
-        # Hp has shape (n1, 3, n2), sig has shape (n2,) or (n2, npol)
-        if inout == 1:
-            # Inside: use H1p (derivative toward inside)
-            Hp = self.green.H1p()  # (n1, 3, n2)
-        else:
-            # Outside: use H2p (derivative toward outside)
-            Hp = self.green.H2p()  # (n1, 3, n2)
+        elif self.g.deriv == 'norm':
+            # Electric field in normal direction
+            # MATLAB: switch inout
+            #           case 1: e = -outer(obj.p.nvec, matmul(obj.g.H1, sig.sig))
+            #           case 2: e = -outer(obj.p.nvec, matmul(obj.g.H2, sig.sig))
+            if inout == 1:
+                H = self.g.H1()
+            else:
+                H = self.g.H2()
 
-        # Electric field: e = -Hp @ sig
-        # Result: (n1, 3) or (n1, 3, npol)
-        if surface_charge.ndim == 1:
-            # Single polarization: e[i, xyz] = -sum_j Hp[i, xyz, j] * sig[j]
-            e = -np.einsum('ijk,k->ij', Hp, surface_charge)
-        else:
-            # Multiple polarizations: e[i, xyz, pol] = -sum_j Hp[i, xyz, j] * sig[j, pol]
-            e = -np.einsum('ijk,kp->ijp', Hp, surface_charge)
+            # e = -outer(nvec, H @ sig.sig)
+            # MATLAB outer(nvec, scalar) creates (n, 3) matrix
+            H_sig = self._matmul(H, sig.sig)
+            e = -self._outer(self.p.nvec, H_sig)
 
-        return {
-            'e': e,
-            'enei': enei,
-            'p': self.p
-        }
+            # Tangential directions computed by interpolation and derivative
+            # MATLAB: phi = interp(obj.p, matmul(obj.g.G, sig.sig))
+            #         [phi1, phi2, t1, t2] = deriv(obj.p, phi)
+            G_sig = self._matmul(self.g.G, sig.sig)
+            phi = self.p.interp(G_sig)
+            phi1, phi2, t1, t2 = self.p.deriv(phi)
+
+            # Normal vector
+            # MATLAB: nvec = cross(t1, t2)
+            #         h = sqrt(dot(nvec, nvec, 2)); nvec = bsxfun(@rdivide, nvec, h)
+            nvec = np.cross(t1, t2)
+            h = np.sqrt(np.sum(nvec * nvec, axis=1, keepdims=True))
+            nvec = nvec / h
+
+            # Tangential derivative of PHI
+            # MATLAB: phip = outer(bsxfun(@rdivide, cross(t2, nvec, 2), h), phi1) -
+            #                outer(bsxfun(@rdivide, cross(t1, nvec, 2), h), phi2)
+            tvec1 = np.cross(t2, nvec) / h
+            tvec2 = np.cross(t1, nvec) / h
+            phip = self._outer(tvec1, phi1) - self._outer(tvec2, phi2)
+
+            # Add electric field in tangential direction
+            # MATLAB: e = e - phip
+            e = e - phip
+
+            # Set output
+            # MATLAB: field = compstruct(obj.p, sig.enei, 'e', e)
+            field = CompStruct(self.p, sig.enei, e=e)
+            return field
 
     def potential(self, sig, inout=2):
         """
-        Compute potential and surface derivative inside/outside of particle.
+        Determine potentials and surface derivatives inside/outside of particle.
 
         MATLAB: bemstat/potential.m
 
         Parameters
         ----------
-        sig : dict
-            Solution containing 'sig' (surface charges), 'enei', 'p'
+        sig : CompStruct
+            compstruct with surface charges
         inout : int, optional
-            1 for inside, 2 for outside (default: 2)
+            Potential inside (inout=1) or outside (inout=2, default) of particle
 
         Returns
         -------
-        pot : dict
-            Dictionary with potential and surface derivative:
-            - phi1/phi2: scalar potential
-            - phi1p/phi2p: surface derivative
+        pot : CompStruct
+            compstruct object with potentials
+
+        Examples
+        --------
+        >>> pot = bem.potential(sig, inout=2)
         """
-        surface_charge = sig['sig']
-        enei = sig['enei']
+        # MATLAB: pot = obj.g.potential(sig, inout)
+        return self.g.potential(sig, inout)
 
-        # Get Green function and surface derivative
-        G = self.green.G
-
-        if inout == 1:
-            H = self.green.H1()
-        else:
-            H = self.green.H2()
-
-        # Potential and surface derivative
-        phi = G @ surface_charge
-        phip = H @ surface_charge
-
-        if inout == 1:
-            return {
-                'phi1': phi,
-                'phi1p': phip,
-                'enei': enei,
-                'p': self.p
-            }
-        else:
-            return {
-                'phi2': phi,
-                'phi2p': phip,
-                'enei': enei,
-                'p': self.p
-            }
-
-    def __call__(self, enei):
+    def clear(self):
         """
-        Initialize solver at specific energy (alternative syntax).
+        Clear auxiliary matrices.
 
-        Parameters
-        ----------
-        enei : float
-            Photon energy or wavelength
+        MATLAB: bemstat/clear.m
 
         Returns
         -------
         self : BEMStat
             Returns self for chaining
+
+        Examples
+        --------
+        >>> bem = bem.clear()
         """
-        return self.init(enei)
+        # MATLAB: obj.mat = []
+        self.mat = None
+        return self
+
+    def __call__(self, enei):
+        """
+        Computes resolvent matrix for later use in mldivide.
+
+        MATLAB: bemstat/subsref.m case '()'
+
+        Parameters
+        ----------
+        enei : float
+            Light wavelength in vacuum
+
+        Returns
+        -------
+        self : BEMStat
+            Returns self for chaining
+
+        Examples
+        --------
+        >>> bem = bem(600.0)
+        """
+        return self._init_matrices(enei)
+
+    def _matmul(self, a, x):
+        """
+        Generalized matrix multiplication for tensors.
+
+        MATLAB: Misc/matmul.m
+        """
+        if np.isscalar(a) or (isinstance(a, np.ndarray) and a.size == 1):
+            if a == 0:
+                return 0
+            else:
+                return a * x
+        elif np.isscalar(x) or (isinstance(x, np.ndarray) and x.size == 1):
+            if x == 0:
+                return 0
+            else:
+                return a * x
+        else:
+            # A is matrix/tensor
+            siza = a.shape
+            sizx = x.shape if hasattr(x, 'shape') else (len(x),)
+
+            # Check if we need special handling for 3D arrays
+            if len(siza) == 3:
+                # a is (n1, 3, n2), x is (n2,) or (n2, ...)
+                n1, _, n2 = siza
+
+                if len(sizx) == 1:
+                    # x is 1D
+                    y = np.tensordot(a, x, axes=([2], [0]))
+                else:
+                    # x is multi-dimensional
+                    a_flat = a.reshape(n1 * 3, n2)
+                    x_flat = x.reshape(n2, -1)
+                    y_flat = a_flat @ x_flat
+
+                    new_shape = (n1, 3) + sizx[1:]
+                    y = y_flat.reshape(new_shape)
+
+                return y
+            else:
+                # Standard 2D matrix multiplication
+                if len(sizx) == 1:
+                    return a @ x
+                else:
+                    return a @ x.reshape(sizx[0], -1).reshape((sizx[0],) + sizx[1:])
+
+    def _outer(self, nvec, scalar):
+        """
+        Outer product: nvec * scalar.
+
+        MATLAB: outer(nvec, scalar)
+
+        Parameters
+        ----------
+        nvec : ndarray, shape (n, 3)
+            Normal vectors
+        scalar : ndarray, shape (n,)
+            Scalar values
+
+        Returns
+        -------
+        result : ndarray, shape (n, 3)
+            nvec * scalar[:, None]
+        """
+        if scalar.ndim == 1:
+            return nvec * scalar[:, np.newaxis]
+        else:
+            # Handle higher dimensions
+            return nvec[:, :, np.newaxis] * scalar[:, np.newaxis, :]
 
     def __repr__(self):
+        """String representation."""
         status = f"λ={self.enei:.1f}nm" if self.enei is not None else "not initialized"
-        return f"BEMStat(p: {self.p.nfaces} faces, {status})"
+        return f"BEMStat(p: {self.p.n if hasattr(self.p, 'n') else '?'} faces, {status})"
 
     def __str__(self):
-        status = f"Initialized at λ={self.enei:.2f} nm" if self.enei is not None else "Not initialized"
-        mat_info = f"  Resolvent matrix: {self.mat.shape}" if self.mat is not None else "  Resolvent matrix: Not computed"
-
+        """Detailed string representation."""
         return (
-            f"BEM Solver (Quasistatic):\n"
-            f"  Particle: {self.p.nfaces} faces\n"
-            f"  F matrix: {self.F.shape}\n"
-            f"  Status: {status}\n"
-            f"{mat_info}"
+            f"bemstat:\n"
+            f"  p: {self.p}\n"
+            f"  F: {self.F.shape if hasattr(self, 'F') else 'not computed'}\n"
+            f"  enei: {self.enei}\n"
+            f"  mat: {self.mat.shape if self.mat is not None else 'not computed'}"
         )
