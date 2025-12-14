@@ -265,7 +265,7 @@ class PlaneWaveRet:
             ind = np.where(p.inout[:, inout - 1] == self.medium)[0]
             face_indices = []
             for i in ind:
-                face_indices.extend(p.index[i])
+                face_indices.extend(p.index_func(i + 1))  # 1-indexed in MATLAB
             ind = np.array(face_indices) if face_indices else np.array([], dtype=int)
 
             # MATLAB: potential.m line 40-48
