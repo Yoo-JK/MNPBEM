@@ -690,6 +690,26 @@ class CompStruct:
                 object.__setattr__(self, 'val', {})
             self.val[name] = value
 
+    def __getitem__(self, key):
+        """Dictionary-style access to fields."""
+        if key == 'p':
+            return self.p
+        elif key == 'enei':
+            return self.enei
+        elif key in self.val:
+            return self.val[key]
+        else:
+            raise KeyError(f"'{key}'")
+
+    def __setitem__(self, key, value):
+        """Dictionary-style setting of fields."""
+        if key == 'p':
+            self.p = value
+        elif key == 'enei':
+            self.enei = value
+        else:
+            self.val[key] = value
+
     def set(self, **kwargs):
         """
         Set field names of compstruct object.
