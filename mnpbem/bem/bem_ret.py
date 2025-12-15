@@ -627,14 +627,9 @@ class BEMRet:
                 sig2_all[:, ipol] = G2i @ sig2
                 h2_all[:, :, ipol] = G2i @ h2
 
-        sig = {
-            'sig1': sig1_all,
-            'sig2': sig2_all,
-            'h1': h1_all,
-            'h2': h2_all,
-            'enei': enei,
-            'p': self.p
-        }
+        # MATLAB: sig = compstruct(obj.p, exc.enei, 'sig1', sig1, 'sig2', sig2, 'h1', h1, 'h2', h2)
+        from ..greenfun import CompStruct
+        sig = CompStruct(self.p, enei, sig1=sig1_all, sig2=sig2_all, h1=h1_all, h2=h2_all)
 
         # MATLAB: [sig, obj] = mldivide(obj, exc)
         return sig, self
@@ -647,23 +642,23 @@ class BEMRet:
 
         Parameters
         ----------
-        sig : dict
-            Solution containing 'sig1', 'sig2', 'h1', 'h2', 'enei', 'p'
+        sig : CompStruct
+            Solution containing sig1, sig2, h1, h2, enei, p
         inout : int
             1 for inside, 2 for outside (default)
 
         Returns
         -------
-        pot : dict
+        pot : CompStruct
             Potentials: phi1/phi2, phi1p/phi2p, a1/a2, a1p/a2p
         """
-        enei = sig['enei']
+        enei = sig.enei
         self.init(enei)
 
-        sig1 = sig['sig1']
-        sig2 = sig['sig2']
-        h1 = sig['h1']
-        h2 = sig['h2']
+        sig1 = sig.sig1
+        sig2 = sig.sig2
+        h1 = sig.h1
+        h2 = sig.h2
 
         # Get Green function matrices
         G_in = self.g_in.G
@@ -701,19 +696,12 @@ class BEMRet:
                 a[:, :, ipol] = G_in @ h1[:, :, ipol] + G_out @ h2[:, :, ipol]
                 ap[:, :, ipol] = H_in @ h1[:, :, ipol] + H_out @ h2[:, :, ipol]
 
-        # Return with appropriate keys
+        # Return CompStruct with appropriate keys
+        from ..greenfun import CompStruct
         if inout == 1:
-            return {
-                'phi1': phi, 'phi1p': phip,
-                'a1': a, 'a1p': ap,
-                'enei': enei, 'p': self.p
-            }
+            return CompStruct(self.p, enei, phi1=phi, phi1p=phip, a1=a, a1p=ap)
         else:
-            return {
-                'phi2': phi, 'phi2p': phip,
-                'a2': a, 'a2p': ap,
-                'enei': enei, 'p': self.p
-            }
+            return CompStruct(self.p, enei, phi2=phi, phi2p=phip, a2=a, a2p=ap)
 
     def field(self, sig, inout=2):
         """
@@ -723,15 +711,15 @@ class BEMRet:
 
         Parameters
         ----------
-        sig : dict
-            Solution containing 'sig1', 'sig2', 'h1', 'h2', 'enei', 'p'
+        sig : CompStruct
+            Solution containing sig1, sig2, h1, h2, enei, p
         inout : int
             1 for inside, 2 for outside (default)
 
         Returns
         -------
-        field : dict
-            Fields: 'e' (electric), 'h' (magnetic), 'enei', 'p'
+        field : CompStruct
+            Fields: e (electric), h (magnetic), enei, p
 
         Notes
         -----
@@ -741,14 +729,14 @@ class BEMRet:
 
         where H1p, H2p are Cartesian derivatives of Green function.
         """
-        enei = sig['enei']
+        enei = sig.enei
         self.init(enei)
 
         k = self.k
-        sig1 = sig['sig1']
-        sig2 = sig['sig2']
-        h1 = sig['h1']
-        h2 = sig['h2']
+        sig1 = sig.sig1
+        sig2 = sig.sig2
+        h1 = sig.h1
+        h2 = sig.h2
 
         # Get Green function matrices
         G_in = self.g_in.G
@@ -796,12 +784,8 @@ class BEMRet:
                 ap = H_in @ h1[:, :, ipol] + H_out @ h2[:, :, ipol]
                 mag_h[:, :, ipol] = np.cross(self.nvec, ap)
 
-        return {
-            'e': e,
-            'h': mag_h,
-            'enei': enei,
-            'p': self.p
-        }
+        from ..greenfun import CompStruct
+        return CompStruct(self.p, enei, e=e, h=mag_h)
 
     def clear(self):
         """
