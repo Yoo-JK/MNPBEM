@@ -414,7 +414,10 @@ class PlaneWaveRet:
 
         # MATLAB: extinction.m line 12
         # Far-field amplitude in forward direction
-        field, k = self.spec.farfield(sig, self.dir)
+        field = self.spec.farfield(sig, self.dir)
+
+        # Get wavenumber
+        _, k = sig.p.eps[self.medium - 1](sig.enei)
 
         # MATLAB: extinction.m line 16
         # Optical theorem: ext = (4π/k) Im(pol · E_forward)
