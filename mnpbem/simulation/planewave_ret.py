@@ -367,15 +367,15 @@ class PlaneWaveRet:
         # Refractive index of embedding medium
         eps_func = sig.p.eps[0]
         eps_val, _ = eps_func(sig.enei)
-        nb = np.sqrt(eps_val)
+        nb = np.real(np.sqrt(eps_val))  # Take real part for embedding medium
 
         # MATLAB: scattering.m line 19
         # Normalize to incoming power
-        sca = sca / (0.5 * nb)
+        sca = np.real(sca / (0.5 * nb))  # Ensure real result
         if dsca is not None and hasattr(dsca, 'dsca'):
             # dsca is CompStruct with 'dsca' field
             from ..greenfun import CompStruct
-            dsca = CompStruct(dsca.p, dsca.enei, dsca=dsca.dsca / (0.5 * nb))
+            dsca = CompStruct(dsca.p, dsca.enei, dsca=np.real(dsca.dsca / (0.5 * nb)))
 
         return sca, dsca
 
