@@ -269,12 +269,18 @@ class PlaneWaveStat:
         eps_func = sig.p.eps[self.medium - 1]
         eps_val, k = eps_func(sig.enei)
 
+        # Ensure k is real for embedding medium (should be lossless)
+        k = np.real(k)
+
         # MATLAB: scattering.m line 17
         # sca = 8 * pi / 3 * k .^ 4 .* sum(abs(dip) .^ 2, 1)
         sca = 8 * np.pi / 3 * k**4 * np.sum(np.abs(dip)**2, axis=0)
 
+        # Ensure real result
+        sca = np.real(sca)
+
         if sca.size == 1:
-            return sca[0]
+            return float(sca[0])
         return sca
 
     def extinction(self, sig):
