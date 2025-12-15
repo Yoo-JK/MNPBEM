@@ -198,25 +198,25 @@ def _farfield(self, sig, direction=None):
 
     Parameters
     ----------
-    sig : dict
+    sig : CompStruct
         Solution containing:
-        - 'sig1', 'sig2': surface charges
-        - 'h1', 'h2': surface currents
-        - 'p': particle
-        - 'enei': wavelength
+        - sig1, sig2: surface charges
+        - h1, h2: surface currents
+        - p: particle
+        - enei: wavelength
     direction : ndarray, optional
         Light propagation directions. Defaults to self.nvec.
 
     Returns
     -------
-    field : dict
-        Far-field with 'e' and 'h' arrays
+    field : CompStruct
+        Far-field with 'e' and 'h' fields
     """
     if direction is None:
         direction = self.nvec
 
-    p = sig['p']
-    enei = sig['enei']
+    p = sig.p
+    enei = sig.enei
 
     # Wavenumber
     _, k = p.eps[self.medium - 1](enei)
@@ -227,10 +227,10 @@ def _farfield(self, sig, direction=None):
     inout_faces = p.inout_faces
 
     # Get charges and currents
-    sig1 = sig.get('sig1', np.zeros(p.nfaces))
-    sig2 = sig.get('sig2', np.zeros(p.nfaces))
-    h1 = sig.get('h1', np.zeros((p.nfaces, 3)))
-    h2 = sig.get('h2', np.zeros((p.nfaces, 3)))
+    sig1 = sig.sig1 if hasattr(sig, 'sig1') else np.zeros(p.nfaces)
+    sig2 = sig.sig2 if hasattr(sig, 'sig2') else np.zeros(p.nfaces)
+    h1 = sig.h1 if hasattr(sig, 'h1') else np.zeros((p.nfaces, 3))
+    h2 = sig.h2 if hasattr(sig, 'h2') else np.zeros((p.nfaces, 3))
 
     # Ensure proper shape
     if sig1.ndim == 1:
@@ -288,40 +288,51 @@ def _farfield(self, sig, direction=None):
                 direction, np.dot(phase2, h2[ind2, :, ipol])
             )
 
-    return {
-        'e': e,
-        'h': h,
-        'nvec': direction,
-        'area': self.area if direction is self.nvec else np.full(ndir, 4*np.pi/ndir),
-        'enei': enei,
-        'k': k
-    }
+    # Squeeze if single polarization
+    if npol == 1:
+        e = e[:, :, 0]
+        h = h[:, :, 0]
+
+    # MATLAB: field = compstruct(comparticle(...), sig.enei)
+    # Create a temporary particle structure for pinfty
+    from ..greenfun import CompStruct
+    from ..geometry import Particle
+
+    # Create pinfty particle (unit sphere at infinity)
+    pinfty_particle = Particle(verts=np.zeros((0, 3)), faces=np.zeros((0, 4)))
+    pinfty_particle._nvec = direction
+    pinfty_particle._area = self.area if np.array_equal(direction, self.nvec) else np.full(ndir, 4*np.pi/ndir)
+    pinfty_particle._nfaces = ndir
+
+    field = CompStruct(pinfty_particle, enei, e=e, h=h)
+    return field
 
 
 def _scattering(self, sig):
     """
     Compute scattering cross section.
 
-    MATLAB:
+    MATLAB: Simulation/retarded/scattering.m
         dsca = 0.5 * real(inner(nvec, cross(e, conj(h))))
         sca = matmul(area, dsca)
+        dsca = compstruct(pinfty, field.enei, 'dsca', dsca)
 
     Parameters
     ----------
-    sig : dict
+    sig : CompStruct
         Solution from BEM solver
 
     Returns
     -------
     sca : ndarray
         Total scattering cross section
-    dsca : ndarray
-        Differential scattering (per solid angle)
+    dsca : CompStruct
+        CompStruct with 'dsca' field for differential scattering
     """
     # Get far-field
     field = self.farfield(sig)
-    e = field['e']  # (ndir, 3, npol)
-    h = field['h']  # (ndir, 3, npol)
+    e = field.e  # (ndir, 3, npol) or (ndir, 3)
+    h = field.h  # (ndir, 3, npol) or (ndir, 3)
 
     if e.ndim == 2:
         e = e[:, :, np.newaxis]
@@ -331,20 +342,24 @@ def _scattering(self, sig):
 
     # Poynting vector component in radial direction
     # dsca = 0.5 * real(nvec · (E × conj(H)))
-    dsca = np.zeros((self.ndir, npol))
+    dsca_arr = np.zeros((self.ndir, npol))
 
     for ipol in range(npol):
         # Cross product E × conj(H)
         poynting = np.cross(e[:, :, ipol], np.conj(h[:, :, ipol]))  # (ndir, 3)
         # Dot with nvec
-        dsca[:, ipol] = 0.5 * np.real(np.sum(self.nvec * poynting, axis=1))
+        dsca_arr[:, ipol] = 0.5 * np.real(np.sum(self.nvec * poynting, axis=1))
 
     # Total scattering: integrate over sphere
-    sca = np.dot(self.area, dsca)  # (npol,)
+    sca = np.dot(self.area, dsca_arr)  # (npol,)
 
     if npol == 1:
         sca = sca[0]
-        dsca = dsca[:, 0]
+        dsca_arr = dsca_arr[:, 0]
+
+    # MATLAB: dsca = compstruct(pinfty, field.enei, 'dsca', dsca)
+    from ..greenfun import CompStruct
+    dsca = CompStruct(field.p, sig.enei, dsca=dsca_arr)
 
     return sca, dsca
 
