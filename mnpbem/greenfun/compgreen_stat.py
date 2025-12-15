@@ -179,7 +179,7 @@ class CompGreenStat:
 
         MATLAB: @compgreenstat/private/init.m lines 24-57
 
-        For closed surfaces, diagonal elements of F are set to -2π - f',
+        For closed surfaces, diagonal elements of F are set to -2π*dir - f',
         where f' is the sum over the closed surface integral.
         """
         # Loop over particles
@@ -200,6 +200,8 @@ class CompGreenStat:
                     # Create temporary greenstat for full closed surface
                     g_temp = CompGreenStat.__new__(CompGreenStat)
                     g_temp.deriv = self.deriv
+                    g_temp.p1 = full
+                    g_temp.p2 = part
                     g_temp._compute_greenstat(full, part, **options)
 
                     # Sum over closed surface
@@ -207,25 +209,34 @@ class CompGreenStat:
 
                 # Set diagonal elements of Green function
                 # MATLAB: obj.g = diag(obj.g, ind, -2*pi*dir - f.')
+                # f is transposed in MATLAB, so f[i] corresponds to ind[i]
                 if isinstance(ind, (list, np.ndarray)):
                     ind_array = np.array(ind)
                 else:
                     ind_array = np.array([ind])
 
                 if self.deriv == 'norm':
-                    diag_val = -2 * np.pi * dir_val - f
-                    for idx in ind_array:
-                        self.F[idx, idx] = diag_val
+                    # Set diagonal: F[ind[i], ind[i]] = -2π*dir - f[i]
+                    diag_vals = -2.0 * np.pi * dir_val - f
+                    self.F[ind_array, ind_array] = diag_vals
                 else:  # 'cart'
-                    diag_val = (-2 * np.pi * dir_val - f) * part.nvec
-                    for idx in ind_array:
-                        self.F[idx, idx] = diag_val
+                    # Set diagonal: F[ind[i], ind[i]] = (-2π*dir - f[i]) * nvec[i]
+                    diag_vals = (-2.0 * np.pi * dir_val - f)[:, np.newaxis] * part.nvec
+                    for j, idx in enumerate(ind_array):
+                        self.F[idx, idx] = diag_vals[j]
 
     def _closedparticle(self, p, i):
         """
         Get closed particle surface.
 
         MATLAB: closedparticle(p1, i)
+
+        Parameters
+        ----------
+        p : ComParticle
+            Composite particle
+        i : int
+            Particle index (0-indexed in Python)
 
         Returns
         -------
@@ -236,19 +247,40 @@ class CompGreenStat:
         loc : array or None
             Local indices
         """
-        # This would call the closedparticle function in MATLAB
-        # For now, return None (closed surface handling can be added later)
-        return None, 1, None
+        # Call ComParticle's closedparticle method (expects 1-indexed)
+        return p.closedparticle(i + 1)
 
     def _fun_closed(self, loc, ind, **options):
         """
         Sum over closed surface using already computed Green function.
 
         MATLAB: init.m/fun() with loc and ind arguments
+        f = sum(area1[loc] * F[loc, ind] / area2[ind], axis=0)
+
+        Parameters
+        ----------
+        loc : array
+            Indices into p1 (row indices)
+        ind : array
+            Indices into p2 (column indices)
+
+        Returns
+        -------
+        f : array
+            Surface integral values for each column
         """
-        # f = sum(diag(area1) * g.F * diag(1./area2), 1)
-        # Implementation depends on greenstat object structure
-        return 0.0
+        # Get areas
+        area1 = self.p1.pc.area if hasattr(self.p1, 'pc') else self.p1.area
+        area2 = self.p2.pc.area if hasattr(self.p2, 'pc') else self.p2.area
+
+        # Extract submatrix F[loc, ind]
+        F_sub = self.F[np.ix_(loc, ind)]
+
+        # Compute weighted sum: f = sum(area1[loc] * F[loc, ind] / area2[ind], axis=0)
+        F_weighted = area1[loc][:, np.newaxis] * F_sub / area2[ind][np.newaxis, :]
+        f = np.sum(F_weighted, axis=0)
+
+        return f
 
     def _fun_closed_greenstat(self, g, **options):
         """
