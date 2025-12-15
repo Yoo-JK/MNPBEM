@@ -206,14 +206,88 @@ class CompGreenRet:
         return g
 
     def _closedparticle(self, p, i):
-        """Get closed particle surface."""
-        # This would call the closedparticle function in MATLAB
-        # For now, return None (closed surface handling can be added later)
-        return None, 1, None
+        """
+        Get closed particle surface.
+
+        MATLAB: closedparticle(p1, i)
+
+        Parameters
+        ----------
+        p : ComParticle
+            Composite particle
+        i : int
+            Particle index (0-indexed in Python)
+
+        Returns
+        -------
+        full : Particle or None
+            Full closed particle
+        dir_val : float
+            Direction indicator (+1 or -1)
+        loc : array or None
+            Local indices
+        """
+        # Call ComParticle's closedparticle method (expects 1-indexed)
+        return p.closedparticle(i + 1)
 
     def _fun_closed(self, g, loc, ind, **options):
-        """Sum over closed surface using already computed Green function."""
-        return 0.0
+        """
+        Sum over closed surface using already computed Green function.
+
+        MATLAB: initclosed.m/fun() with loc and ind arguments
+
+        This is used when the closed particle is contained in the
+        composite particle, so we can use the already-computed Green function.
+
+        Parameters
+        ----------
+        g : GreenRet
+            Green function object (retarded)
+        loc : array
+            Indices into p1 (row indices)
+        ind : array
+            Indices into p2 (column indices)
+
+        Returns
+        -------
+        f : array
+            Surface integral values for each column
+        """
+        # For retarded Green function with loc indices
+        # MATLAB: F = reshape(eval(g, ind, 0, 'F'), [numel(row), numel(col)])
+        # Note: We need to evaluate F at enei=0 (or use quasistatic approximation)
+
+        # Since retarded Green function evaluation is complex, and MATLAB
+        # typically uses quasistatic for closed surface correction anyway,
+        # we fall back to using the quasistatic approximation
+
+        # Get particle objects
+        p1 = g.p1 if hasattr(g, 'p1') else None
+        p2 = g.p2 if hasattr(g, 'p2') else None
+
+        if p1 is None or p2 is None:
+            return np.zeros(len(ind))
+
+        # Use quasistatic Green function for correction
+        from .compgreen_stat import CompGreenStat
+        gstat = CompGreenStat.__new__(CompGreenStat)
+        gstat.deriv = g.deriv if hasattr(g, 'deriv') else 'norm'
+        gstat.p1 = p1
+        gstat.p2 = p2
+        gstat._compute_greenstat(p1, p2, **options)
+
+        # Get areas
+        area1 = p1.area
+        area2 = p2.area
+
+        # Extract submatrix F[loc, ind]
+        F_sub = gstat.F[np.ix_(loc, ind)]
+
+        # Compute weighted sum: f = sum(area1[loc] * F[loc, ind] / area2[ind], axis=0)
+        F_weighted = area1[loc][:, np.newaxis] * F_sub / area2[ind][np.newaxis, :]
+        f = np.sum(F_weighted, axis=0)
+
+        return f
 
     def _fun_closed_stat(self, gstat, **options):
         """
