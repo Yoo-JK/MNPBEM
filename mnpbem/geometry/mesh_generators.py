@@ -63,23 +63,39 @@ def trisphere(n, diameter=1.0, **kwargs):
         print(f'Warning: trisphere.mat not found, using Fibonacci sphere instead')
         return _trisphere_fibonacci(n, diameter, **kwargs)
 
-    # Load sphere data
-    try:
-        data = loadmat(mat_file, simplify_cells=True)
-        sphere_key = f'sphere{n_actual}'
-        sphere = data[sphere_key]
+    # Try to load MATLAB-triangulated version first (for sphere144 only, as test)
+    mat_file_tri = os.path.join(os.path.dirname(__file__), '..', '..',
+                                'Particles', 'particleshapes', 'trisphere_triangulated.mat')
 
-        # Extract vertices
-        # MATLAB: trisphere.m line 38
-        verts = np.column_stack([sphere['x'], sphere['y'], sphere['z']]).astype(float)
-    except (KeyError, ValueError) as e:
-        print(f'Warning: Could not load sphere{n_actual} from trisphere.mat: {e}')
-        print('Falling back to Fibonacci sphere')
-        return _trisphere_fibonacci(n, diameter, **kwargs)
+    faces = None
+    if n_actual == 144 and os.path.exists(mat_file_tri):
+        try:
+            data_tri = loadmat(mat_file_tri, simplify_cells=True)
+            sphere_tri = data_tri['sphere144_tri']
+            verts = np.column_stack([sphere_tri['x'], sphere_tri['y'], sphere_tri['z']]).astype(float)
+            faces = sphere_tri['faces'].astype(int) - 1  # MATLAB 1-indexed to Python 0-indexed
+            print(f'trisphere: loaded MATLAB triangulation for sphere{n_actual}')
+        except Exception as e:
+            print(f'Warning: Could not load MATLAB triangulation: {e}')
 
-    # Triangulate sphere
-    # MATLAB: trisphere.m line 40
-    faces = _sphere_triangulate(verts)
+    # Load sphere data from original file if not loaded yet
+    if faces is None:
+        try:
+            data = loadmat(mat_file, simplify_cells=True)
+            sphere_key = f'sphere{n_actual}'
+            sphere = data[sphere_key]
+
+            # Extract vertices
+            # MATLAB: trisphere.m line 38
+            verts = np.column_stack([sphere['x'], sphere['y'], sphere['z']]).astype(float)
+        except (KeyError, ValueError) as e:
+            print(f'Warning: Could not load sphere{n_actual} from trisphere.mat: {e}')
+            print('Falling back to Fibonacci sphere')
+            return _trisphere_fibonacci(n, diameter, **kwargs)
+
+        # Triangulate sphere using Python
+        # MATLAB: trisphere.m line 40
+        faces = _sphere_triangulate(verts)
 
     # Rescale to diameter
     # MATLAB: trisphere.m line 49
