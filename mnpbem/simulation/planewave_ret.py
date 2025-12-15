@@ -372,8 +372,10 @@ class PlaneWaveRet:
         # MATLAB: scattering.m line 19
         # Normalize to incoming power
         sca = sca / (0.5 * nb)
-        if dsca is not None:
-            dsca['dsca'] = dsca['dsca'] / (0.5 * nb)
+        if dsca is not None and hasattr(dsca, 'dsca'):
+            # dsca is CompStruct with 'dsca' field
+            from ..greenfun import CompStruct
+            dsca = CompStruct(dsca.p, dsca.enei, dsca=dsca.dsca / (0.5 * nb))
 
         return sca, dsca
 
