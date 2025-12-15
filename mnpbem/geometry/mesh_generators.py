@@ -153,7 +153,7 @@ def _add_midpoints_flat(p):
     # Extend face list
     # MATLAB: midpoints.m line 29
     nfaces = len(p.faces)
-    p.faces2 = np.column_stack([p.faces, np.full((nfaces, 6), np.nan)])
+    p.faces2 = np.column_stack([p.faces, np.full((nfaces, 5), np.nan)])
 
     # For triangular faces, add edge midpoint indices
     # MATLAB: midpoints.m line 32
