@@ -251,6 +251,10 @@ def _farfield(self, sig, direction=None):
     # MATLAB: phase = exp(-1i * k * dir * p.pos') * spdiag(p.area)
     phase = np.exp(-1j * k * np.dot(direction, pos.T)) * area  # (ndir, nfaces)
 
+    # Ensure 2D array even for single direction
+    if phase.ndim == 1:
+        phase = phase.reshape(1, -1)
+
     # Find faces connected to medium
     # MATLAB: ind = p.index(find(p.inout(:, 1) == obj.medium)')
     # Inside contribution: faces where inside == medium

@@ -424,10 +424,24 @@ class PlaneWaveRet:
         # MATLAB: extinction.m line 16
         # Optical theorem: ext = (4π/k) Im(pol · E_forward)
         # Note: inner() in MATLAB takes complex conjugate of first argument
-        pol_dot_e = np.sum(np.conj(self.pol) * field.e, axis=1)
+        # field.e: (1, 3, npol) for forward direction
+        # self.pol: (npol, 3)
+        # Extract forward direction and compute dot product for each polarization
+        e_forward = field.e[0]  # (3, npol) or (3,)
+
+        if e_forward.ndim == 1:
+            # Single polarization
+            pol_dot_e = np.sum(np.conj(self.pol[0]) * e_forward)
+        else:
+            # Multiple polarizations: sum over spatial components (axis 0)
+            pol_dot_e = np.sum(np.conj(self.pol.T) * e_forward, axis=0)  # (npol,)
+
         ext = 4 * np.pi / k * np.imag(pol_dot_e)
 
-        return ext
+        # Return scalar for single polarization
+        if np.isscalar(ext) or (isinstance(ext, np.ndarray) and ext.size == 1):
+            return float(np.real(ext)) if np.isscalar(ext) else float(np.real(ext[0]))
+        return np.real(ext)
 
     def __call__(self, p, enei):
         """

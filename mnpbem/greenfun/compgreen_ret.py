@@ -842,6 +842,316 @@ class CompGreenRet:
         """
         return self.eval(0, 0, 'H2', enei)
 
+    def solve(self, exc):
+        """
+        Compute surface charges and currents for given excitation.
+
+        MATLAB: @bemret/solve.m, @bemret/mldivide.m
+
+        Parameters
+        ----------
+        exc : CompStruct
+            CompStruct object with fields for external excitation
+
+        Returns
+        -------
+        sig : CompStruct
+            CompStruct object with surface charges (sig1, sig2) and currents (h1, h2)
+
+        Notes
+        -----
+        Solves the full retarded BEM equations using the formulation of
+        Garcia de Abajo and Howie, PRB 65, 115418 (2002).
+        """
+        # Initialize BEM solver matrices (if needed)
+        self._init_solver(exc.enei)
+
+        # Extract excitation potentials
+        phi, a, alpha, De = self._excitation(exc)
+
+        # Get cached matrices
+        k = self._k_cache
+        nvec = self._nvec_cache
+        G1i = self._G1i_cache
+        G2i = self._G2i_cache
+        L1 = self._L1_cache
+        L2 = self._L2_cache
+        Sigma1 = self._Sigma1_cache
+        Deltai = self._Deltai_cache
+        Sigmai = self._Sigmai_cache
+
+        # Modify alpha and De (MATLAB: mldivide.m lines 30-34)
+        alpha = alpha - self._matmul(Sigma1, a) + \
+                1j * k * self._outer(nvec, self._matmul(L1, phi))
+        De = De - self._matmul(Sigma1, self._matmul(L1, phi)) + \
+                1j * k * self._inner(nvec, self._matmul(L1, a))
+
+        # Solve BEM equations
+        # Eq. (19): sig2 = Sigmai * (De + i*k * nvec·(L1-L2)*Deltai*alpha)
+        # Compute (L1-L2) * Deltai * alpha
+        L_diff = L1 - L2 if not np.isscalar(L1) or not np.isscalar(L2) else L1 - L2
+        Deltai_alpha = self._matmul(Deltai, alpha)
+        L_diff_Deltai_alpha = self._matmul(L_diff, Deltai_alpha)
+
+        sig2 = self._matmul(Sigmai,
+                           De + 1j * k * self._inner(nvec, L_diff_Deltai_alpha))
+
+        # Eq. (20): h2 = Deltai * (i*k * nvec x (L1-L2)*sig2 + alpha)
+        L_diff_sig2 = self._matmul(L_diff, sig2)
+        h2 = self._matmul(Deltai,
+                         1j * k * self._outer(nvec, L_diff_sig2) + alpha)
+
+        # Surface charges and currents (MATLAB: mldivide.m lines 44-45)
+        sig1 = self._matmul(G1i, sig2 + phi)
+        h1 = self._matmul(G1i, h2 + a)
+        sig2 = self._matmul(G2i, sig2)
+        h2 = self._matmul(G2i, h2)
+
+        # Return CompStruct
+        from ..greenfun import CompStruct
+        return CompStruct(self.p1, exc.enei, sig1=sig1, sig2=sig2, h1=h1, h2=h2)
+
+    def _init_solver(self, enei):
+        """
+        Initialize BEM solver matrices.
+
+        MATLAB: @bemret/private/initmat.m
+
+        Parameters
+        ----------
+        enei : float
+            Wavelength in vacuum (nm)
+
+        Notes
+        -----
+        Computes and caches:
+        - G1i, G2i: Inverse Green functions
+        - L1, L2: L = G * eps * G_inv
+        - Sigma1, Sigma2: Sigma = H * G_inv
+        - Deltai: inv(Sigma1 - Sigma2)
+        - Sigmai: inv(Sigma)
+        """
+        # Check if already computed for this wavelength
+        if hasattr(self, '_enei_cache') and self._enei_cache == enei:
+            return
+
+        self._enei_cache = enei
+
+        # Wavenumber
+        k = 2 * np.pi / enei
+
+        # Outer surface normals
+        nvec = self.p1.nvec
+
+        # Dielectric functions
+        eps1_vals = self.p1.eps1(enei)
+        eps2_vals = self.p1.eps2(enei)
+
+        # Create diagonal matrices or scalars
+        # MATLAB: simplify for unique dielectric functions
+        eps1_unique = np.unique(eps1_vals)
+        eps2_unique = np.unique(eps2_vals)
+
+        if len(eps1_unique) == 1:
+            eps1 = eps1_unique[0]
+        else:
+            eps1 = np.diag(eps1_vals)
+
+        if len(eps2_unique) == 1:
+            eps2 = eps2_unique[0]
+        else:
+            eps2 = np.diag(eps2_vals)
+
+        # Green functions and surface derivatives (MATLAB: lines 27-31)
+        # For single closed particle: use full Green functions
+        # The inside/outside distinction is handled via boundary conditions
+        G1 = self.G(enei)
+        G2 = self.G(enei)
+
+        G1i = np.linalg.inv(G1)
+        G2i = np.linalg.inv(G2)
+
+        H1 = self.H1(enei)
+        H2 = self.H2(enei)
+
+        # L matrices [Eq. (22)]
+        # Depending on connectivity, L can be full matrix, diagonal, or scalar
+        con_11 = self.con[0][1] if len(self.con) > 0 and len(self.con[0]) > 1 else 0
+        con_12 = self.con[0][1] if len(self.con) > 0 and len(self.con[0]) > 1 else 0
+
+        # Check if all connectivity is zero
+        all_zero = True
+        for i in range(len(self.con)):
+            for j in range(len(self.con[0])):
+                if self.con[i][j] != 0:
+                    all_zero = False
+                    break
+            if not all_zero:
+                break
+
+        if all_zero:
+            L1 = eps1
+            L2 = eps2
+        else:
+            L1 = self._matmul(self._matmul(G1, eps1), G1i)
+            L2 = self._matmul(self._matmul(G2, eps2), G2i)
+
+        # Sigma and Delta matrices, and combinations (MATLAB: lines 44-56)
+        Sigma1 = self._matmul(H1, G1i)
+        Sigma2 = self._matmul(H2, G2i)
+
+        # Inverse Delta matrix
+        Deltai = np.linalg.inv(Sigma1 - Sigma2)
+
+        # Difference of dielectric functions
+        L = L1 - L2 if not np.isscalar(L1) else L1 - L2
+
+        # Sigma matrix (MATLAB: line 55-56)
+        # Sigma = Sigma1 * L1 - Sigma2 * L2 + k^2 * ((L * Deltai) .* (nvec * nvec')) * L
+        term1 = self._matmul(Sigma1, L1) - self._matmul(Sigma2, L2)
+
+        # k^2 * ((L * Deltai) .* (nvec * nvec')) * L
+        L_Deltai = self._matmul(L, Deltai)
+        nvec_outer = nvec @ nvec.T  # (nfaces, nfaces)
+
+        # Element-wise multiply: (L * Deltai) .* (nvec * nvec')
+        if np.isscalar(L_Deltai):
+            term2_mid = L_Deltai * nvec_outer
+        else:
+            term2_mid = L_Deltai * nvec_outer
+
+        term2 = k**2 * self._matmul(term2_mid, L)
+        Sigma = term1 + term2
+
+        # Inverse Sigma matrix
+        Sigmai = np.linalg.inv(Sigma)
+
+        # Cache everything
+        self._k_cache = k
+        self._nvec_cache = nvec
+        self._eps1_cache = eps1
+        self._eps2_cache = eps2
+        self._G1i_cache = G1i
+        self._G2i_cache = G2i
+        self._L1_cache = L1
+        self._L2_cache = L2
+        self._Sigma1_cache = Sigma1
+        self._Deltai_cache = Deltai
+        self._Sigmai_cache = Sigmai
+
+    def _excitation(self, exc):
+        """
+        Extract excitation variables from CompStruct.
+
+        MATLAB: @bemret/private/excitation.m
+
+        Parameters
+        ----------
+        exc : CompStruct
+            Excitation potential
+
+        Returns
+        -------
+        phi, a, alpha, De : ndarrays
+            Excitation terms for BEM solver
+        """
+        # Default values for potentials (MATLAB: excitation.m lines 4-6)
+        phi1 = 0
+        phi1p = 0
+        a1 = 0
+        a1p = 0
+        phi2 = 0
+        phi2p = 0
+        a2 = 0
+        a2p = 0
+
+        # Extract fields from exc
+        if hasattr(exc, 'phi1'):
+            phi1 = exc.phi1
+        if hasattr(exc, 'phi1p'):
+            phi1p = exc.phi1p
+        if hasattr(exc, 'a1'):
+            a1 = exc.a1
+        if hasattr(exc, 'a1p'):
+            a1p = exc.a1p
+        if hasattr(exc, 'phi2'):
+            phi2 = exc.phi2
+        if hasattr(exc, 'phi2p'):
+            phi2p = exc.phi2p
+        if hasattr(exc, 'a2'):
+            a2 = exc.a2
+        if hasattr(exc, 'a2p'):
+            a2p = exc.a2p
+
+        # Wavenumber and dielectric functions (MATLAB: lines 11-16)
+        k = 2 * np.pi / self._enei_cache
+        eps1 = self._eps1_cache
+        eps2 = self._eps2_cache
+        nvec = self._nvec_cache
+
+        # External excitation (MATLAB: lines 18-29)
+        # Eqs. (10,11)
+        phi = phi2 - phi1 if not (np.isscalar(phi2) and phi2 == 0) or not (np.isscalar(phi1) and phi1 == 0) else 0
+        a = a2 - a1 if not (np.isscalar(a2) and a2 == 0 and np.isscalar(a1) and a1 == 0) else 0
+
+        # Eq. (15): alpha = a2p - a1p - i*k*(nvec x phi2 * eps2 - nvec x phi1 * eps1)
+        alpha = a2p - a1p if not (np.isscalar(a2p) and a2p == 0 and np.isscalar(a1p) and a1p == 0) else 0
+        alpha = alpha - 1j * k * (
+            self._outer(nvec, self._matmul(eps2, phi2)) -
+            self._outer(nvec, self._matmul(eps1, phi1))
+        )
+
+        # Eq. (18): De = eps2*phi2p - eps1*phi1p - i*k*(nvec·a2*eps2 - nvec·a1*eps1)
+        De = self._matmul(eps2, phi2p) - self._matmul(eps1, phi1p)
+        De = De - 1j * k * (
+            self._inner(nvec, self._matmul(eps2, a2)) -
+            self._inner(nvec, self._matmul(eps1, a1))
+        )
+
+        return phi, a, alpha, De
+
+    def _outer(self, nvec, x):
+        """
+        Outer product: nvec × x.
+
+        MATLAB: outer() function
+
+        For nvec (n, 3) and x (n,) or (n, npol), compute nvec × x.
+        """
+        if np.isscalar(x) and x == 0:
+            return 0
+
+        if isinstance(x, np.ndarray):
+            if x.ndim == 1:
+                # x is (n,), result is (n, 3)
+                return nvec * x[:, np.newaxis]
+            else:
+                # x is (n, npol), result is (n, 3, npol)
+                return nvec[:, :, np.newaxis] * x[:, np.newaxis, :]
+        else:
+            return 0
+
+    def _inner(self, nvec, x):
+        """
+        Inner product: nvec · x.
+
+        MATLAB: inner() function
+
+        For nvec (n, 3) and x (n, 3) or (n, 3, npol), compute nvec · x.
+        """
+        if np.isscalar(x) and x == 0:
+            return 0
+
+        if isinstance(x, np.ndarray):
+            if x.ndim == 2:
+                # x is (n, 3), result is (n,)
+                return np.sum(nvec * x, axis=1)
+            elif x.ndim == 3:
+                # x is (n, 3, npol), result is (n, npol)
+                return np.sum(nvec[:, :, np.newaxis] * x, axis=1)
+        else:
+            return 0
+
     def __repr__(self):
         """String representation."""
         return (
