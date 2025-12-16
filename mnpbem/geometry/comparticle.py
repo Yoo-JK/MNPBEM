@@ -701,6 +701,27 @@ class ComParticle:
 
         return np.array(face_indices, dtype=int)
 
+    def bradius(self):
+        """
+        Minimal radius for spheres enclosing boundary elements.
+
+        MATLAB: Particle/@particle/bradius.m (called on each particle)
+
+        Returns
+        -------
+        r : ndarray
+            Minimal radius for spheres enclosing each boundary element
+            Concatenated from all particles in the composite
+
+        Notes
+        -----
+        For composite particles, this concatenates the bradius values
+        from all constituent particles.
+        """
+        # Concatenate bradius from all particles
+        r_list = [part.bradius() for part in self.p]
+        return np.concatenate(r_list)
+
     def __repr__(self):
         return (
             f"ComParticle(nparticles={len(self.p)}, "

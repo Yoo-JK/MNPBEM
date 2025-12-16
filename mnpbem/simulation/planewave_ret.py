@@ -325,7 +325,9 @@ class PlaneWaveRet:
         abs = ext - sca
         """
         # MATLAB: absorption.m line 11
-        return self.extinction(sig) - self.scattering(sig)
+        ext = self.extinction(sig)
+        sca, _ = self.scattering(sig)  # scattering returns (sca, dsca) tuple
+        return ext - sca
 
     def scattering(self, sig):
         """
