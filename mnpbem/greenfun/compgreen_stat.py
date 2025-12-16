@@ -157,8 +157,10 @@ class CompGreenStat:
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
 
-        # Get refinement matrix
-        ir = refinematrix(p1, p2, **options)
+        # Get refinement matrix - filter options for refinematrix
+        refine_opts = {k: v for k, v in options.items()
+                       if k in ['AbsCutoff', 'RelCutoff', 'memsize']}
+        ir = refinematrix(p1, p2, **refine_opts)
 
         # Store refinement indices
         self.ind = np.array(ir.nonzero()).T  # Array of (row, col) pairs
