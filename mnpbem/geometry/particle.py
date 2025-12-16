@@ -56,73 +56,146 @@ class QuadFace:
         # Polar integration for quadrilaterals
         self._init_polar_quad(npol)
 
+    def _lglnodes(self, n):
+        """
+        Legendre-Gauss-Lobatto nodes for integration.
+
+        MATLAB: Misc/integration/lglnodes.m
+
+        Parameters
+        ----------
+        n : int
+            Number of integration points
+
+        Returns
+        -------
+        x : ndarray
+            Integration points in interval [-1, 1]
+        w : ndarray
+            Integration weights
+        """
+        n1 = n + 1
+        # Use Chebyshev-Gauss-Lobatto nodes as first guess
+        x = np.cos(np.pi * np.arange(n1) / n)
+
+        # Legendre Vandermonde Matrix
+        p = np.zeros((n1, n1))
+
+        # Newton-Raphson iteration
+        xold = 2 * np.ones_like(x)
+        while np.max(np.abs(x - xold)) > np.finfo(float).eps:
+            xold = x.copy()
+            p[:, 0] = 1
+            p[:, 1] = x
+
+            for k in range(2, n+1):
+                p[:, k] = ((2*k - 1) * x * p[:, k-1] - (k - 1) * p[:, k-2]) / k
+
+            x = xold - (x * p[:, n] - p[:, n-1]) / (n1 * p[:, n])
+
+        w = 2 / (n * n1 * p[:, n]**2)
+
+        return x, w
+
     def _init_polar_tri(self, npol):
-        """Initialize polar integration for triangles."""
-        # Gauss-Legendre quadrature points and weights
-        from numpy.polynomial.legendre import leggauss
-        r_pts, r_wts = leggauss(npol)
-        # Transform from [-1,1] to [0,1]
-        r_pts = 0.5 * (r_pts + 1)
-        r_wts = 0.5 * r_wts
+        """
+        Initialize polar integration for triangles.
 
-        # Angular divisions (3 corners of triangle)
-        n_theta = 3 * npol
-        theta = np.linspace(0, 2*np.pi, n_theta, endpoint=False)
+        MATLAB: Misc/integration/@quadface/private/init.m lines 25-53
+        """
+        # Default npol is a single value, convert to [nr, ntheta]
+        if isinstance(npol, int):
+            npol = [7, 5]  # MATLAB default
 
-        # Create polar grid
-        x_list, y_list, w_list = [], [], []
-        centroid = np.array([1/3, 1/3])
+        # Legendre-Gauss-Lobatto nodes for radius and angle
+        x1, w1 = self._lglnodes(npol[0])
+        rho = 0.5 * (x1 + 1 + 1e-6)  # Transform to (0, 1]
 
-        for i_theta in range(n_theta):
-            th = theta[i_theta]
-            # Direction from centroid
-            direction = np.array([np.cos(th), np.sin(th)])
+        x2, w2 = self._lglnodes(npol[1])
+        phi = (270 + 60 * x2) / 180 * np.pi  # Angular range for one sector
 
-            # Find max radius to triangle edge
-            r_max = self._max_radius_triangle(centroid, direction)
+        # Rotation angle for 3 sectors
+        phi0 = 120 / 180 * np.pi
 
-            for i_r, (r, wr) in enumerate(zip(r_pts, r_wts)):
-                r_actual = r * r_max
-                pt = centroid + r_actual * direction
-                # Jacobian: r * dr * dtheta
-                w = r_actual * r_max * wr * (2*np.pi / n_theta)
-                x_list.append(pt[0])
-                y_list.append(pt[1])
-                w_list.append(w)
+        # Make 2D meshgrid
+        rho_grid, phi_grid = np.meshgrid(rho, phi, indexing='ij')
+        rho_flat = rho_grid.flatten()
+        phi_flat = phi_grid.flatten()
 
-        self.x3 = np.array(x_list)
-        self.y3 = np.array(y_list)
-        self.w3 = np.array(w_list)
+        # Radius scaling for triangle geometry
+        rad = 1.0 / np.abs(2 * np.sin(phi_flat))
+
+        # Create 3 rotated sectors (120° apart)
+        phi_all = np.concatenate([phi_flat, phi_flat + phi0, phi_flat + 2*phi0])
+        rho_all = np.tile(rho_flat, 3)
+        rad_all = np.tile(rad, 3)
+
+        # Integration points in triangle
+        x = np.cos(phi_all) * rho_all * rad_all
+        y = np.sin(phi_all) * rho_all * rad_all
+
+        # Transform to unit triangle coordinates
+        # MATLAB: (1 - sqrt(3)*x - y)/3, (1 + sqrt(3)*x - y)/3
+        x_tri = (1 - np.sqrt(3) * x - y) / 3
+        y_tri = (1 + np.sqrt(3) * x - y) / 3
+
+        # Integration weights
+        w = np.outer(w1, w2).flatten()  # Tensor product of 1D weights
+        w = w * rho_flat * rad**2  # Include Jacobian
+        w = np.tile(w, 3)  # Replicate for 3 sectors
+        w = w / np.sum(w)  # Normalize to sum to 1
+
+        self.x3 = x_tri
+        self.y3 = y_tri
+        self.w3 = w
 
     def _init_polar_quad(self, npol):
-        """Initialize polar integration for quadrilaterals."""
-        from numpy.polynomial.legendre import leggauss
-        r_pts, r_wts = leggauss(npol)
-        r_pts = 0.5 * (r_pts + 1)
-        r_wts = 0.5 * r_wts
+        """
+        Initialize polar integration for quadrilaterals.
 
-        n_theta = 4 * npol
-        theta = np.linspace(0, 2*np.pi, n_theta, endpoint=False)
+        MATLAB: Misc/integration/@quadface/private/init.m lines 55-80
+        """
+        # Default npol is a single value, convert to [nr, ntheta]
+        if isinstance(npol, int):
+            npol = [7, 5]  # MATLAB default
 
-        x_list, y_list, w_list = [], [], []
-        centroid = np.array([0, 0])  # Center of [-1,1]x[-1,1]
+        # Legendre-Gauss-Lobatto nodes for radius and angle
+        x1, w1 = self._lglnodes(npol[0])
+        rho = 0.5 * (x1 + 1 + 1e-6)  # Transform to (0, 1]
 
-        for i_theta in range(n_theta):
-            th = theta[i_theta]
-            direction = np.array([np.cos(th), np.sin(th)])
-            r_max = self._max_radius_quad(centroid, direction)
+        x2, w2 = self._lglnodes(npol[1])
+        phi = (90 + 45 * x2) / 180 * np.pi  # Angular range for one sector
 
-            for i_r, (r, wr) in enumerate(zip(r_pts, r_wts)):
-                r_actual = r * r_max
-                pt = centroid + r_actual * direction
-                w = r_actual * r_max * wr * (2*np.pi / n_theta)
-                x_list.append(pt[0])
-                y_list.append(pt[1])
-                w_list.append(w)
+        # Rotation angle for 4 sectors
+        phi0 = np.pi / 2
 
-        self.x4 = np.array(x_list)
-        self.y4 = np.array(y_list)
-        self.w4 = np.array(w_list)
+        # Make 2D meshgrid
+        rho_grid, phi_grid = np.meshgrid(rho, phi, indexing='ij')
+        rho_flat = rho_grid.flatten()
+        phi_flat = phi_grid.flatten()
+
+        # Radius scaling for quadrilateral geometry
+        rad = 1.0 / np.abs(np.sin(phi_flat))
+
+        # Create 4 rotated sectors (90° apart)
+        phi_all = np.concatenate([phi_flat, phi_flat + phi0,
+                                  phi_flat + 2*phi0, phi_flat + 3*phi0])
+        rho_all = np.tile(rho_flat, 4)
+        rad_all = np.tile(rad, 4)
+
+        # Integration points in quadrilateral
+        x_quad = np.cos(phi_all) * rho_all * rad_all
+        y_quad = np.sin(phi_all) * rho_all * rad_all
+
+        # Integration weights
+        w = np.outer(w1, w2).flatten()  # Tensor product of 1D weights
+        w = w * rho_flat * rad**2  # Include Jacobian
+        w = np.tile(w, 4)  # Replicate for 4 sectors
+        w = 4 * w / np.sum(w)  # Normalize to sum to 4
+
+        self.x4 = x_quad
+        self.y4 = y_quad
+        self.w4 = w
 
     def _max_radius_triangle(self, center, direction):
         """Find max radius from center to triangle edge."""
