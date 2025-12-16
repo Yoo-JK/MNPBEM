@@ -83,6 +83,10 @@ class CompGreenStat:
         self.p2 = p2
         self.deriv = options.get('deriv', 'norm')
 
+        # BEM solver cache
+        self._enei_cache = None
+        self._mat_cache = None
+
         # Initialize Green function
         self._init(p1, p2, **options)
 
@@ -422,6 +426,78 @@ class CompGreenStat:
         f = np.sum(F_weighted, axis=0)
 
         return f
+
+    def solve(self, exc):
+        """
+        Solve BEM equations for given excitation.
+
+        MATLAB: @bemstat/solve.m, @bemstat/mldivide.m
+
+        Parameters
+        ----------
+        exc : CompStruct
+            compstruct with field 'phip' for external excitation
+
+        Returns
+        -------
+        sig : CompStruct
+            compstruct with field 'sig' for surface charge
+
+        Examples
+        --------
+        >>> from mnpbem.simulation import PlaneWaveStat
+        >>> pol = np.array([1, 0, 0])
+        >>> pw = PlaneWaveStat(pol)
+        >>> exc = pw.potential(cp, enei=400)
+        >>> sig = g.solve(exc)
+        """
+        # Initialize BEM solver (compute resolvent matrix if needed)
+        self._init_solver(exc.enei)
+
+        # Solve: sig = mat @ phip
+        sig_values = self._matmul(self._mat_cache, exc.phip)
+
+        # Return as CompStruct
+        return CompStruct(self.p1, exc.enei, sig=sig_values)
+
+    def _init_solver(self, enei):
+        """
+        Compute BEM resolvent matrix for given wavelength.
+
+        MATLAB: @bemstat/subsref.m (case '()')
+
+        Parameters
+        ----------
+        enei : float
+            light wavelength in vacuum (nm)
+
+        Notes
+        -----
+        Computes: mat = -inv(diag(lambda) + F)
+        where lambda = 2π(ε₁ + ε₂)/(ε₁ - ε₂)
+
+        Reference: Garcia de Abajo & Howie, PRB 65, 115418 (2002), Eq. (23)
+        """
+        # Use previously computed matrix if wavelength hasn't changed
+        if self._enei_cache is not None and self._enei_cache == enei:
+            return
+
+        # Get inside and outside dielectric functions at this wavelength
+        # eps1 = inside, eps2 = outside
+        eps1_vals = self.p1.eps1(enei)  # Array, one value per face
+        eps2_vals = self.p1.eps2(enei)  # Array, one value per face
+
+        # Lambda coefficient [Garcia de Abajo, Eq. (23)]
+        # lambda = 2π(ε₁ + ε₂)/(ε₁ - ε₂)
+        lambda_vals = 2.0 * np.pi * (eps1_vals + eps2_vals) / (eps1_vals - eps2_vals)
+
+        # BEM resolvent matrix
+        # mat = -inv(diag(lambda) + F)
+        A = np.diag(lambda_vals) + self.F
+        self._mat_cache = -np.linalg.inv(A)
+
+        # Cache wavelength
+        self._enei_cache = enei
 
     def eval(self, *args, **kwargs):
         """
