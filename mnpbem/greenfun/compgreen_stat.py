@@ -139,13 +139,16 @@ class CompGreenStat:
         """
         Compute quasistatic Green function matrices G and F.
 
-        MATLAB: greenstat/eval1.m logic
+        MATLAB: greenstat/private/init.m and eval1.m
 
         G(r, r') = 1 / |r - r'|  (no 4π factor)
         F[i,j] = - n_i · (r_i - r_j) / |r_i - r_j|³
 
-        For closed surfaces: F_diagonal = -2π
+        With refinement: diagonal and nearby elements use polar integration
+        Without refinement: F_diagonal = -2π (analytical value)
         """
+        from .utils import refinematrix
+
         pos1 = p1.pos
         pos2 = p2.pos
         nvec1 = p1.nvec
@@ -154,24 +157,141 @@ class CompGreenStat:
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
 
+        # Get refinement matrix
+        ir = refinematrix(p1, p2, **options)
+
+        # Store refinement indices
+        self.ind = np.array(ir.nonzero()).T  # Array of (row, col) pairs
+
         # Compute distances: r[i,j,:] = pos1[i] - pos2[j]
         r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]  # (n1, n2, 3)
         d = np.linalg.norm(r, axis=2)  # (n1, n2)
         d_safe = np.maximum(d, np.finfo(float).eps)
 
+        # Initialize G and F matrices
         # G matrix: G[i,j] = 1/d * area[j]
-        # MATLAB: G = 1./d .* area
         self.G = (1.0 / d_safe) * area2[np.newaxis, :]
 
         # F matrix: F[i,j] = - nvec1[i]·r[i,j] / d³ * area[j]
-        # MATLAB: F = -(n·r) ./ d.^3 .* area
         n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis=2)  # (n1, n2)
-        self.F = -n_dot_r / (d_safe ** 3) * area2[np.newaxis, :]
+        if self.deriv == 'norm':
+            self.F = -n_dot_r / (d_safe ** 3) * area2[np.newaxis, :]
+        else:  # 'cart'
+            # Cartesian derivative: Gp = -r / d³ * area
+            self.F = -r / (d_safe[:, :, np.newaxis] ** 3) * area2[np.newaxis, :, np.newaxis]
 
-        # Handle diagonal for self-interaction
-        if p1 is p2:
-            np.fill_diagonal(self.G, 0.0)
-            np.fill_diagonal(self.F, -2.0 * np.pi)
+        # Apply refinement if needed
+        if len(self.ind) > 0:
+            self._refine_greenstat(p1, p2, ir, **options)
+        else:
+            # No refinement - use analytical diagonal values
+            if p1 is p2:
+                np.fill_diagonal(self.G, 0.0)
+                if self.deriv == 'norm':
+                    np.fill_diagonal(self.F, -2.0 * np.pi)
+                else:  # 'cart'
+                    for i in range(n1):
+                        self.F[i, i, :] = -2.0 * np.pi * nvec1[i]
+
+    def _refine_greenstat(self, p1, p2, ir, **options):
+        """
+        Refine diagonal and nearby elements using polar integration.
+
+        MATLAB: greenstat/private/init.m lines 35-123
+        """
+        pos1 = p1.pos
+        nvec1 = p1.nvec
+        area2 = p2.area
+
+        # Convert sparse matrix to dense for easier indexing
+        ir_dense = ir.toarray()
+
+        # ===== Diagonal elements (ir == 2) =====
+        diag_mask = ir_dense == 2
+        if np.any(diag_mask):
+            diag_rows, diag_cols = np.where(diag_mask)
+
+            # Unique face indices for p2
+            unique_faces = np.unique(diag_cols)
+
+            # Integration points and weights for polar integration
+            pos_quad, w_quad, row_quad = p2.quadpol(unique_faces)
+
+            # Map from unique_faces to indices
+            face_to_idx = {face: idx for idx, face in enumerate(unique_faces)}
+
+            # Process each diagonal element
+            for face, face2 in zip(diag_rows, diag_cols):
+                # Get integration points for this face
+                mask = row_quad == face_to_idx[face2]
+                pos = pos_quad[mask]
+                w = w_quad[mask]
+
+                # Vector from integration points to centroid
+                vec = pos1[face] - pos
+                r = np.linalg.norm(vec, axis=1)
+                r = np.maximum(r, np.finfo(float).eps)
+
+                # Green function: integral of 1/r
+                g_val = np.sum(w / r)
+                self.G[face, face2] = g_val
+
+                # Surface derivative: integral of -n·vec / r³
+                if self.deriv == 'norm':
+                    n_dot_vec = np.sum(vec * nvec1[face], axis=1)
+                    f_val = -np.sum(w * n_dot_vec / (r ** 3))
+                    self.F[face, face2] = f_val
+                else:  # 'cart'
+                    f_val = -np.sum(w[:, np.newaxis] * vec / (r[:, np.newaxis] ** 3), axis=0)
+                    self.F[face, face2, :] = f_val
+
+        # ===== Off-diagonal refinement elements (ir == 1) =====
+        offdiag_mask = ir_dense == 1
+        if np.any(offdiag_mask):
+            # Get unique faces that need refinement
+            _, offdiag_cols = np.where(offdiag_mask)
+            unique_refine_faces = np.unique(offdiag_cols)
+
+            # Integration points and weights for boundary element integration
+            pos_quad, w_quad = p2.quad(unique_refine_faces)
+
+            # Map from unique_refine_faces to column indices in pos_quad/w_quad
+            face_to_col = {face: idx for idx, face in enumerate(unique_refine_faces)}
+
+            # Process each unique face
+            for face2 in unique_refine_faces:
+                # Find all rows that need refinement for this column
+                nb = np.where(offdiag_mask[:, face2])[0]
+                if len(nb) == 0:
+                    continue
+
+                # Get integration points for this face
+                col_idx = face_to_col[face2]
+                pos = pos_quad[:, col_idx, :]  # (n_quad_points, 3)
+                w = w_quad[:, col_idx]  # (n_quad_points,)
+
+                # Difference vectors: centroids - integration points
+                # pos1[nb] shape: (len(nb), 3)
+                # pos shape: (n_quad, 3)
+                # vec shape: (len(nb), n_quad, 3)
+                vec = pos1[nb, np.newaxis, :] - pos[np.newaxis, :, :]
+                r = np.linalg.norm(vec, axis=2)  # (len(nb), n_quad)
+                r = np.maximum(r, np.finfo(float).eps)
+
+                # Green function: (1/r) @ w
+                g_vals = (1.0 / r) @ w  # (len(nb),)
+                self.G[nb, face2] = g_vals
+
+                # Surface derivative
+                if self.deriv == 'norm':
+                    # n·vec / r³
+                    n_dot_vec = np.sum(nvec1[nb, np.newaxis, :] * vec, axis=2)  # (len(nb), n_quad)
+                    f_vals = -(n_dot_vec / (r ** 3)) @ w  # (len(nb),)
+                    self.F[nb, face2] = f_vals
+                else:  # 'cart'
+                    # -vec / r³
+                    f_vals = -(vec / r[:, :, np.newaxis] ** 3) @ w  # (len(nb), 3)
+                    self.F[nb, face2, :] = f_vals
 
     def _handle_closed_surfaces(self, p1, p2, full1, **options):
         """

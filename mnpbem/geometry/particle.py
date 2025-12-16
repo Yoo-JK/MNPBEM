@@ -2479,6 +2479,40 @@ class Particle:
         plt.show()
         return fig, ax
 
+    def bradius(self):
+        """
+        Minimal radius for spheres enclosing boundary elements.
+
+        MATLAB: Misc/+misc/bradius.m
+
+        Returns
+        -------
+        r : ndarray
+            Minimal radius for spheres enclosing each boundary element
+        """
+        r = np.zeros(self.nfaces)
+
+        # Triangular and quadrilateral faces
+        ind3, ind4 = self.index34(np.arange(self.nfaces))
+
+        # Distance between two points
+        def dist(x, y):
+            return np.linalg.norm(x - y, axis=1)
+
+        # Maximal distance between centroids and triangle edges
+        if len(ind3) > 0:
+            for i in range(3):
+                vert_coords = self.verts[self.faces[ind3, i].astype(int)]
+                r[ind3] = np.maximum(r[ind3], dist(self.pos[ind3], vert_coords))
+
+        # Maximal distance between centroids and quadface edges
+        if len(ind4) > 0:
+            for i in range(4):
+                vert_coords = self.verts[self.faces[ind4, i].astype(int)]
+                r[ind4] = np.maximum(r[ind4], dist(self.pos[ind4], vert_coords))
+
+        return r
+
     # ==================== String representations ====================
 
     def __repr__(self):
