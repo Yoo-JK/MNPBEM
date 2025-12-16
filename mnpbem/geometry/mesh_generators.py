@@ -118,6 +118,11 @@ def trisphere(n, diameter=1.0, **kwargs):
     # MATLAB: trisphere.m line 61
     p = Particle(verts2, p.faces2, **kwargs)
 
+    # Set curved interpolation mode
+    # MATLAB: trisphere.m uses 'curv' option in particle init
+    p.interp = 'curv'
+    p._norm()  # Recompute normals for curved boundaries
+
     return p
 
 
@@ -232,6 +237,10 @@ def _trisphere_fibonacci(n, diameter=1.0, **kwargs):
     norms = np.linalg.norm(p.verts2, axis=1, keepdims=True)
     verts2 = (diameter / 2.0) * (p.verts2 / norms)
     p = Particle(verts2, p.faces2, **kwargs)
+
+    # Set curved interpolation mode
+    p.interp = 'curv'
+    p._norm()  # Recompute normals for curved boundaries
 
     return p
 
