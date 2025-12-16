@@ -203,7 +203,6 @@ class CompGreenStat:
         """
         pos1 = p1.pos
         nvec1 = p1.nvec
-        area2 = p2.area
 
         # Convert sparse matrix to dense for easier indexing
         ir_dense = ir.toarray()
@@ -255,22 +254,28 @@ class CompGreenStat:
             unique_refine_faces = np.unique(offdiag_cols)
 
             # Integration points and weights for boundary element integration
-            pos_quad, w_quad = p2.quad(unique_refine_faces)
+            # Returns: pos (n_total, 3), w_sparse (n_faces, n_total)
+            pos_quad, w_sparse = p2.quad_integration(unique_refine_faces)
 
-            # Map from unique_refine_faces to column indices in pos_quad/w_quad
-            face_to_col = {face: idx for idx, face in enumerate(unique_refine_faces)}
+            # Convert sparse to dense for easier processing
+            w_dense = w_sparse.toarray()  # (n_faces, n_total)
 
             # Process each unique face
-            for face2 in unique_refine_faces:
+            for i, face2 in enumerate(unique_refine_faces):
                 # Find all rows that need refinement for this column
                 nb = np.where(offdiag_mask[:, face2])[0]
                 if len(nb) == 0:
                     continue
 
-                # Get integration points for this face
-                col_idx = face_to_col[face2]
-                pos = pos_quad[:, col_idx, :]  # (n_quad_points, 3)
-                w = w_quad[:, col_idx]  # (n_quad_points,)
+                # Get integration points and weights for this face
+                # Find non-zero weights for this face
+                w = w_dense[i]
+                mask = w > 0
+                pos = pos_quad[mask]
+                w = w[mask]
+
+                if len(w) == 0:
+                    continue
 
                 # Difference vectors: centroids - integration points
                 # pos1[nb] shape: (len(nb), 3)
