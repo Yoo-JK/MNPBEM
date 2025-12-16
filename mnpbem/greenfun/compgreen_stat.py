@@ -212,38 +212,33 @@ class CompGreenStat:
         if np.any(diag_mask):
             diag_rows, diag_cols = np.where(diag_mask)
 
-            # Unique face indices for p2
-            unique_faces = np.unique(diag_cols)
-
             # Integration points and weights for polar integration
-            pos_quad, w_quad, row_quad = p2.quadpol(unique_faces)
+            # Call quadpol with ALL diagonal faces at once (MATLAB-style)
+            pos_quad, w_quad, row_quad = p2.quadpol(diag_cols)
 
-            # Map from unique_faces to indices
-            face_to_idx = {face: idx for idx, face in enumerate(unique_faces)}
+            # Expand face positions to match integration points
+            # MATLAB: expand = @( x ) subsref( x( face, : ), substruct( '()', { row, ':' } ) );
+            pos1_expanded = pos1[diag_rows[row_quad]]
+            nvec1_expanded = nvec1[diag_rows[row_quad]]
 
-            # Process each diagonal element
-            for face, face2 in zip(diag_rows, diag_cols):
-                # Get integration points for this face
-                mask = row_quad == face_to_idx[face2]
-                pos = pos_quad[mask]
-                w = w_quad[mask]
+            # Vector from centroids to integration points
+            vec = pos1_expanded - pos_quad
+            r = np.linalg.norm(vec, axis=1)
+            r = np.maximum(r, np.finfo(float).eps)
 
-                # Vector from integration points to centroid
-                vec = pos1[face] - pos
-                r = np.linalg.norm(vec, axis=1)
-                r = np.maximum(r, np.finfo(float).eps)
-
-                # Green function: integral of 1/r
-                g_val = np.sum(w / r)
+            # Accumulate values for each unique diagonal element
+            # MATLAB: g( iface ) = accumarray( row, w ./ r );
+            for i, (face, face2) in enumerate(zip(diag_rows, diag_cols)):
+                mask = row_quad == i
+                g_val = np.sum(w_quad[mask] / r[mask])
                 self.G[face, face2] = g_val
 
-                # Surface derivative: integral of -n·vec / r³
                 if self.deriv == 'norm':
-                    n_dot_vec = np.sum(vec * nvec1[face], axis=1)
-                    f_val = -np.sum(w * n_dot_vec / (r ** 3))
+                    n_dot_vec = np.sum(vec[mask] * nvec1_expanded[mask], axis=1)
+                    f_val = -np.sum(w_quad[mask] * n_dot_vec / (r[mask] ** 3))
                     self.F[face, face2] = f_val
                 else:  # 'cart'
-                    f_val = -np.sum(w[:, np.newaxis] * vec / (r[:, np.newaxis] ** 3), axis=0)
+                    f_val = -np.sum(w_quad[mask, np.newaxis] * vec[mask] / (r[mask, np.newaxis] ** 3), axis=0)
                     self.F[face, face2, :] = f_val
 
         # ===== Off-diagonal refinement elements (ir == 1) =====
