@@ -174,12 +174,18 @@ class PlaneWaveRet:
 
         # MATLAB: field.m lines 31-34
         # Index to excited faces
-        ind = np.where(p.inout[:, inout - 1] == self.medium)[0]
-        # Get all face indices for excited particles
-        face_indices = []
-        for i in ind:
-            face_indices.extend(p.index[i])
-        ind = np.array(face_indices)
+        # p.inout is (n_particles, 2) with [eps_inside, eps_outside] for each particle
+        # Find particles where the specified side (inout) has self.medium
+        particle_inds = []
+        for i, inout_pair in enumerate(p.inout):
+            if inout_pair[inout - 1] == self.medium:
+                particle_inds.append(i + 1)  # 1-indexed for index_func
+
+        # Get face indices for those particles
+        if len(particle_inds) > 0:
+            ind = p.index_func(particle_inds)
+        else:
+            ind = np.array([], dtype=int)
 
         # MATLAB: field.m lines 37-38
         npol = pol.shape[0]

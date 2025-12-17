@@ -374,8 +374,77 @@ class GreenRetRefined:
                 np.fill_diagonal(H2, np.diag(F) - 2.0 * np.pi)
             return H2
 
+        elif key == 'Gp':
+            # Cartesian derivative of Green function
+            # MATLAB: eval1.m lines 90-102
+            #
+            # Gp = (ik - 1/d) / d² × [x, y, z] × area × exp(ikd)
+            # Shape: (n1, 3, n2)
+
+            # Auxiliary: f = (ik - 1/d) / d²
+            f_aux = (1j * k - 1.0 / d) / (d**2)
+
+            # Gp components: f × [x, y, z] × area
+            Gp_x = f_aux * x * area2[np.newaxis, :]
+            Gp_y = f_aux * y * area2[np.newaxis, :]
+            Gp_z = f_aux * z * area2[np.newaxis, :]
+
+            # Stack to (n1, n2, 3)
+            Gp = np.stack([Gp_x, Gp_y, Gp_z], axis=-1)
+
+            # Apply refinement if deriv='cart' and refinement exists
+            # For now, refinement is only supported for deriv='norm'
+            # TODO: Add deriv='cart' refinement support
+            if len(self.ind) > 0 and self.deriv == 'cart':
+                # Multi-order expansion for Cartesian derivative
+                # f is (n_refined, 3, order+1) for deriv='cart'
+                ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
+                # Gp_refined = self.f @ ik_powers  # (n_refined, 3)
+                # For now, skip refinement for Gp (requires deriv='cart' initialization)
+                pass
+
+            # Apply phase factor
+            phase = np.exp(1j * k * d)
+            Gp = Gp * phase[:, :, np.newaxis]
+
+            # Permute to (n1, 3, n2) to match MATLAB convention
+            Gp = np.transpose(Gp, (0, 2, 1))
+
+            return Gp
+
+        elif key == 'H1p':
+            # H1p = Gp + 2π × nvec on diagonal
+            # MATLAB: eval1.m line 147
+            Gp = self.eval(k, 'Gp')
+            H1p = Gp.copy()
+
+            if self.p1 is self.p2:
+                # Add 2π × nvec to diagonal elements
+                # H1p[i, :, i] += 2π × nvec[i]
+                nvec = self.p1.nvec
+                n = Gp.shape[0]
+                for i in range(n):
+                    H1p[i, :, i] += 2.0 * np.pi * nvec[i]
+
+            return H1p
+
+        elif key == 'H2p':
+            # H2p = Gp - 2π × nvec on diagonal
+            # MATLAB: eval1.m line 149
+            Gp = self.eval(k, 'Gp')
+            H2p = Gp.copy()
+
+            if self.p1 is self.p2:
+                # Subtract 2π × nvec from diagonal elements
+                nvec = self.p1.nvec
+                n = Gp.shape[0]
+                for i in range(n):
+                    H2p[i, :, i] -= 2.0 * np.pi * nvec[i]
+
+            return H2p
+
         else:
-            raise ValueError(f"Unknown key: {key}. Use 'G', 'F', 'H1', or 'H2'")
+            raise ValueError(f"Unknown key: {key}. Use 'G', 'F', 'H1', 'H2', 'Gp', 'H1p', or 'H2p'")
 
     def __repr__(self):
         n_refined = len(self.ind) if hasattr(self, 'ind') else 0
