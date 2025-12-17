@@ -1229,7 +1229,16 @@ class GreenRetBlock:
         self.deriv = deriv
 
     def eval(self, k, key):
-        """Evaluate Green function for this block."""
+        """
+        Evaluate Green function for this block.
+
+        MATLAB: @greenret/private/eval1.m
+
+        Important: Follows MATLAB order exactly:
+        1. Compute G = 1/d * area (without phase)
+        2. Apply refinement (if needed)
+        3. Multiply by phase: G = G .* exp(ikd)
+        """
         # Compute Green function matrices
         pos1 = self.p1.pos
         pos2 = self.p2.pos
@@ -1239,28 +1248,61 @@ class GreenRetBlock:
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
 
-        # Compute distances
-        r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]
-        d = np.linalg.norm(r, axis=2)
+        # Compute distances (MATLAB lines 24-28)
+        # Use component-wise differences for better numerical stability
+        x = pos1[:, 0:1] - pos2[:, 0]  # Broadcasting: (n1,1) - (n2,) -> (n1,n2)
+        y = pos1[:, 1:2] - pos2[:, 1]
+        z = pos1[:, 2:3] - pos2[:, 2]
+        d = np.sqrt(x**2 + y**2 + z**2)
         d = np.maximum(d, np.finfo(float).eps)
-
-        # Phase factor
-        phase = np.exp(1j * k * d)
 
         # Evaluate based on key
         if key == 'G':
-            # G = exp(ikd)/d * area
-            return (phase / d) * area2[np.newaxis, :]
+            # Green function (MATLAB lines 33-38)
+            # Step 1: G = 1/d * area (without phase)
+            G = (1.0 / d) * area2[np.newaxis, :]
+
+            # Step 2: Apply refinement (TODO: proper polar integration)
+            # Temporary fix: Regularize diagonal to avoid blow-up
+            # MATLAB uses polar integration for near-field elements
+            if self.p1 is self.p2:
+                # For self-interaction, use average of off-diagonal elements
+                # This is a crude approximation without proper refinement
+                diag_vals = np.diag(G)
+                mean_offdiag = np.mean(G[~np.eye(n1, dtype=bool)])
+
+                # Only regularize if diagonal is huge (>1e10)
+                huge_mask = np.abs(diag_vals) > 1e10
+                if np.any(huge_mask):
+                    # Replace huge diagonal values with reasonable estimate
+                    # Use mean of neighbors or set to moderate value
+                    np.fill_diagonal(G, mean_offdiag)
+
+            # Step 3: Multiply by phase factor
+            # MATLAB line 38: G = reshape(G, [n1,n2]) .* exp(1i*k*d)
+            G = G * np.exp(1j * k * d)
+            return G
 
         elif key == 'F':
-            # F = (n·r) * (ik - 1/d) / d² * exp(ikd) * area
-            n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis=2)
-            f_aux = (1j * k - 1.0 / d) / (d ** 2)
-            F = n_dot_r * f_aux * phase * area2[np.newaxis, :]
+            # Surface derivative of Green function (MATLAB lines 44-56)
+            # F = (n·r) * (ik - 1/d) / d² * area
+            n_dot_r = (nvec1[:, 0:1] * x +
+                      nvec1[:, 1:2] * y +
+                      nvec1[:, 2:3] * z)
 
-            # Diagonal correction for closed surfaces
+            F = n_dot_r * (1j * k - 1.0 / d) / (d ** 2) * area2[np.newaxis, :]
+
+            # Apply refinement (TODO: proper polar integration for F)
+            # Temporary fix: Regularize diagonal
             if self.p1 is self.p2:
-                np.fill_diagonal(F, -2.0 * np.pi)
+                diag_vals = np.diag(F)
+                huge_mask = np.abs(diag_vals) > 1e10
+                if np.any(huge_mask):
+                    mean_offdiag = np.mean(F[~np.eye(n1, dtype=bool)])
+                    np.fill_diagonal(F, mean_offdiag)
+
+            # Multiply by phase factor (MATLAB line 55)
+            F = F * np.exp(1j * k * d)
 
             return F
 
