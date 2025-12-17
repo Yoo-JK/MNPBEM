@@ -535,7 +535,7 @@ class Particle:
         n = self.faces.shape[0]
 
         # Get area from integration weights
-        _, w = self.quad_integration()
+        _, w, _ = self.quad_integration()
         self.area = np.array(w.sum(axis=1)).flatten()
 
         ind3, ind4 = self.index34()
@@ -1572,13 +1572,6 @@ class Particle:
         ind4 = np.column_stack([quad_indices, np.arange(n, n + n_quads)])
 
         return faces_tri, ind4
-
-    def _totriangles_curv(self, ind):
-        """Decompose quadrilaterals into triangles (curved)."""
-        # For curved, similar logic but with 6/9-node elements
-        # Simplified version - in practice, curved quads stay as quads
-        faces = self.faces2[ind]
-        return faces, np.array([]).reshape(0, 2)
 
     # ==================== Shape functions ====================
 

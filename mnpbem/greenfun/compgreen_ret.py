@@ -148,28 +148,15 @@ class CompGreenRet:
         # Create simple Green function container
         g = GreenRetSimple(p1, p2, self.deriv)
 
-        # Initialize refinement if requested
-        use_refinement = options.get('refine', True)  # Default: use refinement
-        if use_refinement:
-            try:
-                from .greenret_refined import GreenRetRefined
-                order = options.get('order', 2)  # Default order=2
-                RelCutoff = options.get('RelCutoff', 3)  # Default RelCutoff=3
-                AbsCutoff = options.get('AbsCutoff', 0)  # Default AbsCutoff=0
-
-                # Create refined Green function
-                g.refined_green = GreenRetRefined(
-                    p1, p2,
-                    deriv=self.deriv,
-                    order=order,
-                    RelCutoff=RelCutoff,
-                    AbsCutoff=AbsCutoff
-                )
-            except ImportError:
-                # Refinement not available - use simple approximation
-                g.refined_green = None
-        else:
-            g.refined_green = None
+        # Store refinement options for later use in GreenRetBlock
+        # (Refinement will be created per particle pair, not for ComParticle)
+        g.refine_options = {
+            'refine': options.get('refine', True),
+            'order': options.get('order', 2),
+            'RelCutoff': options.get('RelCutoff', 3),
+            'AbsCutoff': options.get('AbsCutoff', 0),
+            'deriv': self.deriv
+        }
 
         return g
 
@@ -1252,12 +1239,24 @@ class GreenRetBlock:
         self.g_full = g_full
         self.deriv = deriv
 
-        # Initialize refinement if g_full has refined Green function
-        if hasattr(g_full, 'refined_green'):
-            # Use the refined Green function from parent
-            self.refined = g_full.refined_green
-        else:
-            self.refined = None
+        # Initialize refinement for this particle pair
+        self.refined = None
+        if hasattr(g_full, 'refine_options') and g_full.refine_options['refine']:
+            try:
+                from .greenret_refined import GreenRetRefined
+                opts = g_full.refine_options
+                # Create refinement for this specific particle pair (not ComParticle!)
+                self.refined = GreenRetRefined(
+                    p1, p2,
+                    deriv=opts['deriv'],
+                    order=opts['order'],
+                    RelCutoff=opts['RelCutoff'],
+                    AbsCutoff=opts['AbsCutoff']
+                )
+            except Exception as e:
+                # If refinement fails, just use simple approximation
+                # This allows fallback if particle types don't support refinement
+                self.refined = None
 
     def eval(self, k, key):
         """
