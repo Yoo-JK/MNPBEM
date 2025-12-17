@@ -342,59 +342,64 @@ class CompGreenRet:
 
     def _connect(self, p1, p2):
         """
-        Connectivity matrix.
+        Connectivity matrix for regions.
 
-        MATLAB: connect(p1, p2)
+        MATLAB: @compound/connect.m
 
-        Returns connectivity matrix con{i,j} indicating which material
-        index connects particles i and j.
+        Returns connectivity matrix con{i,j} where i,j are REGION indices
+        (not particle indices). For a single particle with inout=[2,1],
+        there are 2 regions: 1=inside, 2=outside.
+
+        con{i,j} is a matrix indicating which material connects region i to j.
         """
-        n1 = len(p1.p)
-        n2 = len(p2.p)
+        # Get masked inout property
+        # MATLAB: get = @(p)(p.inout(p.mask,:))
+        if hasattr(p1, 'inout'):
+            inout1 = p1.inout  # (nparticles, 2) array
+        else:
+            inout1 = np.array([[1, 2]])  # Default
 
-        # Create connectivity cell array
+        if p1 is p2:
+            inout2 = inout1
+        elif hasattr(p2, 'inout'):
+            inout2 = p2.inout
+        else:
+            inout2 = np.array([[1, 2]])
+
+        # Number of regions (columns of inout)
+        # MATLAB: n1 = size(inout{1}, 2); n2 = size(inout{end}, 2)
+        n1 = inout1.shape[1]  # Number of regions in p1 (usually 2: inside, outside)
+        n2 = inout2.shape[1]  # Number of regions in p2
+
+        # Allocate cell array
+        # MATLAB: con = cell(n1, n2)
         con = [[None for _ in range(n2)] for _ in range(n1)]
 
-        # For each particle pair, determine connectivity
+        # Determine whether regions can see each other
+        # MATLAB: lines 48-57
         for i in range(n1):
             for j in range(n2):
-                # Get material indices for particles i and j
-                # MATLAB comparticle stores inout as [[in1, out1], [in2, out2], ...]
-                # Connectivity is determined by matching materials
+                # Get region indices for all particles
+                # io1 = inout{1}(:, i) selects column i from all particles
+                io1 = inout1[:, i]  # (nparticles,) - material index for region i
+                io2 = inout2[:, j]  # (nparticles,) - material index for region j
 
-                # Get material indices
-                if hasattr(p1, 'inout') and hasattr(p2, 'inout'):
-                    inout1 = p1.inout[i] if i < len(p1.inout) else [1, 2]
-                    inout2 = p2.inout[j] if j < len(p2.inout) else [1, 2]
+                # Create comparison matrices
+                # MATLAB: c1 = repmat(io1, [1, length(io2)])
+                npart1 = len(io1)
+                npart2 = len(io2)
+                c1 = np.tile(io1.reshape(-1, 1), (1, npart2))  # (npart1, npart2)
+                c2 = np.tile(io2.reshape(1, -1), (npart1, 1))  # (npart1, npart2)
 
-                    # Check for matching materials
-                    # con[i,j] is the material index where they connect
-                    # Simplified: assume they connect through their shared environment
-                    con[i][j] = self._find_connection(inout1, inout2)
-                else:
-                    # Default: connect through material 1 (usually vacuum/air)
-                    con[i][j] = 1
+                # Connection matrix: regions connect where materials match
+                # MATLAB: con{i,j} = zeros(size(c1)); con{i,j}(c1==c2) = c1(c1==c2)
+                con_mat = np.zeros((npart1, npart2), dtype=int)
+                mask = (c1 == c2)
+                con_mat[mask] = c1[mask]
+
+                con[i][j] = con_mat
 
         return con
-
-    def _find_connection(self, inout1, inout2):
-        """Find connection material index between two particles."""
-        # MATLAB logic: particles connect if they share a material
-        # inout1 = [inside_mat, outside_mat] for particle 1
-        # inout2 = [inside_mat, outside_mat] for particle 2
-
-        # Check if outside materials match (most common case)
-        if inout1[1] == inout2[1]:
-            return inout1[1]
-        # Check if inside of 1 matches outside of 2
-        elif inout1[0] == inout2[1]:
-            return inout1[0]
-        # Check if outside of 1 matches inside of 2
-        elif inout1[1] == inout2[0]:
-            return inout1[1]
-        # Default: use outside material of first particle
-        else:
-            return inout1[1]
 
     def eval(self, i, j, key, enei, ind=None):
         """
@@ -446,73 +451,90 @@ class CompGreenRet:
 
     def _eval1(self, i, j, key, enei):
         """
-        Evaluate retarded Green function (full matrix).
+        Evaluate retarded Green function (full matrix) for region pair (i,j).
 
         MATLAB: @compgreenret/private/eval1.m
+
+        Parameters
+        ----------
+        i, j : int
+            Region indices (0=inside, 1=outside in Python; 1,2 in MATLAB)
+        key : str
+            Type of Green function to evaluate
+        enei : float
+            Wavelength
+
+        Returns
+        -------
+        g : ndarray
+            Green function matrix for all faces
         """
-        # Evaluate connectivity matrix
-        con = self.con[i][j]
+        # Evaluate connectivity matrix for this region pair
+        # MATLAB line 17: con = obj.con{i, j}
+        con = self.con[i][j]  # Matrix of size (nparticles1, nparticles2)
 
         # Evaluate dielectric functions to get wavenumbers
-        # MATLAB: [~, k] = cellfun(@(eps) (eps(enei)), obj.p1.eps)
+        # MATLAB line 19: [~, k] = cellfun(@(eps) (eps(enei)), obj.p1.eps)
         k_list = []
         for eps_func in self.p1.eps:
             eps_val, k_val = eps_func(enei)
             k_list.append(k_val)
 
-        # Get wavenumber for this connection
-        if con is not None and con > 0:
-            k = k_list[con - 1]  # Convert to 0-based indexing
-        else:
-            k = k_list[0]  # Default to first material
-
         # Evaluate G, F, H1, H2
         if key not in ['Gp', 'H1p', 'H2p']:
             # Allocate array
+            # MATLAB line 24: g = zeros(obj.p1.n, obj.p2.n)
             g = np.zeros((self.p1.n, self.p2.n), dtype=complex)
 
             # Loop over composite particles
-            n1 = len(self.p1.p)
-            n2 = len(self.p2.p)
+            # MATLAB lines 26-33: for i1 = 1:size(con,1); for i2 = 1:size(con,2)
+            npart1, npart2 = con.shape
 
-            for i1 in range(n1):
-                for i2 in range(n2):
-                    if self.con[i1][i2] is not None and self.con[i1][i2] > 0:
-                        # Get indices for this block
+            for i1 in range(npart1):
+                for i2 in range(npart2):
+                    # MATLAB line 28: if con(i1, i2)
+                    if con[i1, i2] > 0:
+                        # Get indices for this particle block
                         idx1 = self.p1.index_func(i1 + 1)  # 1-indexed in MATLAB
                         idx2 = self.p2.index_func(i2 + 1)  # 1-indexed in MATLAB
 
                         # Get wavenumber for this connection
-                        k_block = k_list[self.con[i1][i2] - 1]
+                        # MATLAB line 31: k(con(i1,i2))
+                        k_block = k_list[con[i1, i2] - 1]  # Convert 1-based to 0-based
 
                         # Add Green function
+                        # MATLAB line 31: eval(obj.g{i1, i2}, k(con(i1,i2)), key)
                         g_block = self.g[i1][i2].eval(k_block, key)
                         g[np.ix_(idx1, idx2)] = g_block
 
         # Evaluate Gp, H1p, H2p
         else:
             # Allocate array
+            # MATLAB line 38: g = zeros(obj.p1.n, 3, obj.p2.n)
             g = np.zeros((self.p1.n, 3, self.p2.n), dtype=complex)
 
             # Loop over composite particles
-            n1 = len(self.p1.p)
-            n2 = len(self.p2.p)
+            # MATLAB lines 40-47
+            npart1, npart2 = con.shape
 
-            for i1 in range(n1):
-                for i2 in range(n2):
-                    if self.con[i1][i2] is not None and self.con[i1][i2] > 0:
-                        # Get indices for this block
+            for i1 in range(npart1):
+                for i2 in range(npart2):
+                    # MATLAB line 42: if con(i1, i2)
+                    if con[i1, i2] > 0:
+                        # Get indices for this particle block
                         idx1 = self.p1.index_func(i1 + 1)  # 1-indexed in MATLAB
                         idx2 = self.p2.index_func(i2 + 1)  # 1-indexed in MATLAB
 
                         # Get wavenumber for this connection
-                        k_block = k_list[self.con[i1][i2] - 1]
+                        k_block = k_list[con[i1, i2] - 1]  # Convert 1-based to 0-based
 
                         # Add Green function
+                        # MATLAB line 45: eval(obj.g{i1, i2}, k(con(i1,i2)), key)
                         g_block = self.g[i1][i2].eval(k_block, key)
                         g[np.ix_(idx1, range(3), idx2)] = g_block
 
         # Return zero if all elements are zero
+        # MATLAB line 51: if all(g(:) == 0); g = 0; end
         if np.all(g == 0):
             return 0
 
@@ -963,16 +985,28 @@ class CompGreenRet:
             eps2 = np.diag(eps2_vals)
 
         # Green functions and surface derivatives (MATLAB: lines 27-31)
-        # For single closed particle: use full Green functions
-        # The inside/outside distinction is handled via boundary conditions
-        G1 = self.G(enei)
-        G2 = self.G(enei)
+        # Use region-based indexing: 0=inside, 1=outside (Python 0-based)
+        # MATLAB uses {1,1}, {2,1}, {2,2}, {1,2} (1-based)
+        G11 = self.eval(0, 0, 'G', enei)  # inside → inside
+        G21 = self.eval(1, 0, 'G', enei)  # outside → inside
+        G22 = self.eval(1, 1, 'G', enei)  # outside → outside
+        G12 = self.eval(0, 1, 'G', enei)  # inside → outside
+
+        # Compute differences (cross-terms return 0 for closed surface)
+        G1 = G11 - G21 if not (isinstance(G21, int) and G21 == 0) else G11
+        G2 = G22 - G12 if not (isinstance(G12, int) and G12 == 0) else G22
 
         G1i = np.linalg.inv(G1)
         G2i = np.linalg.inv(G2)
 
-        H1 = self.H1(enei)
-        H2 = self.H2(enei)
+        # Same for H1 and H2
+        H11 = self.eval(0, 0, 'H1', enei)
+        H21 = self.eval(1, 0, 'H1', enei)
+        H22 = self.eval(1, 1, 'H2', enei)
+        H12 = self.eval(0, 1, 'H2', enei)
+
+        H1 = H11 - H21 if not (isinstance(H21, int) and H21 == 0) else H11
+        H2 = H22 - H12 if not (isinstance(H12, int) and H12 == 0) else H22
 
         # L matrices [Eq. (22)]
         # Depending on connectivity, L can be full matrix, diagonal, or scalar
@@ -1195,7 +1229,16 @@ class GreenRetBlock:
         self.deriv = deriv
 
     def eval(self, k, key):
-        """Evaluate Green function for this block."""
+        """
+        Evaluate Green function for this block.
+
+        MATLAB: @greenret/private/eval1.m
+
+        Important: Follows MATLAB order exactly:
+        1. Compute G = 1/d * area (without phase)
+        2. Apply refinement (if needed)
+        3. Multiply by phase: G = G .* exp(ikd)
+        """
         # Compute Green function matrices
         pos1 = self.p1.pos
         pos2 = self.p2.pos
@@ -1205,28 +1248,61 @@ class GreenRetBlock:
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
 
-        # Compute distances
-        r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]
-        d = np.linalg.norm(r, axis=2)
+        # Compute distances (MATLAB lines 24-28)
+        # Use component-wise differences for better numerical stability
+        x = pos1[:, 0:1] - pos2[:, 0]  # Broadcasting: (n1,1) - (n2,) -> (n1,n2)
+        y = pos1[:, 1:2] - pos2[:, 1]
+        z = pos1[:, 2:3] - pos2[:, 2]
+        d = np.sqrt(x**2 + y**2 + z**2)
         d = np.maximum(d, np.finfo(float).eps)
-
-        # Phase factor
-        phase = np.exp(1j * k * d)
 
         # Evaluate based on key
         if key == 'G':
-            # G = exp(ikd)/d * area
-            return (phase / d) * area2[np.newaxis, :]
+            # Green function (MATLAB lines 33-38)
+            # Step 1: G = 1/d * area (without phase)
+            G = (1.0 / d) * area2[np.newaxis, :]
+
+            # Step 2: Apply refinement (TODO: proper polar integration)
+            # Temporary fix: Regularize diagonal to avoid blow-up
+            # MATLAB uses polar integration for near-field elements
+            if self.p1 is self.p2:
+                # For self-interaction, use average of off-diagonal elements
+                # This is a crude approximation without proper refinement
+                diag_vals = np.diag(G)
+                mean_offdiag = np.mean(G[~np.eye(n1, dtype=bool)])
+
+                # Only regularize if diagonal is huge (>1e10)
+                huge_mask = np.abs(diag_vals) > 1e10
+                if np.any(huge_mask):
+                    # Replace huge diagonal values with reasonable estimate
+                    # Use mean of neighbors or set to moderate value
+                    np.fill_diagonal(G, mean_offdiag)
+
+            # Step 3: Multiply by phase factor
+            # MATLAB line 38: G = reshape(G, [n1,n2]) .* exp(1i*k*d)
+            G = G * np.exp(1j * k * d)
+            return G
 
         elif key == 'F':
-            # F = (n·r) * (ik - 1/d) / d² * exp(ikd) * area
-            n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis=2)
-            f_aux = (1j * k - 1.0 / d) / (d ** 2)
-            F = n_dot_r * f_aux * phase * area2[np.newaxis, :]
+            # Surface derivative of Green function (MATLAB lines 44-56)
+            # F = (n·r) * (ik - 1/d) / d² * area
+            n_dot_r = (nvec1[:, 0:1] * x +
+                      nvec1[:, 1:2] * y +
+                      nvec1[:, 2:3] * z)
 
-            # Diagonal correction for closed surfaces
+            F = n_dot_r * (1j * k - 1.0 / d) / (d ** 2) * area2[np.newaxis, :]
+
+            # Apply refinement (TODO: proper polar integration for F)
+            # Temporary fix: Regularize diagonal
             if self.p1 is self.p2:
-                np.fill_diagonal(F, -2.0 * np.pi)
+                diag_vals = np.diag(F)
+                huge_mask = np.abs(diag_vals) > 1e10
+                if np.any(huge_mask):
+                    mean_offdiag = np.mean(F[~np.eye(n1, dtype=bool)])
+                    np.fill_diagonal(F, mean_offdiag)
+
+            # Multiply by phase factor (MATLAB line 55)
+            F = F * np.exp(1j * k * d)
 
             return F
 
