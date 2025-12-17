@@ -145,9 +145,33 @@ class CompGreenRet:
         For composite particles, this creates a single Green function
         between the concatenated particles.
         """
-        # For now, return a simple GreenRet object
-        # In full implementation, this would call the greenret class
-        return GreenRetSimple(p1, p2, self.deriv)
+        # Create simple Green function container
+        g = GreenRetSimple(p1, p2, self.deriv)
+
+        # Initialize refinement if requested
+        use_refinement = options.get('refine', True)  # Default: use refinement
+        if use_refinement:
+            try:
+                from .greenret_refined import GreenRetRefined
+                order = options.get('order', 2)  # Default order=2
+                RelCutoff = options.get('RelCutoff', 3)  # Default RelCutoff=3
+                AbsCutoff = options.get('AbsCutoff', 0)  # Default AbsCutoff=0
+
+                # Create refined Green function
+                g.refined_green = GreenRetRefined(
+                    p1, p2,
+                    deriv=self.deriv,
+                    order=order,
+                    RelCutoff=RelCutoff,
+                    AbsCutoff=AbsCutoff
+                )
+            except ImportError:
+                # Refinement not available - use simple approximation
+                g.refined_green = None
+        else:
+            g.refined_green = None
+
+        return g
 
     def _initclosed(self, g, p1, p2, **options):
         """
@@ -1228,6 +1252,13 @@ class GreenRetBlock:
         self.g_full = g_full
         self.deriv = deriv
 
+        # Initialize refinement if g_full has refined Green function
+        if hasattr(g_full, 'refined_green'):
+            # Use the refined Green function from parent
+            self.refined = g_full.refined_green
+        else:
+            self.refined = None
+
     def eval(self, k, key):
         """
         Evaluate Green function for this block.
@@ -1239,6 +1270,11 @@ class GreenRetBlock:
         2. Apply refinement (if needed)
         3. Multiply by phase: G = G .* exp(ikd)
         """
+        # Use refined Green function if available
+        if self.refined is not None:
+            return self.refined.eval(k, key)
+
+        # Fallback to simple approximation (if refinement not initialized)
         # Compute Green function matrices
         pos1 = self.p1.pos
         pos2 = self.p2.pos
@@ -1260,23 +1296,10 @@ class GreenRetBlock:
         if key == 'G':
             # Green function (MATLAB lines 33-38)
             # Step 1: G = 1/d * area (without phase)
-            G = (1.0 / d) * area2[np.newaxis, :]
+            G = (1.0 / d) * area2[np.newaxis, :] + 0j  # Complex
 
-            # Step 2: Apply refinement (TODO: proper polar integration)
-            # Temporary fix: Regularize diagonal to avoid blow-up
-            # MATLAB uses polar integration for near-field elements
-            if self.p1 is self.p2:
-                # For self-interaction, use average of off-diagonal elements
-                # This is a crude approximation without proper refinement
-                diag_vals = np.diag(G)
-                mean_offdiag = np.mean(G[~np.eye(n1, dtype=bool)])
-
-                # Only regularize if diagonal is huge (>1e10)
-                huge_mask = np.abs(diag_vals) > 1e10
-                if np.any(huge_mask):
-                    # Replace huge diagonal values with reasonable estimate
-                    # Use mean of neighbors or set to moderate value
-                    np.fill_diagonal(G, mean_offdiag)
+            # Step 2: No refinement available - use simple approximation
+            # (Refinement should be initialized for accurate results)
 
             # Step 3: Multiply by phase factor
             # MATLAB line 38: G = reshape(G, [n1,n2]) .* exp(1i*k*d)
@@ -1292,14 +1315,8 @@ class GreenRetBlock:
 
             F = n_dot_r * (1j * k - 1.0 / d) / (d ** 2) * area2[np.newaxis, :]
 
-            # Apply refinement (TODO: proper polar integration for F)
-            # Temporary fix: Regularize diagonal
-            if self.p1 is self.p2:
-                diag_vals = np.diag(F)
-                huge_mask = np.abs(diag_vals) > 1e10
-                if np.any(huge_mask):
-                    mean_offdiag = np.mean(F[~np.eye(n1, dtype=bool)])
-                    np.fill_diagonal(F, mean_offdiag)
+            # No refinement - simple approximation only
+            # For accurate results, use refinement (refine=True in options)
 
             # Multiply by phase factor (MATLAB line 55)
             F = F * np.exp(1j * k * d)
