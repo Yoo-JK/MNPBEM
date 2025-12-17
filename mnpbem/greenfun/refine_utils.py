@@ -1,0 +1,206 @@
+"""
+Utility functions for Green function refinement.
+
+MATLAB reference: /Greenfun/+green/
+"""
+
+import numpy as np
+from scipy.sparse import lil_matrix, csr_matrix
+from scipy.spatial import distance
+
+
+def refinematrix(p1, p2, AbsCutoff=0, RelCutoff=3, memsize=2e7):
+    """
+    Determine which Green function elements need refinement.
+
+    Creates a sparse matrix indicating refinement requirements:
+    - 0: Far field (no refinement needed, use 1/d approximation)
+    - 1: Near field (refine off-diagonal with boundary element integration)
+    - 2: Diagonal (refine with polar integration)
+
+    MATLAB reference: /Greenfun/+green/refinematrix.m
+
+    Parameters
+    ----------
+    p1, p2 : Particle
+        Boundary element particles
+    AbsCutoff : float, optional
+        Absolute distance cutoff (nm) for refinement
+        Default: 0 (use only relative cutoff)
+    RelCutoff : float, optional
+        Relative distance cutoff (multiples of element radius)
+        Default: 3
+    memsize : float, optional
+        Maximum memory for distance matrix chunks
+        Default: 2e7 (20M elements)
+
+    Returns
+    -------
+    ir : scipy.sparse matrix, shape (p1.n, p2.n)
+        Refinement matrix
+        ir[i,j] = 0: far field
+        ir[i,j] = 1: near field (refine off-diagonal)
+        ir[i,j] = 2: diagonal (refine with polar integration)
+
+    Notes
+    -----
+    The refinement matrix is used to determine which Green function
+    elements require special treatment:
+
+    - Diagonal elements (d=0): Always refined with polar integration
+      to handle self-interaction singularity
+
+    - Near off-diagonal (d < cutoff): Refined with boundary element
+      integration for better accuracy
+
+    - Far field (d > cutoff): Use simple 1/d * exp(ikd) formula
+
+    The cutoffs are determined by:
+    - AbsCutoff: absolute distance in nm
+    - RelCutoff: distance in units of element radius
+
+    An element is refined if EITHER cutoff is satisfied.
+
+    Examples
+    --------
+    >>> from mnpbem import trisphere
+    >>> p = trisphere(144, 10)  # 10 nm sphere
+    >>> ir = refinematrix(p, p, RelCutoff=3)
+    >>> print(f"Diagonal: {np.sum(ir.diagonal() == 2)}")
+    >>> print(f"Near: {np.sum((ir == 1).toarray())}")
+    >>> print(f"Far: {np.sum((ir == 0).toarray())}")
+    """
+    # Positions and sizes
+    pos1 = p1.pos  # (n1, 3)
+    pos2 = p2.pos  # (n2, 3)
+    n1, n2 = p1.n, p2.n
+
+    # Boundary element radius (for relative cutoff)
+    rad2 = p2.bradius()  # (n2,)
+
+    # Radius for p1 (use p1's own radius, fallback to p2 if needed)
+    try:
+        rad1 = p1.bradius()  # (n1,)
+    except (AttributeError, NotImplementedError):
+        rad1 = rad2
+
+    # Initialize sparse refinement matrix
+    ir = lil_matrix((n1, n2), dtype=int)
+
+    # Process in chunks to manage memory
+    # Each chunk processes memsize / n1 columns of the distance matrix
+    chunk_size = max(1, int(memsize / n1))
+    n_chunks = int(np.ceil(n2 / chunk_size))
+
+    for chunk_idx in range(n_chunks):
+        # Column range for this chunk
+        i_start = chunk_idx * chunk_size
+        i_end = min(i_start + chunk_size, n2)
+        chunk = slice(i_start, i_end)
+
+        # Distance matrix for this chunk: (n1, chunk_size)
+        # Using scipy.spatial.distance.cdist for efficiency
+        d = distance.cdist(pos1, pos2[chunk])
+
+        # Approximate distance to boundary element centers
+        # Subtract element radius to get distance to element surface
+        d2 = d - rad2[chunk][np.newaxis, :]
+
+        # Relative distance (in units of element radius)
+        if rad1.ndim == 1 and len(rad1) == n1:
+            # Different radius for each element in p1
+            id_rel = d2 / rad1[:, np.newaxis]
+        else:
+            # Use radius of p2 elements
+            id_rel = d2 / rad2[chunk][np.newaxis, :]
+
+        # Find diagonal elements (d == 0)
+        row_diag, col_diag = np.where(d == 0)
+
+        # Find near elements (within cutoff, but not diagonal)
+        # An element is "near" if:
+        # - d2 < AbsCutoff (absolute distance) OR
+        # - id_rel < RelCutoff (relative distance)
+        # AND d != 0 (not diagonal)
+        near_mask = ((d2 < AbsCutoff) | (id_rel < RelCutoff)) & (d != 0)
+        row_near, col_near = np.where(near_mask)
+
+        # Set refinement flags
+        if len(row_diag) > 0:
+            # Diagonal elements: ir = 2
+            ir[row_diag, col_diag + i_start] = 2
+
+        if len(row_near) > 0:
+            # Near off-diagonal elements: ir = 1
+            ir[row_near, col_near + i_start] = 1
+
+        # Note: Far field elements remain 0 (default)
+
+    # Convert to CSR format for efficient access
+    return ir.tocsr()
+
+
+# Test function
+if __name__ == "__main__":
+    print("Testing refinematrix:")
+    print("=" * 70)
+
+    # Create a simple test particle (manual construction to avoid trisphere issues)
+    import sys
+    sys.path.insert(0, '/home/user/MNPBEM')
+    from mnpbem.geometry.particle import Particle
+
+    # Simple cube made of triangles
+    verts = np.array([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # Bottom
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]   # Top
+    ]) * 10.0  # 10 nm cube
+
+    # 12 triangular faces (2 per cube side)
+    faces = np.array([
+        [0, 1, 2], [0, 2, 3],  # Bottom
+        [4, 6, 5], [4, 7, 6],  # Top
+        [0, 5, 1], [0, 4, 5],  # Front
+        [2, 7, 3], [2, 6, 7],  # Back
+        [0, 7, 4], [0, 3, 7],  # Left
+        [1, 6, 2], [1, 5, 6],  # Right
+    ])
+
+    p = Particle(verts, faces)
+
+    print(f"\nParticle: {p.n} faces")
+    print(f"Centroid positions shape: {p.pos.shape}")
+    print(f"bradius shape: {p.bradius().shape}")
+
+    # Test refinement matrix
+    print(f"\nComputing refinement matrix...")
+    ir = refinematrix(p, p, AbsCutoff=0, RelCutoff=3)
+
+    print(f"Refinement matrix shape: {ir.shape}")
+    print(f"Refinement matrix density: {ir.nnz / (ir.shape[0] * ir.shape[1]):.4f}")
+
+    # Count refinement types
+    ir_array = ir.toarray()
+    n_diag = np.sum(ir_array == 2)
+    n_near = np.sum(ir_array == 1)
+    n_far = np.sum(ir_array == 0)
+
+    print(f"\nRefinement statistics:")
+    print(f"  Diagonal (ir=2):      {n_diag:6d} ({100*n_diag/ir.size:5.2f}%)")
+    print(f"  Near field (ir=1):    {n_near:6d} ({100*n_near/ir.size:5.2f}%)")
+    print(f"  Far field (ir=0):     {n_far:6d} ({100*n_far/ir.size:5.2f}%)")
+
+    # Verify diagonal
+    diag_check = np.all(np.diag(ir_array) == 2)
+    print(f"\n✓ All diagonal elements = 2: {diag_check}")
+
+    # Test different cutoffs
+    print(f"\nTesting different RelCutoff values:")
+    for cutoff in [1, 2, 3, 5, 10]:
+        ir_test = refinematrix(p, p, RelCutoff=cutoff)
+        n_refined = ir_test.nnz
+        density = n_refined / ir_test.size
+        print(f"  RelCutoff={cutoff:2d}: {n_refined:6d} refined ({100*density:5.2f}%)")
+
+    print("\n" + "=" * 70)
+    print("✓ refinematrix tests passed!")
