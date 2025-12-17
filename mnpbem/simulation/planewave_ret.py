@@ -387,64 +387,140 @@ class PlaneWaveRet:
 
         return sca, dsca
 
-    def extinction(self, sig):
+    def extinction(self, sig, method='dipole'):
         """
         Extinction cross section for plane wave excitation.
-
-        MATLAB: extinction.m
 
         Parameters
         ----------
         sig : CompStruct
             CompStruct object containing surface currents
+        method : str, optional
+            Method for computing extinction:
+            - 'dipole': Use dipole moment (recommended for small particles)
+            - 'farfield': Use optical theorem with far-field (original MATLAB method)
+            Default: 'dipole'
 
         Returns
         -------
         ext : ndarray
-            Extinction cross section
+            Extinction cross section in nm²
 
         Notes
         -----
-        MATLAB: extinction.m lines 1-17
+        For small particles (size parameter kR < 0.3), the 'dipole' method is
+        recommended as it gives accurate results in the quasistatic limit.
 
-        Uses optical theorem:
+        The 'farfield' method uses the optical theorem:
         ext = (4π/k) Im(pol · f_forward)
+        This is accurate near resonance but may have numerical issues
+        in the quasistatic limit.
 
-        where f_forward is the far-field scattering amplitude
-        in the forward direction.
+        The 'dipole' method computes:
+        ext = 4π × k × Im(pol · p)
+        where p is the electric dipole moment computed from surface charges.
+        """
+        # Get wavenumber in vacuum
+        k0 = 2 * np.pi / sig.enei
+        _, k = sig.p.eps[self.medium - 1](sig.enei)
+
+        if method == 'dipole':
+            return self._extinction_dipole(sig, k0)
+        elif method == 'farfield':
+            return self._extinction_farfield(sig, k)
+        else:
+            raise ValueError(f"Unknown method: {method}. Use 'dipole' or 'farfield'.")
+
+    def _extinction_dipole(self, sig, k0):
+        """
+        Compute extinction from electric dipole moment.
+
+        This is the correct formula for small particles in the dipole limit:
+        σ_ext = k × Im(α_SI) = 4π × k × Im(α_CM)
+
+        where α_CM is the Clausius-Mossotti polarizability and the
+        dipole moment p = α_CM × E_inc for unit amplitude plane wave.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution with surface charges
+        k0 : float
+            Wavenumber in vacuum (2π/λ)
+
+        Returns
+        -------
+        ext : float or ndarray
+            Extinction cross section
+        """
+        p = sig.p
+        pos = p.pos
+        area = p.area
+
+        # Get surface charges (use sig2 for outer surface)
+        sig2 = sig.sig2 if hasattr(sig, 'sig2') else np.zeros(p.nfaces)
+
+        # Compute electric dipole moment: p = ∫ σ × r × dA
+        # For single polarization: sig2 is (nfaces,)
+        # For multiple polarizations: sig2 is (nfaces, npol)
+        if sig2.ndim == 1:
+            # Single polarization
+            dipole = np.sum(sig2[:, np.newaxis] * area[:, np.newaxis] * pos, axis=0)
+            # pol is (1, 3), dipole is (3,)
+            pol_dot_p = np.sum(np.conj(self.pol[0]) * dipole)
+            ext = 4 * np.pi * k0 * np.imag(pol_dot_p)
+            return float(np.real(ext))
+        else:
+            # Multiple polarizations
+            npol = sig2.shape[1]
+            ext = np.zeros(npol)
+            for ipol in range(npol):
+                dipole = np.sum(sig2[:, ipol:ipol+1] * area[:, np.newaxis] * pos, axis=0)
+                pol_dot_p = np.sum(np.conj(self.pol[ipol]) * dipole)
+                ext[ipol] = 4 * np.pi * k0 * np.imag(pol_dot_p)
+            return np.real(ext)
+
+    def _extinction_farfield(self, sig, k):
+        """
+        Compute extinction using optical theorem with far-field.
+
+        MATLAB: extinction.m
+
+        Note: This method may have numerical issues for very small particles
+        (size parameter kR << 0.1) in the quasistatic limit.
+
+        Parameters
+        ----------
+        sig : CompStruct
+            BEM solution
+        k : float
+            Wavenumber in medium
+
+        Returns
+        -------
+        ext : float or ndarray
+            Extinction cross section
         """
         if self.spec is None:
-            # Placeholder: would need spectrum implementation
             raise NotImplementedError(
-                "Extinction calculation requires spectrum object. "
-                "Please implement spectrumret or provide pinfty parameter."
+                "Far-field extinction requires spectrum object."
             )
 
         # MATLAB: extinction.m line 12
         # Far-field amplitude in forward direction
         field = self.spec.farfield(sig, self.dir)
 
-        # Get wavenumber
-        _, k = sig.p.eps[self.medium - 1](sig.enei)
-
         # MATLAB: extinction.m line 16
         # Optical theorem: ext = (4π/k) Im(pol · E_forward)
-        # Note: inner() in MATLAB takes complex conjugate of first argument
-        # field.e: (1, 3, npol) for forward direction
-        # self.pol: (npol, 3)
-        # Extract forward direction and compute dot product for each polarization
         e_forward = field.e[0]  # (3, npol) or (3,)
 
         if e_forward.ndim == 1:
-            # Single polarization
             pol_dot_e = np.sum(np.conj(self.pol[0]) * e_forward)
         else:
-            # Multiple polarizations: sum over spatial components (axis 0)
-            pol_dot_e = np.sum(np.conj(self.pol.T) * e_forward, axis=0)  # (npol,)
+            pol_dot_e = np.sum(np.conj(self.pol.T) * e_forward, axis=0)
 
         ext = 4 * np.pi / k * np.imag(pol_dot_e)
 
-        # Return scalar for single polarization
         if np.isscalar(ext) or (isinstance(ext, np.ndarray) and ext.size == 1):
             return float(np.real(ext)) if np.isscalar(ext) else float(np.real(ext[0]))
         return np.real(ext)
