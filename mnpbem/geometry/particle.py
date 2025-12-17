@@ -1225,7 +1225,12 @@ class Particle:
             posy = tri_dy @ self.verts2[face]
 
             nvec = np.cross(posx, posy)
-            jac = 0.5 * np.linalg.norm(nvec, axis=1)
+            # Jacobian is |dX/dξ × dX/dη|, NO 0.5 factor!
+            # The cross product already gives the area element ratio.
+            # For flat triangle: |J| = |edge1 × edge2| = 2 × triangle_area
+            # Integral: Σ w × |J| where Σ w = 0.5 (reference triangle area)
+            # gives the correct physical area.
+            jac = np.linalg.norm(nvec, axis=1)
 
             weights[it] = w * jac
             rows[it] = face_idx
@@ -1529,7 +1534,11 @@ class Particle:
             jac = np.linalg.norm(nvec, axis=1)
 
             # Integration weights
-            weight[it] = 0.5 * w * jac  # 0.5 factor for triangle
+            # NO 0.5 factor! The Jacobian |dX/dξ × dX/dη| already gives
+            # the correct area element ratio. For flat triangle: |J| = 2 × area
+            # Combined with Σw = 0.5 (reference triangle area), this gives
+            # correct physical area.
+            weight[it] = w * jac
 
             # Row and column indices
             row[it] = idx
