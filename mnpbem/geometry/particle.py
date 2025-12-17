@@ -7,8 +7,11 @@ Matches MATLAB MNPBEM @particle implementation exactly.
 import numpy as np
 from scipy.linalg import expm
 from scipy.sparse import csr_matrix, diags
+from ..utils.quadface import QuadFace as QuadFaceNew
+from ..geometry.shape_functions import TriangleShape, QuadShape
 
 
+# Keep old QuadFace for backward compatibility temporarily
 class QuadFace:
     """
     Integration rules for triangular/quadrilateral boundary elements.
@@ -358,9 +361,9 @@ class Particle:
             self.faces2 = None
 
         # Quadrature rules
-        rule = kwargs.get('rule', 3)
-        npol = kwargs.get('npol', 5)
-        self.quad = QuadFace(rule=rule, npol=npol)
+        rule = kwargs.get('rule', 18)  # Use rule=18 (37 points) for high accuracy
+        npol = kwargs.get('npol', (7, 5))  # (n_radial, n_angular)
+        self.quad = QuadFaceNew(rule=rule, npol=npol)
 
         # Interpolation type
         self.interp = interp
@@ -1369,6 +1372,213 @@ class Particle:
                 offset += m4
 
         return pos, weight, row
+
+    def quad(self, ind=None):
+        """
+        Quadrature points and weights for boundary element integration.
+
+        MATLAB: [pos, w, iface] = quad(obj, ind)
+
+        Parameters
+        ----------
+        ind : array_like, optional
+            Face indices
+
+        Returns
+        -------
+        pos : ndarray, shape (n_points, 3)
+            Integration point positions
+        w : scipy.sparse matrix, shape (n_faces, n_points)
+            Integration weights (sparse for efficiency)
+        iface : ndarray, shape (n_points,)
+            Face index for each integration point
+        """
+        if self.interp == 'flat':
+            return self._quad_flat(ind)
+        else:
+            return self._quad_curv(ind)
+
+    def _quad_flat(self, ind=None):
+        """
+        Boundary element quadrature for flat surfaces.
+
+        MATLAB: /Particles/@particle/private/quad_flat.m
+        """
+        if ind is None:
+            ind = np.arange(self.nfaces)
+        ind = np.asarray(ind)
+
+        # Decompose quads into triangles
+        faces_tri, ind4 = self._totriangles(ind)
+
+        # Index to triangles
+        ind3 = np.arange(len(ind))
+        if len(ind4) > 0:
+            ind3 = np.concatenate([ind3, ind4[:, 0]])
+
+        # Normal vectors of triangular elements
+        v1 = self.verts[faces_tri[:, 1].astype(int)] - self.verts[faces_tri[:, 0].astype(int)]
+        v2 = self.verts[faces_tri[:, 2].astype(int)] - self.verts[faces_tri[:, 0].astype(int)]
+        nvec = np.cross(v1, v2)
+        area = 0.5 * np.linalg.norm(nvec, axis=1)
+
+        # Integration points and weights
+        q = self.quad
+        x, y, w = q.x, q.y, q.w
+        m = len(w)  # Number of integration points
+
+        # Total number of points
+        n_total = m * len(ind3)
+
+        # Allocate arrays
+        pos = np.zeros((n_total, 3))
+        weight = np.zeros(n_total)
+        row = np.zeros(n_total, dtype=int)
+        col = np.zeros(n_total, dtype=int)
+
+        # Triangular shape functions
+        tri_shape = np.column_stack([x, y, 1 - x - y])
+
+        # Loop over triangular elements
+        offset = 0
+        for i, idx in enumerate(ind3):
+            it = slice(offset, offset + m)
+            face = faces_tri[i, :3].astype(int)
+
+            # Interpolate integration points
+            pos[it] = tri_shape @ self.verts[face]
+
+            # Integration weights
+            weight[it] = w * area[i]
+
+            # Row and column indices for sparse matrix
+            row[it] = idx
+            col[it] = np.arange(offset, offset + m)
+
+            offset += m
+
+        # Create sparse weight matrix
+        from scipy.sparse import csr_matrix
+        w_sparse = csr_matrix((weight, (row, col)), shape=(len(ind), n_total))
+
+        # Face index for integration points
+        iface = row
+
+        return pos, w_sparse, iface
+
+    def _quad_curv(self, ind=None):
+        """
+        Boundary element quadrature for curved surfaces.
+
+        MATLAB: /Particles/@particle/private/quad_curv.m
+        """
+        if ind is None:
+            ind = np.arange(self.nfaces)
+        ind = np.asarray(ind)
+
+        if self.verts2 is None or self.faces2 is None:
+            raise ValueError("Curved integration requires verts2 and faces2")
+
+        # Get curved faces
+        faces = self.faces2[ind]
+
+        # Decompose into triangles
+        faces_tri, ind4 = self._totriangles_curv(ind)
+
+        # Index to triangles
+        ind3 = np.arange(len(ind))
+        if len(ind4) > 0:
+            ind3 = np.concatenate([ind3, ind4[:, 0]])
+
+        # Integration points and weights
+        q = self.quad
+        x, y, w = q.x, q.y, q.w
+        m = len(w)
+
+        # Total number of points
+        n_total = m * len(ind3)
+
+        # Allocate arrays
+        pos = np.zeros((n_total, 3))
+        weight = np.zeros(n_total)
+        row = np.zeros(n_total, dtype=int)
+        col = np.zeros(n_total, dtype=int)
+
+        # 6-node triangle shape functions
+        tri_shape = TriangleShape(6)
+
+        # Loop over triangular elements
+        offset = 0
+        for i, idx in enumerate(ind3):
+            it = slice(offset, offset + m)
+
+            # 6-node vertices for this triangle
+            face_idx = faces_tri[i, :6].astype(int)
+            verts_6 = self.verts2[face_idx]
+
+            # Interpolate positions
+            N = tri_shape(x, y)
+            pos[it] = N @ verts_6
+
+            # Compute Jacobian for area
+            Nx = tri_shape.x(x, y)
+            Ny = tri_shape.y(x, y)
+            posx = Nx @ verts_6
+            posy = Ny @ verts_6
+            nvec = np.cross(posx, posy)
+            jac = np.linalg.norm(nvec, axis=1)
+
+            # Integration weights
+            weight[it] = 0.5 * w * jac  # 0.5 factor for triangle
+
+            # Row and column indices
+            row[it] = idx
+            col[it] = np.arange(offset, offset + m)
+
+            offset += m
+
+        # Create sparse weight matrix
+        from scipy.sparse import csr_matrix
+        w_sparse = csr_matrix((weight, (row, col)), shape=(len(ind), n_total))
+
+        # Face index for integration points
+        iface = row
+
+        return pos, w_sparse, iface
+
+    def _totriangles(self, ind):
+        """Decompose quadrilaterals into triangles (flat)."""
+        faces = self.faces[ind]
+        n = len(ind)
+
+        # Check which are quads
+        is_quad = ~np.isnan(faces[:, 3])
+        n_quads = np.sum(is_quad)
+
+        if n_quads == 0:
+            return faces[:, :3], np.array([]).reshape(0, 2)
+
+        # All elements become triangles
+        faces_tri = np.zeros((n + n_quads, 3))
+        faces_tri[:n, :] = faces[:, :3]
+
+        # Second triangle for quads
+        quad_indices = np.where(is_quad)[0]
+        faces_tri[n:, 0] = faces[is_quad, 0]
+        faces_tri[n:, 1] = faces[is_quad, 2]
+        faces_tri[n:, 2] = faces[is_quad, 3]
+
+        # Index mapping: which original faces do the extra triangles belong to
+        ind4 = np.column_stack([quad_indices, np.arange(n, n + n_quads)])
+
+        return faces_tri, ind4
+
+    def _totriangles_curv(self, ind):
+        """Decompose quadrilaterals into triangles (curved)."""
+        # For curved, similar logic but with 6/9-node elements
+        # Simplified version - in practice, curved quads stay as quads
+        faces = self.faces2[ind]
+        return faces, np.array([]).reshape(0, 2)
 
     # ==================== Shape functions ====================
 
