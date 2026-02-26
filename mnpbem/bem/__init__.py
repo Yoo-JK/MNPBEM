@@ -10,6 +10,10 @@ Classes:
 - BEMLayerMirror: BEM solver (layer + mirror symmetry, not implemented)
 - BEMStatLayer: BEM solver (quasistatic + layer structure)
 - BEMRetLayer: BEM solver (retarded + layer structure)
+- BEMIter: Base class for iterative BEM solvers
+- BEMStatIter: Iterative BEM solver (quasistatic approximation)
+- BEMRetIter: Iterative BEM solver (retarded/full Maxwell)
+- BEMRetLayerIter: Iterative BEM solver (retarded + layer structure)
 """
 
 from .bem_stat import BEMStat
@@ -20,6 +24,10 @@ from .bem_stat_eig_mirror import BEMStatEigMirror
 from .bem_layer_mirror import BEMLayerMirror
 from .bem_stat_layer import BEMStatLayer
 from .bem_ret_layer import BEMRetLayer
+from .bem_iter import BEMIter
+from .bem_stat_iter import BEMStatIter
+from .bem_ret_iter import BEMRetIter
+from .bem_ret_layer_iter import BEMRetLayerIter
 
 __all__ = [
     "BEMStat",
@@ -30,4 +38,8 @@ __all__ = [
     "BEMLayerMirror",
     "BEMStatLayer",
     "BEMRetLayer",
+    "BEMIter",
+    "BEMStatIter",
+    "BEMRetIter",
+    "BEMRetLayerIter",
 ]
