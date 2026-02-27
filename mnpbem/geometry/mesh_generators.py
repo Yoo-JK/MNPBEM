@@ -374,3 +374,302 @@ def triellipsoid(n, axes):
     verts = verts * np.array(axes)
 
     return Particle(verts, faces)
+
+
+# ===========================================================================
+# Helper: surf2patch equivalent
+# ===========================================================================
+
+def _surf2patch(x, y, z, triangles = False):
+    # Python equivalent of MATLAB surf2patch(x, y, z) / surf2patch(x, y, z, 'triangles')
+    # x, y, z are 2D arrays of shape (m, n). Returns (faces, verts).
+    m, n = x.shape
+    verts = np.column_stack([x.ravel(order = 'F'), y.ravel(order = 'F'), z.ravel(order = 'F')])
+
+    faces_list = []
+    for j in range(n - 1):
+        for i in range(m - 1):
+            # Vertex indices (column-major order like MATLAB)
+            v00 = j * m + i
+            v10 = j * m + (i + 1)
+            v01 = (j + 1) * m + i
+            v11 = (j + 1) * m + (i + 1)
+
+            if triangles:
+                # Two triangles per quad
+                faces_list.append([v00, v10, v11])
+                faces_list.append([v00, v11, v01])
+            else:
+                # Quadrilateral
+                faces_list.append([v00, v10, v11, v01])
+
+    faces = np.array(faces_list, dtype = int)
+    return faces, verts
+
+
+# ===========================================================================
+# fvgrid: convert parametric surface to face-vertex structure
+# ===========================================================================
+
+def fvgrid(x: np.ndarray,
+        y: np.ndarray,
+        triangles: bool = False) -> tuple:
+    # MATLAB: Particles/particleshapes/misc/fvgrid.m
+    # Convert 2D grid to face-vertex structure
+    x = np.asarray(x, dtype = float)
+    y = np.asarray(y, dtype = float)
+
+    # If 1D, meshgrid them
+    if x.ndim == 1 and y.ndim == 1:
+        x, y = np.meshgrid(x, y)
+
+    z = np.zeros_like(x)
+
+    # Use surf2patch equivalent
+    faces, verts = _surf2patch(x, y, z, triangles = triangles)
+
+    # MATLAB: fliplr(faces) -- reverse column order for correct normals
+    faces = faces[:, ::-1]
+
+    # Create particle with norm='off'
+    p = Particle(verts, faces, norm = 'off')
+
+    # Add midpoints (flat)
+    p = _add_midpoints_flat(p)
+
+    return p.verts2, p.faces2
+
+
+# ===========================================================================
+# trispheresegment: discretized surface of sphere segment
+# ===========================================================================
+
+def trispheresegment(phi: np.ndarray,
+        theta: np.ndarray,
+        diameter: float = 1.0,
+        **kwargs) -> 'Particle':
+    # MATLAB: Particles/particleshapes/trispheresegment.m
+    phi = np.asarray(phi, dtype = float)
+    theta = np.asarray(theta, dtype = float)
+
+    # Meshgrid phi and theta
+    phi_grid, theta_grid = np.meshgrid(phi, theta)
+
+    # Spherical to cartesian
+    x = diameter / 2.0 * np.sin(theta_grid) * np.cos(phi_grid)
+    y = diameter / 2.0 * np.sin(theta_grid) * np.sin(phi_grid)
+    z = diameter / 2.0 * np.cos(theta_grid)
+
+    # Use surf2patch for quadrilateral faces
+    faces, verts = _surf2patch(x, y, z, triangles = False)
+    faces = faces[:, ::-1]  # flip for correct normals
+
+    p = Particle(verts, faces)
+    p = p.clean()
+
+    # Add midpoints for curved particle boundary
+    p = _add_midpoints_flat(p)
+
+    # Rescale vertices to sphere surface
+    norms = np.sqrt(np.sum(p.verts2 ** 2, axis = 1, keepdims = True))
+    # Avoid division by zero for points at origin
+    norms = np.maximum(norms, 1e-30)
+    verts2 = 0.5 * diameter * (p.verts2 / norms)
+
+    # Create particle with midpoints
+    p = Particle(verts2, p.faces2, **kwargs)
+
+    return p
+
+
+# ===========================================================================
+# trirod: cylinder with hemispherical caps
+# ===========================================================================
+
+def trirod(diameter: float,
+        height: float,
+        n: list = None,
+        **kwargs) -> 'Particle':
+    # MATLAB: Particles/particleshapes/trirod.m
+    if n is None:
+        n = [15, 20, 20]
+    assert len(n) == 3, '[error] n must have 3 elements [nphi, ntheta, nz]'
+
+    nphi, ntheta, nz_cyl = n
+
+    # Angles
+    phi = np.linspace(0, 2 * np.pi, nphi)
+    theta = np.linspace(0, 0.5 * np.pi, ntheta)
+
+    # Upper cap: sphere segment shifted up
+    cap1 = trispheresegment(phi, theta, diameter, **kwargs)
+    cap1.shift([0, 0, 0.5 * (height - diameter)])
+
+    # Lower cap: flip cap1 along z-axis
+    cap2 = cap1.flip(2)
+
+    # z-values for cylinder
+    z_vals = 0.5 * np.linspace(-1, 1, nz_cyl) * (height - diameter)
+
+    # Grid for cylinder
+    verts_grid, faces_grid = fvgrid(phi, z_vals)
+    # Extract phi and z from grid vertices
+    phi_cyl = verts_grid[:, 0]
+    z_cyl = verts_grid[:, 1]
+
+    # Cylinder coordinates
+    x_cyl = 0.5 * diameter * np.cos(phi_cyl)
+    y_cyl = 0.5 * diameter * np.sin(phi_cyl)
+
+    # Create cylinder particle
+    cyl_verts = np.column_stack([x_cyl, y_cyl, z_cyl])
+    cyl = Particle(cyl_verts, faces_grid, **kwargs)
+
+    # Compose particle: cap1 + cap2 + cylinder, then clean
+    p = (cap1 + cap2 + cyl).clean()
+
+    return p
+
+
+# ===========================================================================
+# tricube: cube with rounded edges
+# ===========================================================================
+
+def _square_grid(n: int, e: float) -> tuple:
+    # MATLAB: square() subfunction in tricube.m
+    u = np.linspace(-0.5 ** e, 0.5 ** e, n)
+
+    verts, faces = fvgrid(u, u)
+
+    x = np.sign(verts[:, 0]) * np.abs(verts[:, 0]) ** (1.0 / e)
+    y = np.sign(verts[:, 1]) * np.abs(verts[:, 1]) ** (1.0 / e)
+
+    return x, y, faces
+
+
+def tricube(n: int,
+        length: float = 1.0,
+        e: float = 0.25,
+        **kwargs) -> 'Particle':
+    # MATLAB: Particles/particleshapes/tricube.m
+    # Make length an array of 3
+    if np.isscalar(length):
+        length = np.array([length, length, length], dtype = float)
+    else:
+        length = np.asarray(length, dtype = float)
+        if length.size != 3:
+            length = np.full(3, length.flat[0])
+
+    # Discretize single side of cube
+    x, y, faces = _square_grid(n, e)
+    z = 0.5 * np.ones_like(x)
+
+    # Put together 6 cube sides
+    # MATLAB:  [x, y, z], [y, x, -z], [y, z, x], [x, -z, y], [z, x, y], [-z, y, x]
+    p1 = Particle(np.column_stack([x, y, z]), faces)
+    p2 = Particle(np.column_stack([y, x, -z]), faces)
+    p3 = Particle(np.column_stack([y, z, x]), faces)
+    p4 = Particle(np.column_stack([x, -z, y]), faces)
+    p5 = Particle(np.column_stack([z, x, y]), faces)
+    p6 = Particle(np.column_stack([-z, y, x]), faces)
+
+    p = (p1 + p2 + p3 + p4 + p5 + p6).clean()
+
+    # Convert to spherical coordinates for super-sphere rounding
+    phi_sph, theta_sph = _cart2sph(p.verts2[:, 0], p.verts2[:, 1], p.verts2[:, 2])
+
+    # Signed power functions
+    def isin(x):
+        return np.sign(np.sin(x)) * np.abs(np.sin(x)) ** e
+
+    def icos(x):
+        return np.sign(np.cos(x)) * np.abs(np.cos(x)) ** e
+
+    # Super-sphere vertices
+    x_new = 0.5 * icos(theta_sph) * icos(phi_sph)
+    y_new = 0.5 * icos(theta_sph) * isin(phi_sph)
+    z_new = 0.5 * isin(theta_sph)
+
+    # Create final particle and scale
+    p = Particle(np.column_stack([x_new, y_new, z_new]), p.faces2, **kwargs)
+    p.scale(length)
+
+    return p
+
+
+def _cart2sph(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> tuple:
+    # MATLAB cart2sph equivalent
+    # Returns (azimuth, elevation) -- note MATLAB convention
+    hxy = np.sqrt(x ** 2 + y ** 2)
+    phi = np.arctan2(y, x)  # azimuth
+    theta = np.arctan2(z, hxy)  # elevation
+    return phi, theta
+
+
+# ===========================================================================
+# tritorus: triangulated torus
+# ===========================================================================
+
+def tritorus(diameter: float,
+        rad: float,
+        n: list = None,
+        **kwargs) -> 'Particle':
+    # MATLAB: Particles/particleshapes/tritorus.m
+    if n is None:
+        n = [21, 21]
+    if np.isscalar(n):
+        n = [n, n]
+
+    # Grid triangulation
+    verts_grid, faces_grid = fvgrid(
+        np.linspace(0, 2 * np.pi, n[0]),
+        np.linspace(0, 2 * np.pi, n[1]))
+
+    # Angles
+    phi = verts_grid[:, 0]
+    theta = verts_grid[:, 1]
+
+    # Coordinates of torus
+    x = (0.5 * diameter + rad * np.cos(theta)) * np.cos(phi)
+    y = (0.5 * diameter + rad * np.cos(theta)) * np.sin(phi)
+    z = rad * np.sin(theta)
+
+    # Make torus
+    p = Particle(np.column_stack([x, y, z]), faces_grid, **kwargs).clean()
+
+    return p
+
+
+# ===========================================================================
+# trispherescale: deform surface of sphere
+# ===========================================================================
+
+def trispherescale(p: 'Particle',
+        scale: np.ndarray,
+        unit: bool = False) -> 'Particle':
+    # MATLAB: Particles/particleshapes/trispherescale.m
+    scale = np.asarray(scale, dtype = float)
+
+    if unit:
+        scale = scale / np.max(scale)
+
+    # If scale has same length as nfaces, interpolate to vertices
+    if scale.size == p.nfaces:
+        scale = p.interp_to_verts(scale)
+
+    # Scale vertex positions
+    p.verts = np.reshape(scale, (-1, 1)) * p.verts
+    if p.verts2 is not None:
+        # For verts2, we need to handle the extra midpoints
+        # The first nverts entries match verts, rest are midpoints
+        scale2 = np.empty(len(p.verts2), dtype = float)
+        scale2[:len(scale)] = scale
+        # Interpolate scale for midpoints
+        if len(p.verts2) > len(scale):
+            edges, _ = _get_edges(p.verts, p.faces)
+            for i in range(len(edges)):
+                scale2[len(scale) + i] = 0.5 * (scale[edges[i, 0]] + scale[edges[i, 1]])
+        p.verts2 = np.reshape(scale2, (-1, 1)) * p.verts2
+
+    p._norm()
+    return p
