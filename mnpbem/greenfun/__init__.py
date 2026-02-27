@@ -12,6 +12,8 @@ Classes:
 - CompGreenTabLayer: Composite Green function (retarded + tabulated layer)
 - GreenRetLayer: Reflected Green function for layer structure
 - GreenTabLayer: Tabulated Green function for layer structure
+- ClusterTree: Cluster tree for hierarchical matrix bisection
+- HMatrix: Hierarchical matrix with low-rank approximation
 """
 
 from .compgreen_stat import CompGreenStat, CompStruct
@@ -23,6 +25,8 @@ from .compgreen_ret_layer import CompGreenRetLayer
 from .compgreentab_layer import CompGreenTabLayer
 from .greenret_layer import GreenRetLayer
 from .greentab_layer import GreenTabLayer
+from .clustertree import ClusterTree
+from .hmatrix import HMatrix
 
 __all__ = [
     "CompGreenStat",
@@ -35,4 +39,6 @@ __all__ = [
     "CompGreenTabLayer",
     "GreenRetLayer",
     "GreenTabLayer",
+    "ClusterTree",
+    "HMatrix",
 ]
