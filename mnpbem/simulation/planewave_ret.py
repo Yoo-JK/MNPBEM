@@ -344,8 +344,8 @@ class PlaneWaveRet:
         -------
         sca : ndarray
             Scattering cross section
-        dsca : dict, optional
-            Differential scattering cross section (if requested)
+        dsca : CompStruct
+            Differential scattering cross section
 
         Notes
         -----
@@ -354,30 +354,24 @@ class PlaneWaveRet:
         Uses spectrum object to compute radiated power, normalized
         to incoming power (0.5 * n_b).
         """
-        if self.spec is None:
-            # Placeholder: would need spectrum implementation
-            raise NotImplementedError(
-                "Scattering calculation requires spectrum object. "
-                "Please implement spectrumret or provide pinfty parameter."
-            )
-
         # MATLAB: scattering.m line 13
         # Total and differential radiated power
         sca, dsca = self.spec.scattering(sig)
 
         # MATLAB: scattering.m line 16
         # Refractive index of embedding medium
-        eps_func = sig.p.eps[0]
+        # MATLAB: nb = sqrt(sig.p.eps{1}(sig.enei))
+        eps_func = sig.p.eps[self.medium - 1]
         eps_val, _ = eps_func(sig.enei)
-        nb = np.real(np.sqrt(eps_val))  # Take real part for embedding medium
+        nb = np.real(np.sqrt(eps_val))
 
         # MATLAB: scattering.m line 19
-        # Normalize to incoming power
-        sca = np.real(sca / (0.5 * nb))  # Ensure real result
+        # The scattering cross section is the radiated power normalized to
+        # the incoming power, which is proportional to 0.5 * nb
+        sca = sca / (0.5 * nb)
         if dsca is not None and hasattr(dsca, 'dsca'):
-            # dsca is CompStruct with 'dsca' field
             from ..greenfun import CompStruct
-            dsca = CompStruct(dsca.p, dsca.enei, dsca=np.real(dsca.dsca / (0.5 * nb)))
+            dsca = CompStruct(dsca.p, dsca.enei, dsca = dsca.dsca / (0.5 * nb))
 
         return sca, dsca
 
@@ -394,7 +388,7 @@ class PlaneWaveRet:
 
         Returns
         -------
-        ext : ndarray
+        ext : ndarray or float
             Extinction cross section
 
         Notes
@@ -402,46 +396,53 @@ class PlaneWaveRet:
         MATLAB: extinction.m lines 1-17
 
         Uses optical theorem:
-        ext = (4π/k) Im(pol · f_forward)
+            ext = (4*pi/k) * Im(conj(pol) . E_forward)
 
-        where f_forward is the far-field scattering amplitude
-        in the forward direction.
+        where E_forward is the far-field scattering amplitude evaluated
+        in the forward propagation direction(s).
+
+        MATLAB INNER() calls DOT which conjugates the first argument,
+        hence conj(pol) . e_forward.
         """
-        if self.spec is None:
-            # Placeholder: would need spectrum implementation
-            raise NotImplementedError(
-                "Extinction calculation requires spectrum object. "
-                "Please implement spectrumret or provide pinfty parameter."
-            )
-
         # MATLAB: extinction.m line 12
-        # Far-field amplitude in forward direction
+        # Far-field amplitude in the forward direction(s)
+        # [field, k] = farfield(obj.spec, sig, obj.dir)
         field = self.spec.farfield(sig, self.dir)
 
         # Get wavenumber
         _, k = sig.p.eps[self.medium - 1](sig.enei)
 
         # MATLAB: extinction.m line 16
-        # Optical theorem: ext = (4π/k) Im(pol · E_forward)
-        # Note: inner() in MATLAB takes complex conjugate of first argument
-        # field.e: (1, 3, npol) for forward direction
-        # self.pol: (npol, 3)
-        # Extract forward direction and compute dot product for each polarization
-        e_forward = field.e[0]  # (3, npol) or (3,)
+        # ext = 4*pi/k * diag(imag(inner(obj.pol, field.e))).'
+        # MATLAB inner() conjugates the first argument: inner(a, b) = conj(a) . b
+        #
+        # field.e shape: (npol, 3) when direction has npol rows (one per polarization)
+        # or (npol, 3, npol) if multiple polarizations
+        # self.pol shape: (npol, 3)
+        e_forward = field.e  # (npol, 3) or (npol, 3, npol_sig)
 
-        if e_forward.ndim == 1:
-            # Single polarization
-            pol_dot_e = np.sum(np.conj(self.pol[0]) * e_forward)
+        npol = self.pol.shape[0]
+
+        if e_forward.ndim == 2:
+            # e_forward: (npol_dir, 3)
+            # Each direction row i corresponds to polarization i
+            # Compute conj(pol[i]) . e_forward[i] for each i
+            pol_dot_e = np.sum(np.conj(self.pol) * e_forward[:npol, :], axis = 1)
         else:
-            # Multiple polarizations: sum over spatial components (axis 0)
-            pol_dot_e = np.sum(np.conj(self.pol.T) * e_forward, axis=0)  # (npol,)
+            # e_forward: (npol_dir, 3, npol_sig)
+            # Compute diagonal: for each polarization i, take
+            #   conj(pol[i]) . e_forward[i, :, i]
+            pol_dot_e = np.zeros(npol, dtype = complex)
+            for i in range(npol):
+                pol_dot_e[i] = np.sum(np.conj(self.pol[i]) * e_forward[i, :, i])
 
         ext = 4 * np.pi / k * np.imag(pol_dot_e)
+        ext = np.real(ext)
 
         # Return scalar for single polarization
-        if np.isscalar(ext) or (isinstance(ext, np.ndarray) and ext.size == 1):
-            return float(np.real(ext)) if np.isscalar(ext) else float(np.real(ext[0]))
-        return np.real(ext)
+        if npol == 1:
+            return float(ext[0])
+        return ext
 
     def __call__(self, p, enei):
         """
@@ -469,12 +470,13 @@ class PlaneWaveRet:
         return self.potential(p, enei)
 
     def __repr__(self):
-        return f"PlaneWaveRet(pol={self.pol.tolist()}, dir={self.dir.tolist()}, medium={self.medium})"
+        return "PlaneWaveRet(pol={}, dir={}, medium={})".format(
+            self.pol.tolist(), self.dir.tolist(), self.medium)
 
     def __str__(self):
         return (
-            f"Plane Wave Excitation (Retarded):\n"
-            f"  Polarization: {self.pol}\n"
-            f"  Direction: {self.dir}\n"
-            f"  Medium: {self.medium}"
+            "Plane Wave Excitation (Retarded):\n"
+            "  Polarization: {}\n"
+            "  Direction: {}\n"
+            "  Medium: {}".format(self.pol, self.dir, self.medium)
         )

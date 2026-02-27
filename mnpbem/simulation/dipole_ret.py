@@ -151,12 +151,12 @@ class DipoleRet:
         # MATLAB: init.m lines 50-62
         # Set up spectrum for calculation of radiative decay rate
         if pinfty is None:
-            from ..particle import trisphere
+            from ..geometry import trisphere
             pinfty = trisphere(256, 2)
 
-        # Note: SpectrumRet not yet implemented, placeholder
         # MATLAB: obj.spec = spectrumret(pinfty, 'medium', medium)
-        self.spec = None  # Will implement when needed
+        from ..spectrum import SpectrumRet
+        self.spec = SpectrumRet(pinfty, medium = medium)
         self._pinfty = pinfty
         self._medium = medium
 
@@ -533,7 +533,8 @@ class DipoleRet:
         rad0 = np.zeros((npt, ndip))
 
         # MATLAB: decayrate.m lines 36-38
-        sca = self.scattering(sig)
+        sca, _ = self.scattering(sig)
+        sca = np.asarray(sca)
         rad = sca.reshape(rad0.shape) / (2 * np.pi * k0)
 
         # MATLAB: decayrate.m lines 40-62
@@ -587,12 +588,12 @@ class DipoleRet:
         dip = self.dip
 
         # MATLAB: farfield.m lines 27-33
-        from ..particle import ComParticle
         try:
+            from ..geometry import ComParticle
             field = CompStruct(
                 ComParticle(epstab, [spec.pinfty], spec.medium), enei
             )
-        except:
+        except Exception:
             field = CompStruct(spec.pinfty, enei)
 
         # MATLAB: farfield.m lines 35-42
@@ -635,6 +636,10 @@ class DipoleRet:
 
         MATLAB: scattering.m
 
+        Computes the scattering cross section by combining the far-fields
+        from the surface charge distribution (via SpectrumRet) and the
+        direct dipole far-fields, then integrating the Poynting vector.
+
         Parameters
         ----------
         sig : CompStruct
@@ -644,20 +649,85 @@ class DipoleRet:
         -------
         sca : ndarray
             Scattering cross section
-        dsca : dict, optional
+        dsca : CompStruct
             Differential cross section
+
+        Notes
+        -----
+        MATLAB: scattering.m line 13
+            [sca, dsca] = scattering(obj.spec.farfield(sig) + farfield(obj, obj.spec, sig.enei))
+
+        The total far-field is the sum of the scattered field from the
+        particle surface and the direct dipole radiation field. The
+        standalone scattering() function then integrates the Poynting
+        vector over the unit sphere.
         """
-        # MATLAB: scattering.m lines 12-13
-        if self.spec is None:
-            raise NotImplementedError(
-                "Scattering calculation requires spectrum object. "
-                "Please implement spectrumret."
+        # MATLAB: scattering.m line 13
+        # [sca, dsca] = scattering(
+        #     obj.spec.farfield(sig) + farfield(obj, obj.spec, sig.enei))
+        #
+        # Far-field from surface charges/currents (particle contribution)
+        field_particle = self.spec.farfield(sig)
+        # Far-field from dipole source (direct dipole radiation)
+        field_dipole = self.farfield(self.spec, sig.enei)
+
+        # Add the two far-fields element-wise.
+        # The particle field has shape (ndir, 3) or (ndir, 3, npol),
+        # while the dipole field has shape (ndir, 3, npt, ndip).
+        # We need to broadcast the particle field to match.
+        e_p = field_particle.e
+        h_p = field_particle.h
+        e_d = field_dipole.e
+        h_d = field_dipole.h
+
+        # Expand particle field dimensions to match dipole field
+        while e_p.ndim < e_d.ndim:
+            e_p = e_p[:, :, np.newaxis]
+            h_p = h_p[:, :, np.newaxis]
+
+        e = e_p + e_d
+        h = h_p + h_d
+
+        # Compute scattering from the combined far-field using the
+        # standalone scattering function (Poynting vector integration).
+        # MATLAB: [sca, dsca] = scattering(field)
+        #   dsca = 0.5 * real(inner(nvec, cross(e, conj(h))))
+        #   sca = area' * dsca
+
+        if e.ndim == 2:
+            e = e[:, :, np.newaxis]
+            h = h[:, :, np.newaxis]
+
+        # Handle extra dimensions from dipole (npt, ndip)
+        orig_shape = e.shape[2:]
+        ndir = e.shape[0]
+
+        # Flatten trailing dimensions for integration
+        e_flat = e.reshape(ndir, 3, -1)
+        h_flat = h.reshape(ndir, 3, -1)
+        ncols = e_flat.shape[2]
+
+        # Poynting vector: dsca = 0.5 * real(nvec . (E x conj(H)))
+        dsca_arr = np.zeros((ndir, ncols))
+        for icol in range(ncols):
+            poynting = np.cross(e_flat[:, :, icol], np.conj(h_flat[:, :, icol]))
+            dsca_arr[:, icol] = 0.5 * np.real(
+                np.sum(self.spec.nvec * poynting, axis = 1)
             )
 
-        # Calculate scattering: particle + dipole far fields
-        sca, dsca = self.spec.scattering(
-            self.spec.farfield(sig) + self.farfield(self.spec, sig.enei)
-        )
+        # Total scattering: integrate over sphere
+        sca = np.dot(self.spec.area, dsca_arr)
+
+        # Reshape back to original trailing dimensions
+        if len(orig_shape) > 1:
+            sca = sca.reshape(orig_shape)
+            dsca_arr = dsca_arr.reshape((ndir,) + orig_shape)
+        elif orig_shape == (1,):
+            sca = sca[0]
+            dsca_arr = dsca_arr[:, 0]
+
+        from ..greenfun import CompStruct
+        dsca = CompStruct(field_dipole.p, sig.enei, dsca = dsca_arr)
 
         return sca, dsca
 
@@ -713,12 +783,13 @@ class DipoleRet:
         return self.potential(p, enei)
 
     def __repr__(self):
-        return f"DipoleRet(npt={self.pt.n}, ndip={self.dip.shape[2]})"
+        return "DipoleRet(npt={}, ndip={})".format(self.pt.n, self.dip.shape[2])
 
     def __str__(self):
         return (
-            f"Dipole Excitation (Retarded):\n"
-            f"  Positions: {self.pt.n}\n"
-            f"  Dipole orientations: {self.dip.shape[2]}\n"
-            f"  Dipole shape: {self.dip.shape}"
+            "Dipole Excitation (Retarded):\n"
+            "  Positions: {}\n"
+            "  Dipole orientations: {}\n"
+            "  Dipole shape: {}".format(
+                self.pt.n, self.dip.shape[2], self.dip.shape)
         )

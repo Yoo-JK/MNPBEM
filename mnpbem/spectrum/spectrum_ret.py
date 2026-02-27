@@ -369,7 +369,7 @@ def _scattering(self, sig):
 
 
 def _spectrumret_repr(self):
-    return f"SpectrumRet(ndir={self.ndir}, medium={self.medium})"
+    return "SpectrumRet(ndir={}, medium={})".format(self.ndir, self.medium)
 
 
 # Attach methods to SpectrumRet class

@@ -985,19 +985,70 @@ class CompStruct:
             self.val[key] = value
         return self
 
+    def __add__(self, other):
+        """
+        Element-wise addition of CompStruct fields.
+
+        MATLAB: @compstruct/plus.m
+
+        Adds corresponding array fields from two CompStruct objects.
+        The result keeps the particle and wavelength from self.
+
+        Parameters
+        ----------
+        other : CompStruct
+            CompStruct to add
+
+        Returns
+        -------
+        result : CompStruct
+            New CompStruct with summed fields
+        """
+        result = CompStruct(self.p, self.enei)
+        all_keys = set(self.val.keys()) | set(other.val.keys())
+        for key in all_keys:
+            val_self = self.val.get(key, None)
+            val_other = other.val.get(key, None)
+            if val_self is not None and val_other is not None:
+                result.val[key] = val_self + val_other
+            elif val_self is not None:
+                result.val[key] = val_self
+            else:
+                result.val[key] = val_other
+        return result
+
+    def __radd__(self, other):
+        """
+        Right addition for CompStruct.
+
+        Supports sum() by handling 0 + CompStruct.
+
+        Parameters
+        ----------
+        other : int or CompStruct
+            If 0 (from sum() start value), returns self.
+
+        Returns
+        -------
+        result : CompStruct
+        """
+        if other == 0:
+            return self
+        return self.__add__(other)
+
     def __repr__(self):
         """String representation."""
         fields = ', '.join(self.val.keys())
-        return f"CompStruct(p={self.p}, enei={self.enei}, fields=[{fields}])"
+        return "CompStruct(p={}, enei={}, fields=[{}])".format(self.p, self.enei, fields)
 
     def __str__(self):
         """Detailed string representation."""
         s = "compstruct:\n"
-        s += f"  p: {self.p}\n"
-        s += f"  enei: {self.enei}\n"
+        s += "  p: {}\n".format(self.p)
+        s += "  enei: {}\n".format(self.enei)
         for key, value in self.val.items():
             if isinstance(value, np.ndarray):
-                s += f"  {key}: array{value.shape}\n"
+                s += "  {}: array{}\n".format(key, value.shape)
             else:
-                s += f"  {key}: {value}\n"
+                s += "  {}: {}\n".format(key, value)
         return s
