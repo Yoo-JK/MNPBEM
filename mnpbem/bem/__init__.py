@@ -28,6 +28,7 @@ from .bem_iter import BEMIter
 from .bem_stat_iter import BEMStatIter
 from .bem_ret_iter import BEMRetIter
 from .bem_ret_layer_iter import BEMRetLayerIter
+from .plasmonmode import plasmonmode
 
 __all__ = [
     "BEMStat",
@@ -42,4 +43,5 @@ __all__ = [
     "BEMStatIter",
     "BEMRetIter",
     "BEMRetLayerIter",
+    "plasmonmode",
 ]
