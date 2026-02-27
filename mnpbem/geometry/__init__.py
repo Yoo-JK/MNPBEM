@@ -7,6 +7,7 @@ Classes:
 - ComParticleMirror: Compound particle with mirror symmetry
 - CompStructMirror: Structure for compound with mirror symmetry
 - EdgeProfile: Edge rounding profile for nanostructures
+- Polygon: 2D polygon for mesh generation
 
 Functions:
 - trisphere: Generate triangulated sphere
@@ -32,6 +33,7 @@ from .mesh_generators import (
     fvgrid,
 )
 from .edgeprofile import EdgeProfile
+from .polygon import Polygon
 from .connect import connect
 
 __all__ = [
@@ -40,6 +42,7 @@ __all__ = [
     "ComParticleMirror",
     "CompStructMirror",
     "EdgeProfile",
+    "Polygon",
     "trisphere",
     "trirod",
     "tricube",
