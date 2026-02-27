@@ -17,7 +17,7 @@ import numpy as np
 from ..greenfun import CompGreenStat, CompStruct
 
 
-class BEMStat:
+class BEMStat(object):
     """
     BEM solver for quasistatic approximation.
 

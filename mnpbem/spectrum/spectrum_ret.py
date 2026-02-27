@@ -95,7 +95,7 @@ def _subdivide_sphere(verts, faces):
     return np.array(new_verts), np.array(new_faces, dtype=int)
 
 
-class SpectrumRet:
+class SpectrumRet(object):
     """
     Compute far-fields and scattering cross sections.
 
@@ -181,7 +181,7 @@ class SpectrumRet:
         self.ndir = len(self.nvec)
 
 
-class _PinftyStruct:
+class _PinftyStruct(object):
     """Simple struct to hold pinfty data."""
 
     def __init__(self, nvec, area):

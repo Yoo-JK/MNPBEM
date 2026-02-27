@@ -9,7 +9,7 @@ import numpy as np
 from typing import Optional, Tuple, Any, List
 
 
-class CompGreenRet:
+class CompGreenRet(object):
     """
     Green function for composite points and particle.
 
@@ -1216,7 +1216,7 @@ class CompGreenRet:
         )
 
 
-class GreenRetSimple:
+class GreenRetSimple(object):
     """Simple Green function object for retarded case."""
 
     def __init__(self, p1, p2, deriv='norm'):
@@ -1226,7 +1226,7 @@ class GreenRetSimple:
         self.diag_corrections = {}
 
 
-class GreenRetBlock:
+class GreenRetBlock(object):
     """Green function block for a particle pair."""
 
     def __init__(self, p1, p2, i1_start, i1_end, i2_start, i2_end, g_full, deriv):
@@ -1377,7 +1377,7 @@ class GreenRetBlock:
             return g_full.ravel()[ind]
 
 
-class GreenRetAccessor:
+class GreenRetAccessor(object):
     """Accessor for Green function cell array."""
 
     def __init__(self, parent, i, j):
@@ -1414,7 +1414,7 @@ class GreenRetAccessor:
         return self.parent.eval(self.i, self.j, 'H2p', enei, ind)
 
 
-class BlockMatrix:
+class BlockMatrix(object):
     """
     Block matrix for indexing into cell arrays.
 

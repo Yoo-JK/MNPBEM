@@ -13,7 +13,7 @@ import numpy as np
 from ..greenfun import CompStruct
 
 
-class PlaneWaveStat:
+class PlaneWaveStat(object):
     """
     Plane wave excitation within quasistatic approximation.
 

@@ -37,8 +37,8 @@ def sphtable(lmax, key='z'):
             m_vals = np.arange(-l, l + 1)
         ltab_list.append(np.full(len(m_vals), l))
         mtab_list.append(m_vals)
-    ltab = np.concatenate(ltab_list).astype(np.int64)
-    mtab = np.concatenate(mtab_list).astype(np.int64)
+    ltab = np.hstack(ltab_list).astype(np.int64)
+    mtab = np.hstack(mtab_list).astype(np.int64)
     return ltab, mtab
 
 

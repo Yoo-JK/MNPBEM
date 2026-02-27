@@ -18,7 +18,7 @@ except ImportError:
     from quadrature import lglnodes, triangle_unit_set
 
 
-class QuadFace:
+class QuadFace(object):
     """
     Integration over triangular or quadrilateral boundary elements.
 
@@ -110,7 +110,7 @@ class QuadFace:
         rad_flat = 1.0 / np.abs(2 * np.sin(phi_flat))
 
         # Three rotated sectors (MATLAB line 38)
-        phi = np.concatenate([
+        phi = np.hstack([
             phi_flat,
             phi_flat + phi0,
             phi_flat + 2 * phi0
@@ -184,7 +184,7 @@ class QuadFace:
         rad_flat = 1.0 / np.abs(np.sin(phi_flat))
 
         # Four rotated sectors (MATLAB line 68)
-        phi = np.concatenate([
+        phi = np.hstack([
             phi_flat,
             phi_flat + phi0,
             phi_flat + 2 * phi0,

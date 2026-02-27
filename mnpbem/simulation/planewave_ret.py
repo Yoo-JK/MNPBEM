@@ -13,7 +13,7 @@ import numpy as np
 from ..greenfun import CompStruct
 
 
-class PlaneWaveRet:
+class PlaneWaveRet(object):
     """
     Plane wave excitation for solution of full Maxwell equations.
 

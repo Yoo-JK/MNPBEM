@@ -15,7 +15,7 @@ import numpy as np
 from ..greenfun import CompStruct
 
 
-class DipoleRet:
+class DipoleRet(object):
     """
     Excitation of an oscillating dipole (retarded, full Maxwell).
 

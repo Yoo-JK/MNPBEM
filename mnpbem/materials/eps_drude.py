@@ -10,7 +10,7 @@ import numpy as np
 EV2NM = 1240.0  # eV * nm
 
 
-class EpsDrude:
+class EpsDrude(object):
     """
     Drude model dielectric function.
 

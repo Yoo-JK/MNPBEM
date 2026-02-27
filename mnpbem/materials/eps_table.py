@@ -8,7 +8,7 @@ import os
 from ..utils.constants import EV2NM
 
 
-class EpsTable:
+class EpsTable(object):
     """
     Interpolate from tabulated values of dielectric function.
 

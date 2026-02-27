@@ -5,7 +5,7 @@ Constant dielectric function.
 import numpy as np
 
 
-class EpsConst:
+class EpsConst(object):
     """
     Constant dielectric function.
 

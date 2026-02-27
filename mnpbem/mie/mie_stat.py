@@ -30,7 +30,7 @@ def _get_eps_and_k(eps_func, enei):
     return eps, k
 
 
-class MieStat:
+class MieStat(object):
     """Quasistatic Mie theory for spherical particles.
 
     MATLAB: @miestat

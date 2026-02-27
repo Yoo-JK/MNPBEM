@@ -23,7 +23,7 @@ except ImportError:
     Particle = None
 
 
-class GreenRetRefined:
+class GreenRetRefined(object):
     """
     Retarded Green function with proper polar integration refinement.
 

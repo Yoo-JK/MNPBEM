@@ -8,7 +8,7 @@ import numpy as np
 from .spectrum_ret import trisphere_unit, _PinftyStruct
 
 
-class SpectrumStat:
+class SpectrumStat(object):
     """
     Compute far-fields and scattering cross sections in quasistatic limit.
 

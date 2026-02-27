@@ -9,7 +9,7 @@ import numpy as np
 from typing import Optional, Tuple, Any
 
 
-class CompGreenStat:
+class CompGreenStat(object):
     """
     Green function for composite points and particle in quasistatic approximation.
 
@@ -609,7 +609,7 @@ class CompGreenStat:
             elif key == 'H2p':
                 result = self._eval_H2p(ind)
             else:
-                raise ValueError(f"Unknown key: {key}")
+                raise ValueError("Unknown key: {}".format(key))
 
             results.append(result)
 
@@ -885,27 +885,33 @@ class CompGreenStat:
         elif name == 'deriv':
             return self.deriv
         else:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+            raise AttributeError("'{}' object has no attribute '{}'".format(type(self).__name__, name))
 
     def __repr__(self):
         """String representation."""
         return (
-            f"CompGreenStat(p1: {self.p1.n if hasattr(self.p1, 'n') else '?'} faces, "
-            f"p2: {self.p2.n if hasattr(self.p2, 'n') else '?'} faces)"
+            "CompGreenStat(p1: {} faces, "
+            "p2: {} faces)".format(
+                self.p1.n if hasattr(self.p1, 'n') else '?',
+                self.p2.n if hasattr(self.p2, 'n') else '?')
         )
 
     def __str__(self):
         """Detailed string representation."""
         return (
-            f"compgreenstat:\n"
-            f"  p1: {self.p1}\n"
-            f"  p2: {self.p2}\n"
-            f"  G: {self.G.shape if hasattr(self, 'G') else 'not computed'}\n"
-            f"  F: {self.F.shape if hasattr(self, 'F') else 'not computed'}"
+            "compgreenstat:\n"
+            "  p1: {}\n"
+            "  p2: {}\n"
+            "  G: {}\n"
+            "  F: {}".format(
+                self.p1,
+                self.p2,
+                self.G.shape if hasattr(self, 'G') else 'not computed',
+                self.F.shape if hasattr(self, 'F') else 'not computed')
         )
 
 
-class CompStruct:
+class CompStruct(object):
     """
     Structure for compound of points or particles.
 
@@ -952,7 +958,7 @@ class CompStruct:
         elif name in self.val:
             return self.val[name]
         else:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+            raise AttributeError("'{}' object has no attribute '{}'".format(type(self).__name__, name))
 
     def __setattr__(self, name, value):
         """Set additional fields via attribute."""
@@ -972,7 +978,7 @@ class CompStruct:
         elif key in self.val:
             return self.val[key]
         else:
-            raise KeyError(f"'{key}'")
+            raise KeyError("'{}'".format(key))
 
     def __setitem__(self, key, value):
         """Dictionary-style setting of fields."""

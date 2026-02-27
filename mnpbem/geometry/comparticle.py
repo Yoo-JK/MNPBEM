@@ -8,7 +8,7 @@ import numpy as np
 from .particle import Particle
 
 
-class ComParticle:
+class ComParticle(object):
     """
     Compound particle with multiple dielectric media.
 
@@ -594,7 +594,7 @@ class ComParticle:
     @property
     def area(self):
         """Areas of all faces."""
-        return self.pc.area if hasattr(self, 'pc') else np.concatenate([part.area for part in self.p])
+        return self.pc.area if hasattr(self, 'pc') else np.hstack([part.area for part in self.p])
 
     @property
     def verts(self):
@@ -720,7 +720,7 @@ class ComParticle:
         """
         # Concatenate bradius from all particles
         r_list = [part.bradius() for part in self.p]
-        return np.concatenate(r_list)
+        return np.hstack(r_list)
 
     def __repr__(self):
         return (

@@ -12,7 +12,7 @@ import numpy as np
 from typing import Union, Literal
 
 
-class TriangleShape:
+class TriangleShape(object):
     """
     Triangular shape element.
 
@@ -139,7 +139,7 @@ class TriangleShape:
             ])
 
 
-class QuadShape:
+class QuadShape(object):
     """
     Quadrilateral shape element.
 

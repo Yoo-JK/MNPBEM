@@ -12,7 +12,7 @@ from ..geometry.shape_functions import TriangleShape, QuadShape
 
 
 # Keep old QuadFace for backward compatibility temporarily
-class QuadFace:
+class QuadFace(object):
     """
     Integration rules for triangular/quadrilateral boundary elements.
 
@@ -129,7 +129,7 @@ class QuadFace:
         rad = 1.0 / np.abs(2 * np.sin(phi_flat))
 
         # Create 3 rotated sectors (120° apart)
-        phi_all = np.concatenate([phi_flat, phi_flat + phi0, phi_flat + 2*phi0])
+        phi_all = np.hstack([phi_flat, phi_flat + phi0, phi_flat + 2*phi0])
         rho_all = np.tile(rho_flat, 3)
         rad_all = np.tile(rad, 3)
 
@@ -181,8 +181,8 @@ class QuadFace:
         rad = 1.0 / np.abs(np.sin(phi_flat))
 
         # Create 4 rotated sectors (90° apart)
-        phi_all = np.concatenate([phi_flat, phi_flat + phi0,
-                                  phi_flat + 2*phi0, phi_flat + 3*phi0])
+        phi_all = np.hstack([phi_flat, phi_flat + phi0,
+                             phi_flat + 2*phi0, phi_flat + 3*phi0])
         rho_all = np.tile(rho_flat, 4)
         rad_all = np.tile(rad, 4)
 
@@ -243,7 +243,7 @@ class QuadFace:
         return r_max
 
 
-class Particle:
+class Particle(object):
     """
     Faces and vertices of discretized particle.
 
@@ -1429,7 +1429,7 @@ class Particle:
         # Index to triangles
         ind3 = np.arange(len(ind))
         if len(ind4) > 0:
-            ind3 = np.concatenate([ind3, ind4[:, 0]])
+            ind3 = np.hstack([ind3, ind4[:, 0]])
 
         # Normal vectors of triangular elements
         v1 = self.verts[faces_tri[:, 1].astype(int)] - self.verts[faces_tri[:, 0].astype(int)]
@@ -1503,7 +1503,7 @@ class Particle:
         # Index to triangles
         ind3 = np.arange(len(ind))
         if len(ind4) > 0:
-            ind3 = np.concatenate([ind3, ind4[:, 0]])
+            ind3 = np.hstack([ind3, ind4[:, 0]])
 
         # Integration points and weights
         q = self.quad

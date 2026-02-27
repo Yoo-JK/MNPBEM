@@ -21,7 +21,7 @@ def _get_eps_value(eps_func, enei):
     return result
 
 
-class MieGans:
+class MieGans(object):
     """Mie-Gans theory for ellipsoidal particle (quasistatic approximation).
 
     MATLAB: @miegans

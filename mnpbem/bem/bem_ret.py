@@ -15,7 +15,7 @@ import numpy as np
 from ..greenfun import CompGreenRet, CompStruct
 
 
-class BEMRet:
+class BEMRet(object):
     """
     BEM solver for full Maxwell equations (retarded).
 
@@ -758,17 +758,18 @@ class BEMRet:
         return self.init(enei)
 
     def __repr__(self):
-        status = f"λ={self.enei:.1f}nm" if self.enei is not None else "not initialized"
-        return f"BEMRet(p: {self.p.nfaces} faces, {status})"
+        status = "λ={:.1f}nm".format(self.enei) if self.enei is not None else "not initialized"
+        return "BEMRet(p: {} faces, {})".format(self.p.nfaces, status)
 
     def __str__(self):
-        status = f"Initialized at λ={self.enei:.2f} nm" if self.enei is not None else "Not initialized"
-        mat_info = f"  Sigmai matrix: {self.Sigmai.shape}" if self.Sigmai is not None else "  Sigmai matrix: Not computed"
+        status = "Initialized at λ={:.2f} nm".format(self.enei) if self.enei is not None else "Not initialized"
+        mat_info = "  Sigmai matrix: {}".format(self.Sigmai.shape) if self.Sigmai is not None else "  Sigmai matrix: Not computed"
 
         return (
-            f"BEM Solver (Retarded/Full Maxwell):\n"
-            f"  Particle: {self.p.nfaces} faces\n"
-            f"  Status: {status}\n"
-            f"{mat_info}\n"
-            f"  Wavenumber k: {self.k:.6f}" if self.k is not None else "  Wavenumber k: Not computed"
+            "BEM Solver (Retarded/Full Maxwell):\n"
+            "  Particle: {} faces\n"
+            "  Status: {}\n"
+            "{}\n"
+            "  Wavenumber k: {:.6f}".format(
+                self.p.nfaces, status, mat_info, self.k) if self.k is not None else "  Wavenumber k: Not computed"
         )

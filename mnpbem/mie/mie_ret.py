@@ -58,8 +58,8 @@ def _riccatibessel(z, ltab):
     h_vals = j_vals + 1j * y_vals
 
     # Derivatives via recurrence: [z*f_l(z)]' = z*f_{l-1}(z) - l*f_l(z)
-    j_prev = np.concatenate([[j0], j_vals[:-1]])
-    h_prev = np.concatenate([[h0], h_vals[:-1]])
+    j_prev = np.hstack([[j0], j_vals[:-1]])
+    h_prev = np.hstack([[h0], h_vals[:-1]])
 
     zjp_vals = z * j_prev - l_arr * j_vals
     zhp_vals = z * h_prev - l_arr * h_vals
@@ -270,7 +270,7 @@ def _aeels(ltab, mtab, beta):
     return ce, cm
 
 
-class MieRet:
+class MieRet(object):
     """Full retarded Mie theory for spherical particles.
 
     MATLAB: @mieret

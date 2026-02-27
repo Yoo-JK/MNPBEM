@@ -16,7 +16,7 @@ import numpy as np
 from ..greenfun import CompStruct
 
 
-class DipoleStat:
+class DipoleStat(object):
     """
     Excitation of an oscillating dipole in quasistatic approximation.
 
