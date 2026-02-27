@@ -253,8 +253,8 @@ class CompGreenStat:
             unique_refine_faces = np.unique(offdiag_cols)
 
             # Integration points and weights for boundary element integration
-            # Returns: pos (n_total, 3), w_sparse (n_faces, n_total)
-            pos_quad, w_sparse = p2.quad_integration(unique_refine_faces)
+            # Returns: pos (n_total, 3), w_sparse (n_faces, n_total), iface
+            pos_quad, w_sparse, _ = p2.quad_integration(unique_refine_faces)
 
             # Convert sparse to dense for easier processing
             w_dense = w_sparse.toarray()  # (n_faces, n_total)
