@@ -509,12 +509,13 @@ class DipoleStat(object):
         return self.potential(p, enei)
 
     def __repr__(self):
-        return f"DipoleStat(npt={self.pt.n}, ndip={self.dip.shape[2]})"
+        return "DipoleStat(npt={}, ndip={})".format(self.pt.n, self.dip.shape[2])
 
     def __str__(self):
         return (
-            f"Dipole Excitation (Quasistatic):\n"
-            f"  Positions: {self.pt.n}\n"
-            f"  Dipole orientations: {self.dip.shape[2]}\n"
-            f"  Dipole shape: {self.dip.shape}"
+            "Dipole Excitation (Quasistatic):\n"
+            "  Positions: {}\n"
+            "  Dipole orientations: {}\n"
+            "  Dipole shape: {}".format(
+                self.pt.n, self.dip.shape[2], self.dip.shape)
         )

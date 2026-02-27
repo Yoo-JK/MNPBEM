@@ -1200,19 +1200,25 @@ class CompGreenRet(object):
     def __repr__(self):
         """String representation."""
         return (
-            f"CompGreenRet(p1: {self.p1.n if hasattr(self.p1, 'n') else '?'} faces, "
-            f"p2: {self.p2.n if hasattr(self.p2, 'n') else '?'} faces)"
+            "CompGreenRet(p1: {} faces, "
+            "p2: {} faces)".format(
+                self.p1.n if hasattr(self.p1, 'n') else '?',
+                self.p2.n if hasattr(self.p2, 'n') else '?')
         )
 
     def __str__(self):
         """Detailed string representation."""
         return (
-            f"compgreenret:\n"
-            f"  p1: {self.p1}\n"
-            f"  p2: {self.p2}\n"
-            f"  con: {len(self.con)}x{len(self.con[0]) if self.con else 0}\n"
-            f"  g: {len(self.g)}x{len(self.g[0]) if self.g else 0}\n"
-            f"  hmode: {self.hmode}"
+            "compgreenret:\n"
+            "  p1: {}\n"
+            "  p2: {}\n"
+            "  con: {}x{}\n"
+            "  g: {}x{}\n"
+            "  hmode: {}".format(
+                self.p1, self.p2,
+                len(self.con), len(self.con[0]) if self.con else 0,
+                len(self.g), len(self.g[0]) if self.g else 0,
+                self.hmode)
         )
 
 
@@ -1362,7 +1368,7 @@ class GreenRetBlock(object):
             return H2p
 
         else:
-            raise ValueError(f"Unknown key: {key}")
+            raise ValueError("Unknown key: {}".format(key))
 
     def eval_ind(self, k, key, ind):
         """Evaluate selected elements."""

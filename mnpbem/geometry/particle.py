@@ -290,7 +290,7 @@ class Particle(object):
     >>> verts = np.array([[0,0,0], [1,0,0], [0,1,0], [0,0,1]])
     >>> faces = np.array([[0,1,2], [0,1,3], [0,2,3], [1,2,3]])
     >>> p = Particle(verts, faces)
-    >>> print(f"Particle: {p.nverts} vertices, {p.nfaces} faces")
+    >>> print("Particle: {} vertices, {} faces".format(p.nverts, p.nfaces))
         Centroids of faces
     vec : list
         [tvec1, tvec2, nvec] tangential and normal vectors at centroids
@@ -2807,13 +2807,15 @@ class Particle(object):
     # ==================== String representations ====================
 
     def __repr__(self):
-        return f"Particle(nverts={self.nverts}, nfaces={self.nfaces}, interp='{self.interp}')"
+        return "Particle(nverts={}, nfaces={}, interp='{}')".format(
+            self.nverts, self.nfaces, self.interp)
 
     def __str__(self):
         return (
-            f"Particle:\n"
-            f"  Vertices: {self.nverts}\n"
-            f"  Faces: {self.nfaces}\n"
-            f"  Total area: {self.area.sum():.2f}\n"
-            f"  Interpolation: {self.interp}"
+            "Particle:\n"
+            "  Vertices: {}\n"
+            "  Faces: {}\n"
+            "  Total area: {:.2f}\n"
+            "  Interpolation: {}".format(
+                self.nverts, self.nfaces, self.area.sum(), self.interp)
         )

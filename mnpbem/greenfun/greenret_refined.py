@@ -375,12 +375,12 @@ class GreenRetRefined(object):
             return H2
 
         else:
-            raise ValueError(f"Unknown key: {key}. Use 'G', 'F', 'H1', or 'H2'")
+            raise ValueError("Unknown key: {}. Use 'G', 'F', 'H1', or 'H2'".format(key))
 
     def __repr__(self):
         n_refined = len(self.ind) if hasattr(self, 'ind') else 0
-        return (f"GreenRetRefined(n1={self.p1.n}, n2={self.p2.n}, "
-                f"order={self.order}, n_refined={n_refined})")
+        return ("GreenRetRefined(n1 = {}, n2 = {}, "
+                "order = {}, n_refined = {})".format(self.p1.n, self.p2.n, self.order, n_refined))
 
 
 # Test code
@@ -409,38 +409,39 @@ if __name__ == "__main__":
 
     p = Particle(verts, faces)
 
-    print(f"\nParticle: {p.n} faces")
+    print("\nParticle: {} faces".format(p.n))
 
     # Create refined Green function
-    print(f"\nCreating refined Green function...")
+    print("\nCreating refined Green function...")
     g = GreenRetRefined(p, p, order=2, RelCutoff=3)
 
-    print(f"{g}")
-    print(f"Refined elements: {len(g.ind)}")
-    print(f"  g shape: {g.g.shape}")
-    print(f"  f shape: {g.f.shape}")
+    print("{}".format(g))
+    print("Refined elements: {}".format(len(g.ind)))
+    print("  g shape: {}".format(g.g.shape))
+    print("  f shape: {}".format(g.f.shape))
 
     # Test evaluation at 600 nm wavelength
     wavelength = 600.0  # nm
     k = 2 * np.pi / wavelength
 
-    print(f"\nEvaluating at λ={wavelength} nm (k={k:.6f} nm⁻¹):")
+    print("\nEvaluating at lambda={} nm (k={:.6f} nm^-1):".format(wavelength, k))
 
     G = g.eval(k, 'G')
-    print(f"  G shape: {G.shape}")
-    print(f"  G diagonal range: [{np.min(np.abs(np.diag(G))):.2e}, {np.max(np.abs(np.diag(G))):.2e}]")
-    print(f"  G off-diag range: [{np.min(np.abs(G[~np.eye(p.n, dtype=bool)])):.2e}, "
-          f"{np.max(np.abs(G[~np.eye(p.n, dtype=bool)])):.2e}]")
+    print("  G shape: {}".format(G.shape))
+    print("  G diagonal range: [{:.2e}, {:.2e}]".format(np.min(np.abs(np.diag(G))), np.max(np.abs(np.diag(G)))))
+    print("  G off-diag range: [{:.2e}, "
+          "{:.2e}]".format(np.min(np.abs(G[~np.eye(p.n, dtype=bool)])),
+                           np.max(np.abs(G[~np.eye(p.n, dtype=bool)]))))
 
     F = g.eval(k, 'F')
-    print(f"  F shape: {F.shape}")
-    print(f"  F diagonal range: [{np.min(np.abs(np.diag(F))):.2e}, {np.max(np.abs(np.diag(F))):.2e}]")
+    print("  F shape: {}".format(F.shape))
+    print("  F diagonal range: [{:.2e}, {:.2e}]".format(np.min(np.abs(np.diag(F))), np.max(np.abs(np.diag(F)))))
 
     H1 = g.eval(k, 'H1')
     H2 = g.eval(k, 'H2')
-    print(f"  H1 diagonal: {np.diag(H1)[:3]} ...")
-    print(f"  H2 diagonal: {np.diag(H2)[:3]} ...")
-    print(f"  H1-H2 diagonal diff: {np.mean(np.abs(np.diag(H1) - np.diag(H2))):.6f} (should be 4π={4*np.pi:.6f})")
+    print("  H1 diagonal: {} ...".format(np.diag(H1)[:3]))
+    print("  H2 diagonal: {} ...".format(np.diag(H2)[:3]))
+    print("  H1-H2 diagonal diff: {:.6f} (should be 4pi={:.6f})".format(np.mean(np.abs(np.diag(H1) - np.diag(H2))), 4 * np.pi))
 
     print("\n" + "=" * 70)
     print("✓ GreenRetRefined tests passed!")

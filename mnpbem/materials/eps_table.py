@@ -59,8 +59,8 @@ class EpsTable(object):
             filepath = os.path.join(data_dir, filename)
             if not os.path.exists(filepath):
                 raise FileNotFoundError(
-                    f"Material data file not found: {filename}\n"
-                    f"Tried: {filepath}"
+                    "Material data file not found: {}\n"
+                    "Tried: {}".format(filename, filepath)
                 )
 
         # Read data file
@@ -79,7 +79,7 @@ class EpsTable(object):
                     continue
 
         if not data:
-            raise ValueError(f"No valid data found in {filepath}")
+            raise ValueError("No valid data found in {}".format(filepath))
 
         data = np.array(data)
         ene_ev = data[:, 0]  # Energy in eV
@@ -126,9 +126,9 @@ class EpsTable(object):
         enei_min, enei_max = self.enei.min(), self.enei.max()
         if np.any(enei < enei_min) or np.any(enei > enei_max):
             raise ValueError(
-                f"Wavelength out of range. Valid range: "
-                f"{enei_min:.1f} - {enei_max:.1f} nm, "
-                f"requested: {enei.min():.1f} - {enei.max():.1f} nm"
+                "Wavelength out of range. Valid range: "
+                "{:.1f} - {:.1f} nm, "
+                "requested: {:.1f} - {:.1f} nm".format(enei_min, enei_max, enei.min(), enei.max())
             )
 
         # Interpolate refractive index
@@ -181,10 +181,10 @@ class EpsTable(object):
         return ni + 1j * ki
 
     def __repr__(self):
-        return f"EpsTable('{self.filename}')"
+        return "EpsTable('{}')".format(self.filename)
 
     def __str__(self):
         return (
-            f"Tabulated dielectric function from {self.filename}\n"
-            f"Wavelength range: {self.enei.min():.1f} - {self.enei.max():.1f} nm"
+            "Tabulated dielectric function from {}\n"
+            "Wavelength range: {:.1f} - {:.1f} nm".format(self.filename, self.enei.min(), self.enei.max())
         )

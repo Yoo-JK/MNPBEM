@@ -83,7 +83,7 @@ class EpsConst(object):
         return 2 * np.pi / enei * np.sqrt(self.eps)
 
     def __repr__(self):
-        return f"EpsConst(eps={self.eps})"
+        return "EpsConst(eps = {})".format(self.eps)
 
     def __str__(self):
-        return f"Constant dielectric function: ε = {self.eps}"
+        return "Constant dielectric function: eps = {}".format(self.eps)

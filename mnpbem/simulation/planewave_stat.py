@@ -355,11 +355,11 @@ class PlaneWaveStat(object):
         return self.potential(p, enei)
 
     def __repr__(self):
-        return f"PlaneWaveStat(pol={self.pol.tolist()}, medium={self.medium})"
+        return "PlaneWaveStat(pol={}, medium={})".format(self.pol.tolist(), self.medium)
 
     def __str__(self):
         return (
-            f"Plane Wave Excitation (Quasistatic):\n"
-            f"  Polarization: {self.pol}\n"
-            f"  Medium: {self.medium}"
+            "Plane Wave Excitation (Quasistatic):\n"
+            "  Polarization: {}\n"
+            "  Medium: {}".format(self.pol, self.medium)
         )

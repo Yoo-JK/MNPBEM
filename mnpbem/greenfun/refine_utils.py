@@ -66,9 +66,9 @@ def refinematrix(p1, p2, AbsCutoff=0, RelCutoff=3, memsize=2e7):
     >>> from mnpbem import trisphere
     >>> p = trisphere(144, 10)  # 10 nm sphere
     >>> ir = refinematrix(p, p, RelCutoff=3)
-    >>> print(f"Diagonal: {np.sum(ir.diagonal() == 2)}")
-    >>> print(f"Near: {np.sum((ir == 1).toarray())}")
-    >>> print(f"Far: {np.sum((ir == 0).toarray())}")
+    >>> print("Diagonal: {}".format(np.sum(ir.diagonal() == 2)))
+    >>> print("Near: {}".format(np.sum((ir == 1).toarray())))
+    >>> print("Far: {}".format(np.sum((ir == 0).toarray())))
     """
     # Positions and sizes
     pos1 = p1.pos  # (n1, 3)
@@ -168,16 +168,16 @@ if __name__ == "__main__":
 
     p = Particle(verts, faces)
 
-    print(f"\nParticle: {p.n} faces")
-    print(f"Centroid positions shape: {p.pos.shape}")
-    print(f"bradius shape: {p.bradius().shape}")
+    print("\nParticle: {} faces".format(p.n))
+    print("Centroid positions shape: {}".format(p.pos.shape))
+    print("bradius shape: {}".format(p.bradius().shape))
 
     # Test refinement matrix
-    print(f"\nComputing refinement matrix...")
+    print("\nComputing refinement matrix...")
     ir = refinematrix(p, p, AbsCutoff=0, RelCutoff=3)
 
-    print(f"Refinement matrix shape: {ir.shape}")
-    print(f"Refinement matrix density: {ir.nnz / (ir.shape[0] * ir.shape[1]):.4f}")
+    print("Refinement matrix shape: {}".format(ir.shape))
+    print("Refinement matrix density: {:.4f}".format(ir.nnz / (ir.shape[0] * ir.shape[1])))
 
     # Count refinement types
     ir_array = ir.toarray()
@@ -185,22 +185,22 @@ if __name__ == "__main__":
     n_near = np.sum(ir_array == 1)
     n_far = np.sum(ir_array == 0)
 
-    print(f"\nRefinement statistics:")
-    print(f"  Diagonal (ir=2):      {n_diag:6d} ({100*n_diag/ir.size:5.2f}%)")
-    print(f"  Near field (ir=1):    {n_near:6d} ({100*n_near/ir.size:5.2f}%)")
-    print(f"  Far field (ir=0):     {n_far:6d} ({100*n_far/ir.size:5.2f}%)")
+    print("\nRefinement statistics:")
+    print("  Diagonal (ir=2):      {:6d} ({:5.2f}%)".format(n_diag, 100 * n_diag / ir.size))
+    print("  Near field (ir=1):    {:6d} ({:5.2f}%)".format(n_near, 100 * n_near / ir.size))
+    print("  Far field (ir=0):     {:6d} ({:5.2f}%)".format(n_far, 100 * n_far / ir.size))
 
     # Verify diagonal
     diag_check = np.all(np.diag(ir_array) == 2)
-    print(f"\n✓ All diagonal elements = 2: {diag_check}")
+    print("\nAll diagonal elements = 2: {}".format(diag_check))
 
     # Test different cutoffs
-    print(f"\nTesting different RelCutoff values:")
+    print("\nTesting different RelCutoff values:")
     for cutoff in [1, 2, 3, 5, 10]:
         ir_test = refinematrix(p, p, RelCutoff=cutoff)
         n_refined = ir_test.nnz
         density = n_refined / ir_test.size
-        print(f"  RelCutoff={cutoff:2d}: {n_refined:6d} refined ({100*density:5.2f}%)")
+        print("  RelCutoff={:2d}: {:6d} refined ({:5.2f}%)".format(cutoff, n_refined, 100 * density))
 
     print("\n" + "=" * 70)
     print("✓ refinematrix tests passed!")

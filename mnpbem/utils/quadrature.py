@@ -230,8 +230,8 @@ def triangle_unit_set(rule: int = 18) -> Tuple[np.ndarray, np.ndarray, np.ndarra
         w = w / np.sum(w) * 0.5
 
     else:
-        raise ValueError(f"Quadrature rule {rule} not implemented. "
-                        f"Available rules: 1, 2, 3, 4, 7, 18")
+        raise ValueError("Quadrature rule {} not implemented. "
+                        "Available rules: 1, 2, 3, 4, 7, 18".format(rule))
 
     return x, y, w
 
@@ -241,17 +241,17 @@ if __name__ == "__main__":
     print("Testing lglnodes:")
     for n in [2, 3, 5, 7]:
         x, w = lglnodes(n)
-        print(f"  n={n}: sum(w)={np.sum(w):.10f}, x_range=[{x[0]:.3f}, {x[-1]:.3f}]")
-        assert np.abs(np.sum(w) - 2.0) < 1e-10, f"Weights don't sum to 2 for n={n}"
+        print("  n={}: sum(w)={:.10f}, x_range=[{:.3f}, {:.3f}]".format(n, np.sum(w), x[0], x[-1]))
+        assert np.abs(np.sum(w) - 2.0) < 1e-10, "Weights don't sum to 2 for n={}".format(n)
 
     print("\nTesting triangle_unit_set:")
     for rule in [1, 2, 3, 4, 7, 18]:
         x, y, w = triangle_unit_set(rule)
         w_sum = np.sum(w)
         in_triangle = np.all((x >= -1e-10) & (y >= -1e-10) & (x + y <= 1 + 1e-10))
-        print(f"  rule={rule:2d}: {len(x):2d} points, sum(w)={w_sum:.10f}, "
-              f"in_triangle={in_triangle}")
-        assert np.abs(w_sum - 0.5) < 1e-10, f"Weights don't sum to 0.5 for rule={rule}"
-        assert in_triangle, f"Points outside triangle for rule={rule}"
+        print("  rule={:2d}: {:2d} points, sum(w)={:.10f}, "
+              "in_triangle={}".format(rule, len(x), w_sum, in_triangle))
+        assert np.abs(w_sum - 0.5) < 1e-10, "Weights don't sum to 0.5 for rule={}".format(rule)
+        assert in_triangle, "Points outside triangle for rule={}".format(rule)
 
     print("\n✓ All tests passed!")

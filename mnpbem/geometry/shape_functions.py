@@ -31,7 +31,7 @@ class TriangleShape(object):
             6: Quadratic triangle (curved boundaries)
         """
         if n_nodes not in [3, 6]:
-            raise ValueError(f"n_nodes must be 3 or 6, got {n_nodes}")
+            raise ValueError("n_nodes must be 3 or 6, got {}".format(n_nodes))
         self.n_nodes = n_nodes
 
     def __call__(self, x: Union[float, np.ndarray],
@@ -158,7 +158,7 @@ class QuadShape(object):
             9: Biquadratic quadrilateral (curved boundaries)
         """
         if n_nodes not in [4, 9]:
-            raise ValueError(f"n_nodes must be 4 or 9, got {n_nodes}")
+            raise ValueError("n_nodes must be 4 or 9, got {}".format(n_nodes))
         self.n_nodes = n_nodes
 
     def __call__(self, xi: Union[float, np.ndarray],
@@ -301,9 +301,9 @@ if __name__ == "__main__":
     y_test = np.array([0.0, 0.0, 1.0, 1/3])
 
     N = tri3(x_test, y_test)
-    print(f"  3-node at corners and centroid:")
-    print(f"    N = \n{N}")
-    print(f"    Row sums (should be 1): {N.sum(axis=1)}")
+    print("  3-node at corners and centroid:")
+    print("    N = \n{}".format(N))
+    print("    Row sums (should be 1): {}".format(N.sum(axis=1)))
 
     # Check partition of unity
     assert np.allclose(N.sum(axis=1), 1.0), "3-node partition of unity failed"
@@ -311,16 +311,16 @@ if __name__ == "__main__":
     # 6-node quadratic triangle
     tri6 = TriangleShape(6)
     N6 = tri6(x_test, y_test)
-    print(f"\n  6-node at corners and centroid:")
-    print(f"    Row sums (should be 1): {N6.sum(axis=1)}")
+    print("\n  6-node at corners and centroid:")
+    print("    Row sums (should be 1): {}".format(N6.sum(axis=1)))
     assert np.allclose(N6.sum(axis=1), 1.0), "6-node partition of unity failed"
 
     # Check derivatives
     dNdx = tri3.x([0.5], [0.3])
     dNdy = tri3.y([0.5], [0.3])
-    print(f"\n  Derivatives at (0.5, 0.3):")
-    print(f"    dN/dx: {dNdx[0]}")
-    print(f"    dN/dy: {dNdy[0]}")
+    print("\n  Derivatives at (0.5, 0.3):")
+    print("    dN/dx: {}".format(dNdx[0]))
+    print("    dN/dy: {}".format(dNdy[0]))
 
     print("\nTesting QuadShape:")
 
@@ -330,23 +330,23 @@ if __name__ == "__main__":
     eta_test = np.array([-1, -1, 1, 1, 0])
 
     N4 = quad4(xi_test, eta_test)
-    print(f"  4-node at corners and center:")
-    print(f"    N = \n{N4}")
-    print(f"    Row sums (should be 1): {N4.sum(axis=1)}")
+    print("  4-node at corners and center:")
+    print("    N = \n{}".format(N4))
+    print("    Row sums (should be 1): {}".format(N4.sum(axis=1)))
     assert np.allclose(N4.sum(axis=1), 1.0), "4-node partition of unity failed"
 
     # 9-node biquadratic quad
     quad9 = QuadShape(9)
     N9 = quad9(xi_test, eta_test)
-    print(f"\n  9-node at corners and center:")
-    print(f"    Row sums (should be 1): {N9.sum(axis=1)}")
+    print("\n  9-node at corners and center:")
+    print("    Row sums (should be 1): {}".format(N9.sum(axis=1)))
     assert np.allclose(N9.sum(axis=1), 1.0), "9-node partition of unity failed"
 
     # Check derivatives
     dNdxi = quad4.x([0.5], [0.5])
     dNdeta = quad4.y([0.5], [0.5])
-    print(f"\n  Derivatives at (0.5, 0.5):")
-    print(f"    dN/dξ: {dNdxi[0]}")
-    print(f"    dN/dη: {dNdeta[0]}")
+    print("\n  Derivatives at (0.5, 0.5):")
+    print("    dN/dxi: {}".format(dNdxi[0]))
+    print("    dN/deta: {}".format(dNdeta[0]))
 
     print("\n✓ All shape function tests passed!")

@@ -63,7 +63,7 @@ def calculate_spectrum_quasistatic(radius=10.0, n_faces=144, wavelengths=None):
     """
     print("=" * 60)
     print("Quasistatic Calculation (BEMStat)")
-    print(f"Sphere radius: {radius} nm, Mesh faces: {n_faces}")
+    print("Sphere radius: {} nm, Mesh faces: {}".format(radius, n_faces))
     print("=" * 60)
 
     if wavelengths is None:
@@ -78,7 +78,7 @@ def calculate_spectrum_quasistatic(radius=10.0, n_faces=144, wavelengths=None):
     sphere = trisphere(n_faces, radius)
     p = ComParticle(eps_tab, [sphere], [[2, 1]])  # inside=gold(2), outside=vac(1)
 
-    print(f"Created particle with {p.nfaces} faces")
+    print("Created particle with {} faces".format(p.nfaces))
 
     # BEM solver
     bem = BEMStat(p)
@@ -103,7 +103,7 @@ def calculate_spectrum_quasistatic(radius=10.0, n_faces=144, wavelengths=None):
         ext[i] = exc.extinction(sig)[0]
 
         if i % 10 == 0:
-            print(f"  λ = {enei:.0f} nm: ext = {ext[i]:.2f} nm²")
+            print("  lambda = {:.0f} nm: ext = {:.2f} nm^2".format(enei, ext[i]))
 
     print("\nDone!")
 
@@ -138,7 +138,7 @@ def calculate_spectrum_retarded(radius=50.0, n_faces=144, wavelengths=None):
     """
     print("=" * 60)
     print("Retarded Calculation (BEMRet)")
-    print(f"Sphere radius: {radius} nm, Mesh faces: {n_faces}")
+    print("Sphere radius: {} nm, Mesh faces: {}".format(radius, n_faces))
     print("=" * 60)
 
     if wavelengths is None:
@@ -153,7 +153,7 @@ def calculate_spectrum_retarded(radius=50.0, n_faces=144, wavelengths=None):
     sphere = trisphere(n_faces, radius)
     p = ComParticle(eps_tab, [sphere], [[2, 1]])
 
-    print(f"Created particle with {p.nfaces} faces")
+    print("Created particle with {} faces".format(p.nfaces))
 
     # BEM solver
     bem = BEMRet(p)
@@ -178,7 +178,7 @@ def calculate_spectrum_retarded(radius=50.0, n_faces=144, wavelengths=None):
         abs_cs[i] = ext[i] - sca[i]
 
         if i % 10 == 0:
-            print(f"  λ = {enei:.0f} nm: ext = {ext[i]:.2f} nm²")
+            print("  lambda = {:.0f} nm: ext = {:.2f} nm^2".format(enei, ext[i]))
 
     print("\nDone!")
 
@@ -279,13 +279,13 @@ def plot_spectrum(results, title=None, save_path=None):
         ax.set_title(title, fontsize=14)
     else:
         method = results.get('method', 'BEM')
-        ax.set_title(f'Optical Spectrum ({method})', fontsize=14)
+        ax.set_title('Optical Spectrum ({})'.format(method), fontsize=14)
 
     plt.tight_layout()
 
     if save_path:
         plt.savefig(save_path, dpi=150)
-        print(f"Saved figure to {save_path}")
+        print("Saved figure to {}".format(save_path))
 
     plt.show()
 
@@ -310,12 +310,12 @@ def demo_small_sphere():
 
     # Find plasmon resonance
     idx_max = np.argmax(results['ext'])
-    print(f"\nPlasmon resonance wavelength: {wavelengths[idx_max]:.0f} nm")
-    print(f"Peak extinction: {results['ext'][idx_max]:.2f} nm²")
+    print("\nPlasmon resonance wavelength: {:.0f} nm".format(wavelengths[idx_max]))
+    print("Peak extinction: {:.2f} nm^2".format(results['ext'][idx_max]))
 
     # Energy conservation check
     error = np.abs(results['ext'] - results['sca'] - results['abs']).max()
-    print(f"Energy conservation error: {error:.2e}")
+    print("Energy conservation error: {:.2e}".format(error))
 
     return results
 
@@ -340,8 +340,8 @@ def demo_large_sphere():
 
     # Find plasmon resonance
     idx_max = np.argmax(results['ext'])
-    print(f"\nPlasmon resonance wavelength: {wavelengths[idx_max]:.0f} nm")
-    print(f"Peak extinction: {results['ext'][idx_max]:.2f} nm²")
+    print("\nPlasmon resonance wavelength: {:.0f} nm".format(wavelengths[idx_max]))
+    print("Peak extinction: {:.2f} nm^2".format(results['ext'][idx_max]))
 
     return results
 
@@ -363,7 +363,7 @@ def demo_size_dependence():
     resonance_wavelengths = []
 
     for r in radii:
-        print(f"\nRadius = {r} nm")
+        print("\nRadius = {} nm".format(r))
         res = calculate_spectrum_quasistatic(
             radius=r,
             n_faces=144,
@@ -377,7 +377,7 @@ def demo_size_dependence():
     print("\n" + "-" * 40)
     print("Size-dependent plasmon resonance:")
     for r, lam_res in zip(radii, resonance_wavelengths):
-        print(f"  r = {r:2d} nm: λ_res = {lam_res:.0f} nm")
+        print("  r = {:2d} nm: lambda_res = {:.0f} nm".format(r, lam_res))
 
     return results_list, radii
 

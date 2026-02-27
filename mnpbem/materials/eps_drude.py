@@ -205,7 +205,7 @@ class EpsDrude(object):
             eps0 = 1
             gammad = 1.06 / hartree
         else:
-            raise ValueError(f"Material name unknown: {name}")
+            raise ValueError("Material name unknown: {}".format(name))
 
         # MATLAB init.m line 25-28: density and plasmon energy
         density = 3 / (4 * np.pi * rs ** 3)  # density in atomic units
@@ -219,9 +219,9 @@ class EpsDrude(object):
 
     def __repr__(self):
         if self.name:
-            return f"EpsDrude('{self.name}', eps0={self.eps0}, wp={self.wp}, gammad={self.gammad})"
-        return f"EpsDrude(eps0={self.eps0}, wp={self.wp}, gammad={self.gammad})"
+            return "EpsDrude('{}', eps0 = {}, wp = {}, gammad = {})".format(self.name, self.eps0, self.wp, self.gammad)
+        return "EpsDrude(eps0 = {}, wp = {}, gammad = {})".format(self.eps0, self.wp, self.gammad)
 
     def __str__(self):
-        name_str = f" ({self.name})" if self.name else ""
-        return f"Drude dielectric function{name_str}: ε = {self.eps0} - {self.wp}²/(ω(ω+i{self.gammad}))"
+        name_str = " ({})".format(self.name) if self.name else ""
+        return "Drude dielectric function{}: eps = {} - {}^2/(w(w+i{}))".format(name_str, self.eps0, self.wp, self.gammad)

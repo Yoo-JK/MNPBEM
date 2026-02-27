@@ -233,4 +233,4 @@ class SpectrumStat(object):
         return sca, dsca
 
     def __repr__(self):
-        return f"SpectrumStat(ndir={self.ndir}, medium={self.medium})"
+        return "SpectrumStat(ndir={}, medium={})".format(self.ndir, self.medium)

@@ -466,15 +466,20 @@ class BEMStat(object):
 
     def __repr__(self):
         """String representation."""
-        status = f"λ={self.enei:.1f}nm" if self.enei is not None else "not initialized"
-        return f"BEMStat(p: {self.p.n if hasattr(self.p, 'n') else '?'} faces, {status})"
+        status = "λ={:.1f}nm".format(self.enei) if self.enei is not None else "not initialized"
+        return "BEMStat(p: {} faces, {})".format(
+            self.p.n if hasattr(self.p, 'n') else '?', status)
 
     def __str__(self):
         """Detailed string representation."""
         return (
-            f"bemstat:\n"
-            f"  p: {self.p}\n"
-            f"  F: {self.F.shape if hasattr(self, 'F') else 'not computed'}\n"
-            f"  enei: {self.enei}\n"
-            f"  mat: {self.mat.shape if self.mat is not None else 'not computed'}"
+            "bemstat:\n"
+            "  p: {}\n"
+            "  F: {}\n"
+            "  enei: {}\n"
+            "  mat: {}".format(
+                self.p,
+                self.F.shape if hasattr(self, 'F') else 'not computed',
+                self.enei,
+                self.mat.shape if self.mat is not None else 'not computed')
         )

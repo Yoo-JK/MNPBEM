@@ -211,10 +211,11 @@ class QuadFace(object):
         return x, y, w
 
     def __repr__(self):
-        return (f"QuadFace(n_std={len(self.x)}, "
-                f"n_polar_tri={len(self.x3)}, "
-                f"n_polar_quad={len(self.x4)}, "
-                f"npol={self.npol})")
+        return ("QuadFace(n_std={}, "
+                "n_polar_tri={}, "
+                "n_polar_quad={}, "
+                "npol={})".format(
+                    len(self.x), len(self.x3), len(self.x4), self.npol))
 
 
 # Test functions
@@ -224,21 +225,21 @@ if __name__ == "__main__":
 
     # Create QuadFace with default settings
     quad = QuadFace(rule=18, npol=(7, 5))
-    print(f"\n{quad}")
+    print("\n{}".format(quad))
 
     # Test standard triangle quadrature
-    print(f"\nStandard triangle quadrature:")
-    print(f"  Points: {len(quad.x)}")
-    print(f"  sum(w) = {np.sum(quad.w):.10f} (should be 0.5)")
-    print(f"  All points in triangle: {np.all((quad.x >= -1e-10) & (quad.y >= -1e-10) & (quad.x + quad.y <= 1 + 1e-10))}")
+    print("\nStandard triangle quadrature:")
+    print("  Points: {}".format(len(quad.x)))
+    print("  sum(w) = {:.10f} (should be 0.5)".format(np.sum(quad.w)))
+    print("  All points in triangle: {}".format(np.all((quad.x >= -1e-10) & (quad.y >= -1e-10) & (quad.x + quad.y <= 1 + 1e-10))))
 
     assert np.abs(np.sum(quad.w) - 0.5) < 1e-10, "Standard triangle weights incorrect"
 
     # Test polar triangle quadrature
-    print(f"\nPolar triangle quadrature:")
-    print(f"  Points: {len(quad.x3)} = 3 × {quad.npol[0]} × {quad.npol[1]}")
-    print(f"  sum(w3) = {np.sum(quad.w3):.10f}")
-    print(f"  All points in triangle: {np.all((quad.x3 >= -1e-10) & (quad.y3 >= -1e-10) & (quad.x3 + quad.y3 <= 1 + 1e-10))}")
+    print("\nPolar triangle quadrature:")
+    print("  Points: {} = 3 × {} × {}".format(len(quad.x3), quad.npol[0], quad.npol[1]))
+    print("  sum(w3) = {:.10f}".format(np.sum(quad.w3)))
+    print("  All points in triangle: {}".format(np.all((quad.x3 >= -1e-10) & (quad.y3 >= -1e-10) & (quad.x3 + quad.y3 <= 1 + 1e-10))))
 
     # Note: MATLAB normalizes polar weights to sum=1.0, not 0.5
     # These weights are later scaled by element area in quadpol()
@@ -248,38 +249,38 @@ if __name__ == "__main__":
     # Test that integration of f=1 over unit triangle gives correct area
     # The transformation includes a factor, so we need to check the actual integration
     tri_area_test = np.sum(quad.w3 * 0.5)  # 0.5 = area of unit triangle
-    print(f"  Integration test: ∫1 dA = {tri_area_test:.10f} (should be 0.5)")
+    print("  Integration test: ∫1 dA = {:.10f} (should be 0.5)".format(tri_area_test))
     assert np.abs(tri_area_test - 0.5) < 1e-10, "Polar triangle integration incorrect"
 
     # Check points are within reasonable bounds (allow for numerical precision)
     tri_in_bounds = np.all((quad.x3 >= -1e-6) & (quad.y3 >= -1e-6) & (quad.x3 + quad.y3 <= 1 + 1e-6))
-    print(f"  Points within tolerance: {tri_in_bounds}")
+    print("  Points within tolerance: {}".format(tri_in_bounds))
     assert tri_in_bounds, "Polar triangle points outside reasonable bounds"
 
     # Test polar quad quadrature
-    print(f"\nPolar quadrilateral quadrature:")
-    print(f"  Points: {len(quad.x4)} = 4 × {quad.npol[0]} × {quad.npol[1]}")
-    print(f"  sum(w4) = {np.sum(quad.w4):.10f} (should be 4.0)")
+    print("\nPolar quadrilateral quadrature:")
+    print("  Points: {} = 4 × {} × {}".format(len(quad.x4), quad.npol[0], quad.npol[1]))
+    print("  sum(w4) = {:.10f} (should be 4.0)".format(np.sum(quad.w4)))
 
     assert np.abs(np.sum(quad.w4) - 4.0) < 1e-9, "Polar quad weights incorrect"
 
     # Check points are within reasonable bounds (allow for numerical precision)
     quad_in_bounds = np.all((quad.x4 >= -1 - 1e-5) & (quad.x4 <= 1 + 1e-5) &
                             (quad.y4 >= -1 - 1e-5) & (quad.y4 <= 1 + 1e-5))
-    print(f"  Points within tolerance: {quad_in_bounds}")
+    print("  Points within tolerance: {}".format(quad_in_bounds))
     assert quad_in_bounds, "Polar quad points outside reasonable bounds"
 
     # Test different npol settings
-    print(f"\nTesting different npol settings:")
+    print("\nTesting different npol settings:")
     for npol in [(3, 3), (5, 5), (10, 10)]:
         q = QuadFace(rule=18, npol=npol)
         w3_sum = np.sum(q.w3)
         w4_sum = np.sum(q.w4)
-        print(f"  npol={npol}: tri_sum={w3_sum:.6f}, quad_sum={w4_sum:.6f}, "
-              f"n_tri={len(q.x3)}, n_quad={len(q.x4)}")
+        print("  npol={}: tri_sum={:.6f}, quad_sum={:.6f}, "
+              "n_tri={}, n_quad={}".format(npol, w3_sum, w4_sum, len(q.x3), len(q.x4)))
 
-        assert np.abs(w3_sum - 1.0) < 1e-9, f"Triangle weights incorrect for npol={npol}"
-        assert np.abs(w4_sum - 4.0) < 1e-8, f"Quad weights incorrect for npol={npol}"
+        assert np.abs(w3_sum - 1.0) < 1e-9, "Triangle weights incorrect for npol={}".format(npol)
+        assert np.abs(w4_sum - 4.0) < 1e-8, "Quad weights incorrect for npol={}".format(npol)
 
     print("\n" + "=" * 70)
     print("✓ All QuadFace tests passed!")

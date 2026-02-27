@@ -501,7 +501,7 @@ class ComParticle(object):
             if ind < offset + p.nfaces:
                 return i, ind - offset
             offset += p.nfaces
-        raise IndexError(f"Face index {ind} out of range")
+        raise IndexError("Face index {} out of range".format(ind))
 
     def plot(self, val=None, **kwargs):
         """
@@ -724,20 +724,20 @@ class ComParticle(object):
 
     def __repr__(self):
         return (
-            f"ComParticle(nparticles={len(self.p)}, "
-            f"nverts={self.nverts}, nfaces={self.nfaces})"
+            "ComParticle(nparticles = {}, "
+            "nverts = {}, nfaces = {})".format(len(self.p), self.nverts, self.nfaces)
         )
 
     def __str__(self):
         parts_info = "\n".join(
-            f"  Particle {i+1}: {p.nverts} verts, {p.nfaces} faces"
+            "  Particle {}: {} verts, {} faces".format(i + 1, p.nverts, p.nfaces)
             for i, p in enumerate(self.p)
         )
         return (
-            f"Compound Particle:\n"
-            f"  Materials: {len(self.eps)}\n"
-            f"  Particles: {len(self.p)}\n"
-            f"{parts_info}\n"
-            f"  Total vertices: {self.nverts}\n"
-            f"  Total faces: {self.nfaces}"
+            "Compound Particle:\n"
+            "  Materials: {}\n"
+            "  Particles: {}\n"
+            "{}\n"
+            "  Total vertices: {}\n"
+            "  Total faces: {}".format(len(self.eps), len(self.p), parts_info, self.nverts, self.nfaces)
         )
