@@ -6,6 +6,7 @@ Classes:
 - BEMRet: BEM solver (retarded/full Maxwell)
 - BEMStatMirror: BEM solver (quasistatic + mirror symmetry)
 - BEMRetMirror: BEM solver (retarded + mirror symmetry)
+- BEMStatEig: BEM solver (quasistatic eigenmode expansion)
 - BEMStatEigMirror: BEM solver (quasistatic eigenmode + mirror symmetry)
 - BEMLayerMirror: BEM solver (layer + mirror symmetry, not implemented)
 - BEMStatLayer: BEM solver (quasistatic + layer structure)
@@ -20,6 +21,7 @@ from .bem_stat import BEMStat
 from .bem_ret import BEMRet
 from .bem_stat_mirror import BEMStatMirror
 from .bem_ret_mirror import BEMRetMirror
+from .bem_stat_eig import BEMStatEig
 from .bem_stat_eig_mirror import BEMStatEigMirror
 from .bem_layer_mirror import BEMLayerMirror
 from .bem_stat_layer import BEMStatLayer
@@ -35,6 +37,7 @@ __all__ = [
     "BEMRet",
     "BEMStatMirror",
     "BEMRetMirror",
+    "BEMStatEig",
     "BEMStatEigMirror",
     "BEMLayerMirror",
     "BEMStatLayer",
