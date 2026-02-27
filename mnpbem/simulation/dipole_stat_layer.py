@@ -90,7 +90,7 @@ class DipoleStatLayer(object):
 
         # Image dipole: parallel components multiplied by q1,
         # perpendicular (z) component multiplied by q2
-        dip_image = self.dip.copy()
+        dip_image = self.dip.astype(complex).copy()
         dip_image[:, 0, :] *= q1  # x-component
         dip_image[:, 1, :] *= q1  # y-component
         dip_image[:, 2, :] *= q2  # z-component (flipped sign convention)

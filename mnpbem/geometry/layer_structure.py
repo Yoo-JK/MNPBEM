@@ -1269,7 +1269,7 @@ class LayerStructure(object):
             return np.linspace(zmin, zmax, n)
 
         medium, _ = self.indlayer(np.array([zmin]))
-        medium = int(medium)
+        medium = int(np.atleast_1d(medium).ravel()[0])
 
         if medium == 1:
             # Upper layer

@@ -109,7 +109,7 @@ class DipoleRetLayer(object):
         rp = (n2 * 1.0 - n1 * 1.0) / (n2 * 1.0 + n1 * 1.0)  # normal incidence approx
         rs = (n1 * 1.0 - n2 * 1.0) / (n1 * 1.0 + n2 * 1.0)
 
-        dip_image = self.dip.copy()
+        dip_image = self.dip.astype(complex).copy()
         dip_image[:, 0, :] *= rs  # x (TE-like)
         dip_image[:, 1, :] *= rs  # y (TE-like)
         dip_image[:, 2, :] *= -rp  # z (TM-like, sign flip)
@@ -211,7 +211,7 @@ class DipoleRetLayer(object):
             rp = (n2 - n1) / (n2 + n1)
             rs = (n1 - n2) / (n1 + n2)
 
-            dip_image = self.dip.copy()
+            dip_image = self.dip.astype(complex).copy()
             dip_image[:, 0, :] *= rs
             dip_image[:, 1, :] *= rs
             dip_image[:, 2, :] *= -rp
