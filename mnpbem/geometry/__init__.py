@@ -6,6 +6,8 @@ Classes:
 - ComParticle: Compound particle with multiple materials
 - ComParticleMirror: Compound particle with mirror symmetry
 - CompStructMirror: Structure for compound with mirror symmetry
+- Point: Single collection of points in space
+- ComPoint: Compound of points in a dielectric environment
 - EdgeProfile: Edge rounding profile for nanostructures
 - Polygon: 2D polygon for mesh generation
 - Polygon3: 3D polygon for extrusion of particles
@@ -25,6 +27,7 @@ Functions:
 from .particle import Particle
 from .comparticle import ComParticle
 from .comparticle_mirror import ComParticleMirror, CompStructMirror
+from .compoint import Point, ComPoint
 from .mesh_generators import (
     trisphere,
     trirod,
@@ -45,6 +48,8 @@ __all__ = [
     "ComParticle",
     "ComParticleMirror",
     "CompStructMirror",
+    "Point",
+    "ComPoint",
     "EdgeProfile",
     "Polygon",
     "Polygon3",
