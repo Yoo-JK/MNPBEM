@@ -130,6 +130,25 @@ class MockParticle(object):
     def n(self):
         return self.nfaces
 
+    def bradius(self):
+        """Boundary element radius (inradius of each triangle).
+
+        MATLAB: bradius = particle/bradius.m
+        inradius = area / semi_perimeter
+        """
+        nf = self.faces.shape[0]
+        rad = np.zeros(nf, dtype = np.float64)
+        for i in range(nf):
+            v0 = self.verts[self.faces[i, 0]]
+            v1 = self.verts[self.faces[i, 1]]
+            v2 = self.verts[self.faces[i, 2]]
+            a = np.linalg.norm(v1 - v0)
+            b = np.linalg.norm(v2 - v1)
+            c = np.linalg.norm(v0 - v2)
+            s = 0.5 * (a + b + c)
+            rad[i] = self.area[i] / s if s > 0 else 0.0
+        return rad
+
     def flip(self, direction):
         """Flip particle along given direction (1-indexed to match MATLAB).
 
@@ -280,6 +299,14 @@ class MockComPoint(object):
 
     def __init__(self, pos):
         self.pos = np.atleast_2d(pos).astype(np.float64)
+
+    @property
+    def n(self):
+        return self.pos.shape[0]
+
+    @property
+    def nfaces(self):
+        return self.pos.shape[0]
 
     def flip(self, direction):
         new_pt = MockComPoint.__new__(MockComPoint)
@@ -688,8 +715,6 @@ class TestCompGreenStatMirror:
         assert CompGreenStatMirror.name == 'greenfunction'
         assert CompGreenStatMirror.needs == {'sim': 'stat', 'sym': True}
 
-    @pytest.mark.xfail(reason = "CompGreenStatMirror construction requires real "
-                                "CompGreenStat with full particle geometry")
     def test_construction(self, mirror_particle_x):
         """Test construction creates inner Green function.
 
@@ -921,8 +946,6 @@ class TestBEMStatMirror:
         assert BEMStatMirror.name == 'bemsolver'
         assert BEMStatMirror.needs == {'sim': 'stat', 'sym': True}
 
-    @pytest.mark.xfail(reason = "BEMStatMirror construction requires real "
-                                "CompGreenStatMirror with full Green function computation")
     def test_construction(self, mirror_particle_x):
         """Test construction creates Green function and extracts F.
 
@@ -1200,17 +1223,15 @@ class TestBEMStatEigMirror:
         assert BEMStatEigMirror.name == 'bemsolver'
         assert BEMStatEigMirror.needs == {'sim': 'stat', 'nev': True, 'sym': True}
 
-    @pytest.mark.xfail(reason = "BEMStatEigMirror construction requires real "
-                                "CompGreenStatMirror and eigenvalue computation")
     def test_construction(self, mirror_particle_x):
         """Test construction computes eigenmodes.
 
         MATLAB: bemstateigmirror(p, op) creates compgreenstatmirror(p, p),
         then computes left/right eigenvectors of F.
         """
-        bem = BEMStatEigMirror(mirror_particle_x, nev = 5)
+        bem = BEMStatEigMirror(mirror_particle_x, nev = 2)
         assert bem.p is mirror_particle_x
-        assert bem.nev == 5
+        assert bem.nev == 2
 
     def test_eigenmode_resolvent_logic(self):
         """Test eigenmode resolvent matrix construction.
@@ -1324,8 +1345,6 @@ class TestDipoleStatMirror:
         assert DipoleStatMirror.name == 'dipole'
         assert DipoleStatMirror.needs == {'sim': 'stat', 'sym': True}
 
-    @pytest.mark.xfail(reason = "DipoleStatMirror construction requires real "
-                                "DipoleStat with ComPoint geometry")
     def test_construction(self):
         """Test construction wraps a DipoleStat object.
 
@@ -1447,8 +1466,6 @@ class TestDipoleRetMirror:
         assert DipoleRetMirror.name == 'dipole'
         assert DipoleRetMirror.needs == {'sim': 'ret', 'sym': True}
 
-    @pytest.mark.xfail(reason = "DipoleRetMirror construction requires real "
-                                "DipoleRet with ComPoint geometry")
     def test_construction(self):
         """Test construction wraps a DipoleRet object.
 

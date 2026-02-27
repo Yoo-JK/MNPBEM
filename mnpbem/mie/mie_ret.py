@@ -312,7 +312,7 @@ class MieRet:
             k = 2 * np.pi / enei[i] * nb
             epsz = _get_eps_scalar(self.epsin, enei[i]) / epsb
             a, b, _, _ = _miecoefficients(k, self.diameter, epsz, 1.0, self._ltab)
-            ext[i] = (2 * np.pi / k**2
+            ext[i] = np.real(2 * np.pi / k**2
                       * np.sum((2 * l_unique + 1) * np.real(a[ind] + b[ind])))
 
         return np.real(ext)
@@ -336,7 +336,7 @@ class MieRet:
             k = 2 * np.pi / enei[i] * nb
             epsz = _get_eps_scalar(self.epsin, enei[i]) / epsb
             a, b, _, _ = _miecoefficients(k, self.diameter, epsz, 1.0, self._ltab)
-            sca[i] = (2 * np.pi / k**2
+            sca[i] = np.real(2 * np.pi / k**2
                       * np.sum((2 * l_unique + 1)
                                * (np.abs(a[ind])**2 + np.abs(b[ind])**2)))
 

@@ -704,7 +704,7 @@ class LayerStructure(object):
             integ = self._intbessel(enei, kr, pos)
             return dkr * integ
 
-        y0 = np.zeros(15 * n1)
+        y0 = np.zeros(15 * n1, dtype = complex)
         sol = solve_ivp(rhs_semi, [0, np.pi], y0,
                         t_eval = [np.pi],
                         rtol = 1e-6, atol = self.atol,
@@ -731,7 +731,7 @@ class LayerStructure(object):
             integ = self._intbessel(enei, kr, pos, ind)
             return -2 * k1max * integ / x ** 2
 
-        y0 = np.zeros(15 * n)
+        y0 = np.zeros(15 * n, dtype = complex)
         sol = solve_ivp(rhs_real, [1, 1e-10], y0,
                         t_eval = [1e-10],
                         rtol = 1e-6, atol = self.atol,
@@ -758,7 +758,7 @@ class LayerStructure(object):
             integ = self._inthankel(enei, kr, pos, ind)
             return -2j * k1max * integ / x ** 2
 
-        y0 = np.zeros(15 * n)
+        y0 = np.zeros(15 * n, dtype = complex)
         sol = solve_ivp(rhs_imag, [1, 1e-10], y0,
                         t_eval = [1e-10],
                         rtol = 1e-6, atol = self.atol,

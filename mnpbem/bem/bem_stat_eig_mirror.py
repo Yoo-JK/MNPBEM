@@ -59,11 +59,12 @@ class BEMStatEigMirror(object):
             F_i = F_list[i]
 
             # left and right eigenvectors
-            ul_i, _ = eigs(F_i.T, k = self.nev, which = 'SR', maxiter = 1000)
+            # eigs returns (eigenvalues, eigenvectors) where eigenvectors is (n, k)
+            _, ul_i = eigs(F_i.T, k = self.nev, which = 'SR', maxiter = 1000)
             ul_i = ul_i.T  # (nev, n)
-            ur_i, ene_i = eigs(F_i, k = self.nev, which = 'SR', maxiter = 1000)
+            ene_i, ur_i = eigs(F_i, k = self.nev, which = 'SR', maxiter = 1000)
             # ur_i is (n, nev), ene_i is (nev,)
-            ene_i = np.diag(np.diag(np.diag(ene_i))) if ene_i.ndim == 2 else np.diag(ene_i)
+            ene_i = np.diag(ene_i)
 
             # make eigenvectors orthogonal
             overlap = ul_i @ ur_i  # (nev, nev)
