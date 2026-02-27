@@ -697,9 +697,6 @@ class TestGreenRetLayer:
         # z1 should be z-coordinates of p
         np.testing.assert_allclose(gr._z1, p.pos[:, 2])
 
-    @pytest.mark.xfail(reason="eval() calls layer.green() which does full "
-                       "ODE integration and may not work with GreenTabLayer "
-                       "that has no tabulated data")
     def test_eval_caches(self, particle_above_layer):
         """After eval, G and F should be populated (n1 x n2 arrays)."""
         p, layer = particle_above_layer
@@ -742,8 +739,6 @@ class TestGreenTabLayer:
         assert len(gt.r) == 10
         assert len(gt.z1) == 5
 
-    @pytest.mark.xfail(reason="eval with no table calls layer.green() "
-                       "which requires full ODE integration")
     def test_eval_no_table(self, single_layer):
         """eval without table delegates to layer.green()."""
         gt = GreenTabLayer(single_layer)
@@ -785,10 +780,6 @@ class TestGreenTabLayer:
 # Section 4: CompGreenStatLayer tests
 # ===========================================================================
 
-@pytest.mark.xfail(reason="CompGreenStatLayer -> CompGreenStat -> refinematrix/quadpol "
-                   "requires full Particle geometry (bradius, quadpol, index34, quad). "
-                   "MockParticle cannot provide the quadrature infrastructure needed "
-                   "for diagonal Green function refinement.")
 class TestCompGreenStatLayer:
     """Test CompGreenStatLayer: composite Green function with layer (static).
     MATLAB: @compgreenstatlayer"""
@@ -984,9 +975,6 @@ class TestCoverLayer:
 # Section 8: BEMStatLayer tests
 # ===========================================================================
 
-@pytest.mark.xfail(reason="BEMStatLayer -> CompGreenStatLayer -> CompGreenStat -> "
-                   "refinematrix/quadpol requires full Particle geometry. "
-                   "MockParticle cannot provide the quadrature infrastructure.")
 class TestBEMStatLayer:
     """Test BEMStatLayer: quasistatic BEM solver with layer structure.
     MATLAB: @bemstatlayer"""
@@ -1070,9 +1058,6 @@ class TestBEMRetLayer:
         assert bem.layer is layer
         assert bem.G1i is None
 
-    @pytest.mark.xfail(reason="init() calls CompGreenRetLayer.eval which "
-                       "depends on full Green function evaluation chain "
-                       "including layer.green() ODE integration")
     def test_init(self, particle_above_layer):
         """init(enei) computes all BEM matrices."""
         p, layer = particle_above_layer
@@ -1486,9 +1471,6 @@ class TestSpectrumRetLayer:
 class TestLayerStaticWorkflow:
     """Integration test: full quasistatic workflow with layer."""
 
-    @pytest.mark.xfail(reason="BEMStatLayer -> CompGreenStatLayer -> CompGreenStat -> "
-                       "refinematrix/quadpol requires full Particle geometry. "
-                       "MockParticle cannot provide the quadrature infrastructure.")
     def test_planewave_stat_workflow(self, single_layer):
         """Full workflow: PlaneWaveStatLayer -> BEMStatLayer -> absorption."""
         p = MockParticle(radius=5.0, z_center=15.0,

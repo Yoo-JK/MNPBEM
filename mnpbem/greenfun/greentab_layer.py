@@ -55,7 +55,14 @@ class GreenTabLayer(object):
             z1: np.ndarray,
             z2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
-        G, Fr, Fz = self.layer.green(enei, r, z1, z2)
+        result = self.layer.green(enei, r, z1, z2)
+        # layer.green() returns (G_dict, Fr_dict, Fz_dict, pos_dict)
+        # where G, Fr, Fz are dicts keyed by reflection names.
+        # Sum all components to obtain the total reflected Green function.
+        G_dict, Fr_dict, Fz_dict = result[0], result[1], result[2]
+        G = self._sum_components(G_dict)
+        Fr = self._sum_components(Fr_dict)
+        Fz = self._sum_components(Fz_dict)
         self.G = G
         self.Fr = Fr
         self.Fz = Fz
@@ -123,7 +130,10 @@ class GreenTabLayer(object):
                 r_vec = self.r
                 z1_vec = np.full_like(r_vec, self.z1[iz1])
                 z2_vec = np.full_like(r_vec, self.z2[iz2])
-                G, Fr, Fz = self.layer.green(enei, r_vec, z1_vec, z2_vec)
+                result = self.layer.green(enei, r_vec, z1_vec, z2_vec)
+                G = self._sum_components(result[0])
+                Fr = self._sum_components(result[1])
+                Fz = self._sum_components(result[2])
                 self._Gsav[:, iz1, iz2] = G
                 self._Frsav[:, iz1, iz2] = Fr
                 self._Fzsav[:, iz1, iz2] = Fz
@@ -180,6 +190,26 @@ class GreenTabLayer(object):
         c1 = c01 * (1 - fz1) + c11 * fz1
 
         return c0 * (1 - fz2) + c1 * fz2
+
+    @staticmethod
+    def _sum_components(d):
+        """Sum all reflection-component arrays stored in a dict.
+
+        layer.green() returns dicts keyed by reflection names
+        ('p', 'ss', 'hs', 'sh', 'hh').  This helper adds them together
+        to yield the total reflected Green function as a single array.
+
+        If *d* is already an ndarray (not a dict) it is returned as-is.
+        """
+        if isinstance(d, dict):
+            total = None
+            for v in d.values():
+                if total is None:
+                    total = np.array(v, dtype = complex)
+                else:
+                    total = total + np.array(v, dtype = complex)
+            return total if total is not None else np.zeros(0, dtype = complex)
+        return np.asarray(d, dtype = complex)
 
     def __repr__(self) -> str:
         r_info = 'nr={}'.format(len(self.r)) if self.r is not None else 'no table'

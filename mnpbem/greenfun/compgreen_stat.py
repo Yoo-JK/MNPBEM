@@ -188,7 +188,16 @@ class CompGreenStat:
 
         # Apply refinement if needed
         if len(self.ind) > 0:
-            self._refine_greenstat(p1, p2, ir, **options)
+            # Check whether the particle supports the quadrature methods
+            # (quadpol, quad_integration) required for polar integration
+            # refinement.  When these are missing -- e.g. for simplified /
+            # mock particle objects -- fall back to the analytical diagonal
+            # correction:  G_diag ~ 1/(4*pi*bradius),  F_diag = -2*pi.
+            has_quad = hasattr(p2, 'quadpol') and hasattr(p2, 'quad_integration')
+            if has_quad:
+                self._refine_greenstat(p1, p2, ir, **options)
+            else:
+                self._fallback_diagonal(p1, p2)
         else:
             # No refinement - use analytical diagonal values
             if p1 is p2:
@@ -198,6 +207,40 @@ class CompGreenStat:
                 else:  # 'cart'
                     for i in range(n1):
                         self.F[i, i, :] = -2.0 * np.pi * nvec1[i]
+
+    def _fallback_diagonal(self, p1, p2):
+        """
+        Simple diagonal correction when polar-integration quadrature
+        infrastructure (quadpol / quad_integration) is unavailable.
+
+        For diagonal (self-term) elements:
+          G_ii = 1 / (4 * pi * bradius_i)   (approximate self-coupling)
+          F_ii = -2 * pi                      (analytical value for flat element)
+
+        For off-diagonal refinement elements the existing far-field
+        approximation (1/d * area) is kept unchanged.
+        """
+        if p1 is p2 or (hasattr(p1, 'pos') and hasattr(p2, 'pos')
+                        and p1.pos is p2.pos):
+            n = p1.pos.shape[0]
+            nvec1 = p1.nvec
+
+            # Boundary-element radius for self-term G correction
+            if callable(getattr(p2, 'bradius', None)):
+                brad = p2.bradius()
+            elif hasattr(p2, 'bradius') and isinstance(p2.bradius, np.ndarray):
+                brad = p2.bradius
+            else:
+                brad = np.ones(n)
+
+            brad_safe = np.maximum(brad, np.finfo(float).eps)
+
+            for i in range(n):
+                self.G[i, i] = 1.0 / (4.0 * np.pi * brad_safe[i])
+                if self.deriv == 'norm':
+                    self.F[i, i] = -2.0 * np.pi
+                else:  # 'cart'
+                    self.F[i, i, :] = -2.0 * np.pi * nvec1[i]
 
     def _refine_greenstat(self, p1, p2, ir, **options):
         """
