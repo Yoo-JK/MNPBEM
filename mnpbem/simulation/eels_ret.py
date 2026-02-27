@@ -331,15 +331,20 @@ class EELSRet(EELSBase):
         # MATLAB: loss.m lines 29-30
         # Auxiliary functions for energy loss
         def fun1(ind: np.ndarray) -> np.ndarray:
-            h1_z = sig.h1[ind, 2, :] if sig.h1.ndim == 3 else sig.h1[ind, 2:3]
+            # MATLAB: sig.sig1(ind,:) - vel * squeeze(sig.h1(ind,3,:))
+            # Python indexing h1[ind, 2, :] already removes the middle dim,
+            # so np.squeeze is unnecessary (and harmful for nimp > 1).
             if sig.h1.ndim == 3:
-                return sig.sig1[ind, :] - self.vel * np.squeeze(h1_z, axis = 1)
+                h1_z = sig.h1[ind, 2, :]
+            else:
+                h1_z = sig.h1[ind, 2:3]
             return sig.sig1[ind, :] - self.vel * h1_z
 
         def fun2(ind: np.ndarray) -> np.ndarray:
-            h2_z = sig.h2[ind, 2, :] if sig.h2.ndim == 3 else sig.h2[ind, 2:3]
             if sig.h2.ndim == 3:
-                return sig.sig2[ind, :] - self.vel * np.squeeze(h2_z, axis = 1)
+                h2_z = sig.h2[ind, 2, :]
+            else:
+                h2_z = sig.h2[ind, 2:3]
             return sig.sig2[ind, :] - self.vel * h2_z
 
         # MATLAB: loss.m lines 33-34

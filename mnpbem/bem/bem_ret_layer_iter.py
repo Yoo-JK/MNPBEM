@@ -249,13 +249,14 @@ class BEMRetLayerIter(BEMIter):
     def _pack(self, *args: Any) -> np.ndarray:
 
         # MATLAB: bemretlayeriter/private/pack.m
+        # MATLAB uses column-major (:) flatten, so we use order='F'.
         if len(args) == 4:
             phi, a, phip, ap = args
             total_len = phi.size + a.size + phip.size + ap.size
             vec = np.empty(total_len, dtype = complex)
             offset = 0
             for arr in [phi, a, phip, ap]:
-                flat = arr.ravel()
+                flat = arr.ravel(order = 'F')
                 vec[offset:offset + flat.size] = flat
                 offset += flat.size
             return vec
@@ -292,7 +293,7 @@ class BEMRetLayerIter(BEMIter):
             vec = np.empty(total_len, dtype = complex)
             offset = 0
             for arr in [phi, a, phip, ap]:
-                flat = arr.ravel()
+                flat = arr.ravel(order = 'F')
                 vec[offset:offset + flat.size] = flat
                 offset += flat.size
             return vec
@@ -302,19 +303,20 @@ class BEMRetLayerIter(BEMIter):
             nout: int = 4) -> Tuple:
 
         # MATLAB: bemretlayeriter/private/unpack.m
+        # MATLAB uses column-major reshape, so we use order='F'.
         n = self.p.n if hasattr(self.p, 'n') else self.p.nfaces
 
         # Last dimension
         siz = int(vec.size / (8 * n))
 
-        # Reshape vector
-        vec_2d = vec.reshape(-1, 8)
+        # Reshape vector (column-major to match MATLAB)
+        vec_2d = vec.reshape(-1, 8, order = 'F')
 
         # Extract potentials from vector
-        phi = vec_2d[:, 0].reshape(n, siz) if siz > 1 else vec_2d[:, 0].reshape(n)
-        a = vec_2d[:, 1:4].reshape(n, 3, siz) if siz > 1 else vec_2d[:, 1:4].reshape(n, 3)
-        phip = vec_2d[:, 4].reshape(n, siz) if siz > 1 else vec_2d[:, 4].reshape(n)
-        ap = vec_2d[:, 5:8].reshape(n, 3, siz) if siz > 1 else vec_2d[:, 5:8].reshape(n, 3)
+        phi = vec_2d[:, 0].reshape(n, siz, order = 'F') if siz > 1 else vec_2d[:, 0].reshape(n)
+        a = vec_2d[:, 1:4].reshape(n, 3, siz, order = 'F') if siz > 1 else vec_2d[:, 1:4].reshape(n, 3)
+        phip = vec_2d[:, 4].reshape(n, siz, order = 'F') if siz > 1 else vec_2d[:, 4].reshape(n)
+        ap = vec_2d[:, 5:8].reshape(n, 3, siz, order = 'F') if siz > 1 else vec_2d[:, 5:8].reshape(n, 3)
 
         if nout == 4:
             return phi, a, phip, ap

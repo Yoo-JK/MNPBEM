@@ -184,11 +184,12 @@ class BEMRetIter(BEMIter):
             ap: np.ndarray) -> np.ndarray:
 
         # MATLAB: bemretiter/private/pack.m
+        # MATLAB uses column-major (:) flatten, so we use order='F'.
         total_len = phi.size + a.size + phip.size + ap.size
         vec = np.empty(total_len, dtype = complex)
         offset = 0
         for arr in [phi, a, phip, ap]:
-            flat = arr.ravel()
+            flat = arr.ravel(order = 'F')
             vec[offset:offset + flat.size] = flat
             offset += flat.size
         return vec
@@ -197,19 +198,20 @@ class BEMRetIter(BEMIter):
             vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 
         # MATLAB: bemretiter/private/unpack.m
+        # MATLAB uses column-major reshape, so we use order='F'.
         n = self.p.n if hasattr(self.p, 'n') else self.p.nfaces
 
         # last dimension
         siz = int(vec.size / (8 * n))
 
-        # reshape vector
-        vec_2d = vec.reshape(-1, 8)
+        # reshape vector (column-major to match MATLAB)
+        vec_2d = vec.reshape(-1, 8, order = 'F')
 
         # extract potentials from vector
-        phi = vec_2d[:, 0].reshape(n, siz) if siz > 1 else vec_2d[:, 0].reshape(n)
-        a = vec_2d[:, 1:4].reshape(n, 3, siz) if siz > 1 else vec_2d[:, 1:4].reshape(n, 3)
-        phip = vec_2d[:, 4].reshape(n, siz) if siz > 1 else vec_2d[:, 4].reshape(n)
-        ap = vec_2d[:, 5:8].reshape(n, 3, siz) if siz > 1 else vec_2d[:, 5:8].reshape(n, 3)
+        phi = vec_2d[:, 0].reshape(n, siz, order = 'F') if siz > 1 else vec_2d[:, 0].reshape(n)
+        a = vec_2d[:, 1:4].reshape(n, 3, siz, order = 'F') if siz > 1 else vec_2d[:, 1:4].reshape(n, 3)
+        phip = vec_2d[:, 4].reshape(n, siz, order = 'F') if siz > 1 else vec_2d[:, 4].reshape(n)
+        ap = vec_2d[:, 5:8].reshape(n, 3, siz, order = 'F') if siz > 1 else vec_2d[:, 5:8].reshape(n, 3)
 
         return phi, a, phip, ap
 
@@ -349,25 +351,25 @@ class BEMRetIter(BEMIter):
         n = self.p.n if hasattr(self.p, 'n') else self.p.nfaces
         siz = int(vec.size / 2)
 
-        # Split vector array
-        vec1 = vec[:siz].reshape(n, -1)
-        vec2 = vec[siz:].reshape(n, -1)
+        # Split vector array (column-major reshape to match MATLAB)
+        vec1 = vec[:siz].reshape(n, -1, order = 'F')
+        vec2 = vec[siz:].reshape(n, -1, order = 'F')
 
         # Multiplication with Green functions
         G1_vec1 = self._G1 @ vec1
         G2_vec2 = self._G2 @ vec2
 
-        # Pack into combined vector for unpack
+        # Pack into combined vector for unpack (column-major flatten)
         combined_g = np.empty(G1_vec1.size + G2_vec2.size, dtype = complex)
-        combined_g[:G1_vec1.size] = G1_vec1.ravel()
-        combined_g[G1_vec1.size:] = G2_vec2.ravel()
+        combined_g[:G1_vec1.size] = G1_vec1.ravel(order = 'F')
+        combined_g[G1_vec1.size:] = G2_vec2.ravel(order = 'F')
         Gsig1, Gh1, Gsig2, Gh2 = self._unpack(combined_g)
 
         H1_vec1 = self._H1 @ vec1
         H2_vec2 = self._H2 @ vec2
         combined_h = np.empty(H1_vec1.size + H2_vec2.size, dtype = complex)
-        combined_h[:H1_vec1.size] = H1_vec1.ravel()
-        combined_h[H1_vec1.size:] = H2_vec2.ravel()
+        combined_h[:H1_vec1.size] = H1_vec1.ravel(order = 'F')
+        combined_h[H1_vec1.size:] = H2_vec2.ravel(order = 'F')
         Hsig1, Hh1, Hsig2, Hh2 = self._unpack(combined_h)
 
         k = self._k

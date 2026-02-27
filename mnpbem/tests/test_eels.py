@@ -1072,17 +1072,6 @@ class TestEELSRetField(object):
 
 class TestEELSRetLoss(object):
 
-    @pytest.mark.xfail(
-        reason=(
-            "Bug in eels_ret.loss: fun1/fun2 use np.squeeze(h_z, axis=1) "
-            "which removes the n_imp dimension, causing broadcasting mismatch "
-            "when combined with sig arrays. MATLAB uses squeeze() differently: "
-            "in MATLAB h1(ind, 3, :) keeps a singleton dimension that squeeze "
-            "removes correctly, but Python h1[ind, 2, :] already eliminates "
-            "it for n_imp=1 or fails for n_imp>1."
-        ),
-        strict=True
-    )
     def test_loss_output_shape(self):
         p = MockSphere(radius=5.0)
         impact = np.array([[15.0, 0.0]])
@@ -1113,13 +1102,6 @@ class TestEELSRetLoss(object):
         pbulk = eels.bulkloss(500.0)
         np.testing.assert_allclose(pbulk, 0.0, atol=1e-20)
 
-    @pytest.mark.xfail(
-        reason=(
-            "Bug in eels_ret.loss: fun1/fun2 np.squeeze broadcasting "
-            "mismatch (see test_loss_output_shape xfail reason)."
-        ),
-        strict=True
-    )
     def test_loss_with_single_impact(self):
         p = MockSphere(radius=5.0)
         impact = np.array([[15.0, 0.0]])

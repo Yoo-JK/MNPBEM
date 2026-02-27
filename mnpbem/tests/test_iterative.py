@@ -919,12 +919,6 @@ class TestBEMRetIter(object):
             expected += nvec_i @ Deltai @ nvec_i
         np.testing.assert_allclose(result, expected)
 
-    @pytest.mark.xfail(reason=(
-        "Python _pack concatenates [phi.ravel(), a.ravel(), phip.ravel(), ap.ravel()] "
-        "sequentially (C-order), but _unpack uses vec.reshape(-1, 8) which expects "
-        "column-major (Fortran-order) interleaving as in MATLAB reshape(vec,[],8). "
-        "This is a real bug in the Python code: pack and unpack are incompatible."
-    ))
     def test_pack_unpack_roundtrip(self, particle):
         """
         _pack and _unpack are inverses.
@@ -961,7 +955,10 @@ class TestBEMRetIter(object):
         ap = np.arange(3 * n, dtype=complex).reshape(n, 3) + 200
 
         vec = bem._pack(phi, a, phip, ap)
-        expected = np.concatenate([phi.ravel(), a.ravel(), phip.ravel(), ap.ravel()])
+        # MATLAB uses column-major (:) flatten, so expected uses order='F'
+        expected = np.concatenate([
+            phi.ravel(order='F'), a.ravel(order='F'),
+            phip.ravel(order='F'), ap.ravel(order='F')])
         np.testing.assert_array_equal(vec, expected)
 
     def test_inner_1d(self):
@@ -1361,11 +1358,6 @@ class TestBEMRetLayerIter(object):
         # They should differ because gamma only uses x,y while deltai uses x,y,z
         assert not np.allclose(gamma_result, deltai_result)
 
-    @pytest.mark.xfail(reason=(
-        "Python _pack concatenates sequentially (C-order) but _unpack uses "
-        "vec.reshape(-1, 8) expecting column-major interleaving (MATLAB). "
-        "Same pack/unpack mismatch bug as in BEMRetIter."
-    ))
     def test_pack_unpack_4arg_roundtrip(self, particle):
         """
         _pack/_unpack with 4 arguments: roundtrip.
@@ -1388,11 +1380,6 @@ class TestBEMRetLayerIter(object):
         np.testing.assert_allclose(phip2, phip)
         np.testing.assert_allclose(ap2, ap)
 
-    @pytest.mark.xfail(reason=(
-        "Python _pack concatenates sequentially (C-order) but _unpack uses "
-        "vec.reshape(-1, 8) expecting column-major interleaving (MATLAB). "
-        "Same pack/unpack mismatch bug as in BEMRetIter."
-    ))
     def test_unpack_6_outputs(self, particle):
         """
         _unpack with nout=6 decomposes a into (apar, aperp).
@@ -1646,11 +1633,6 @@ class TestBEMRetLayerIter(object):
         # phi = phi2 - phi1 = ones
         np.testing.assert_allclose(phi, np.ones(n, dtype=complex))
 
-    @pytest.mark.xfail(reason=(
-        "Python _pack concatenates sequentially (C-order) but _unpack uses "
-        "vec.reshape(-1, 8) expecting column-major interleaving (MATLAB). "
-        "Same pack/unpack mismatch bug as in BEMRetIter."
-    ))
     def test_pack_6arg(self, particle):
         """
         _pack with 6 arguments combines par/perp into full 3D vectors.
@@ -1768,11 +1750,6 @@ class TestEdgeCases(object):
         assert 'F' in it._stat['compression']
         assert 'G1' in it._stat['compression']
 
-    @pytest.mark.xfail(reason=(
-        "Python _pack concatenates sequentially (C-order) but _unpack uses "
-        "vec.reshape(-1, 8) expecting column-major interleaving (MATLAB). "
-        "Same pack/unpack mismatch bug as in BEMRetIter."
-    ))
     def test_pack_unpack_single_column(self, particle):
         """Pack/unpack with siz=1 (single excitation column)."""
         bem = _make_ret_iter(particle, solver='gmres', precond=None)
