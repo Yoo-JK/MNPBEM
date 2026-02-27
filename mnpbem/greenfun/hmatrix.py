@@ -120,6 +120,10 @@ class HMatrix(object):
         n = len(cols)
         max_rank = min(m, n, kmax)
 
+        # Probe dtype from function output
+        probe = fun(rows[:1], cols[:1])
+        out_dtype = np.complex128 if np.iscomplexobj(probe) else np.float64
+
         U_cols = []
         V_cols = []
 
@@ -195,12 +199,12 @@ class HMatrix(object):
             pivot_row_local = np.argmax(abs_u)
 
         if len(U_cols) == 0:
-            return np.zeros((m, 1), dtype = np.float64), np.zeros((n, 1), dtype = np.float64)
+            return np.zeros((m, 1), dtype = out_dtype), np.zeros((n, 1), dtype = out_dtype)
 
         # Stack into matrices
         rank = len(U_cols)
-        U = np.empty((m, rank), dtype = np.float64)
-        V = np.empty((n, rank), dtype = np.float64)
+        U = np.empty((m, rank), dtype = out_dtype)
+        V = np.empty((n, rank), dtype = out_dtype)
         for j in range(rank):
             U[:, j] = U_cols[j]
             V[:, j] = V_cols[j]
@@ -484,7 +488,12 @@ class HMatrix(object):
         # MATLAB: @hmatrix/diag.m
         tree = self.tree
         n = tree.n
-        d = np.zeros(n, dtype = np.float64)
+        diag_dtype = np.float64
+        for v in self.val:
+            if v is not None and np.iscomplexobj(v):
+                diag_dtype = np.complex128
+                break
+        d = np.zeros(n, dtype = diag_dtype)
 
         # Find diagonal dense blocks
         for i in range(len(self.row1)):
@@ -522,19 +531,31 @@ class HMatrix(object):
         tree = self.tree
         siz = tree.cind[:, 1] - tree.cind[:, 0] + 1
 
+        # Detect dtype from existing blocks
+        pad_dtype = np.float64
+        for v in self.val:
+            if v is not None and np.iscomplexobj(v):
+                pad_dtype = np.complex128
+                break
+        if pad_dtype == np.float64:
+            for l in self.lhs:
+                if l is not None and np.iscomplexobj(l):
+                    pad_dtype = np.complex128
+                    break
+
         for i in range(len(self.val)):
             if self.val[i] is None:
                 m = siz[self.row1[i]]
                 n_col = siz[self.col1[i]]
-                self.val[i] = np.zeros((m, n_col), dtype = np.float64)
+                self.val[i] = np.zeros((m, n_col), dtype = pad_dtype)
 
         for i in range(len(self.lhs)):
             if self.lhs[i] is None:
                 m = siz[self.row2[i]]
-                self.lhs[i] = np.zeros((m, 1), dtype = np.float64)
+                self.lhs[i] = np.zeros((m, 1), dtype = pad_dtype)
             if self.rhs[i] is None:
                 n_col = siz[self.col2[i]]
-                self.rhs[i] = np.zeros((n_col, 1), dtype = np.float64)
+                self.rhs[i] = np.zeros((n_col, 1), dtype = pad_dtype)
 
         return self
 
