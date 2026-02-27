@@ -136,29 +136,26 @@ class PlaneWaveStat:
         """
         Potential of plane wave excitation for use in BEMStat.
 
-        MATLAB: potential.m
+        MATLAB: potential.m / planewavestatmirror/potential.m
 
         Parameters
         ----------
-        p : ComParticle
+        p : ComParticle or ComParticleMirror
             Particle surface where potential is computed
         enei : float
             Light wavelength in vacuum (nm)
 
         Returns
         -------
-        exc : CompStruct
-            CompStruct with surface derivative 'phip' of scalar potential
-
-        Notes
-        -----
-        MATLAB: potential.m line 13
-
-        The surface derivative of the potential is:
-        φ' = -nvec · pol
-
-        This comes from E = -∇φ, so φ' = -nvec · E = -nvec · pol
+        exc : CompStruct or CompStructMirror
+            CompStruct with surface derivative 'phip' of scalar potential.
+            Returns CompStructMirror when p is a ComParticleMirror.
         """
+        from ..geometry.comparticle_mirror import ComParticleMirror, CompStructMirror
+
+        if isinstance(p, ComParticleMirror):
+            return self._potential_mirror(p, enei)
+
         # MATLAB: potential.m line 13
         # exc = compstruct(p, enei, 'phip', -p.nvec * transpose(obj.pol))
 
@@ -172,34 +169,62 @@ class PlaneWaveStat:
 
         return CompStruct(p, enei, phip=phip)
 
+    def _potential_mirror(self, p, enei):
+        """
+        Potential for mirror-symmetric particle.
+
+        MATLAB: planewavestatmirror/potential.m
+
+        Decomposes excitation into symmetry components.
+        """
+        from ..geometry.comparticle_mirror import CompStructMirror
+
+        exc = CompStructMirror(p, enei)
+
+        def make_component(sym_keys, pol):
+            """Create a CompStruct with symmetry values and phip."""
+            symval = p.symvalue(sym_keys)
+            phip = -p.nvec @ np.array(pol, dtype=float).reshape(1, -1).T
+            phip = phip[:, 0]
+            val = CompStruct(p, enei, phip=phip)
+            val.symval = symval
+            return val
+
+        if p.sym == 'x':
+            exc.val.append(make_component(['+', '-', '-'], [1, 0, 0]))
+            exc.val.append(make_component(['-', '+', '+'], [0, 1, 0]))
+            exc.val.append(make_component(['-', '+', '+'], [0, 0, 1]))
+        elif p.sym == 'y':
+            exc.val.append(make_component(['+', '-', '+'], [1, 0, 0]))
+            exc.val.append(make_component(['-', '+', '-'], [0, 1, 0]))
+            exc.val.append(make_component(['+', '-', '+'], [0, 0, 1]))
+        elif p.sym == 'xy':
+            exc.val.append(make_component(['++', '--', '-+'], [1, 0, 0]))
+            exc.val.append(make_component(['--', '++', '+-'], [0, 1, 0]))
+            exc.val.append(make_component(['-+', '+-', '++'], [0, 0, 1]))
+
+        return exc
+
     def absorption(self, sig):
         """
         Absorption cross section for plane wave excitation.
 
-        MATLAB: absorption.m
+        MATLAB: absorption.m / planewavestatmirror/absorption.m
 
         Parameters
         ----------
-        sig : CompStruct
+        sig : CompStruct or CompStructMirror
             CompStruct object containing surface charge
 
         Returns
         -------
         abs : ndarray
             Absorption cross section for each polarization
-
-        Notes
-        -----
-        MATLAB: absorption.m lines 12-20
-
-        Formula:
-        abs = 4πk·Im(pol·dip)
-
-        where dip is the induced dipole moment:
-        dip = Σ(area_i × pos_i × σ_i)
         """
-        # MATLAB: absorption.m line 12
-        # dip = matmul((repmat(sig.p.area, [1, 3]) .* sig.p.pos)', sig.sig)
+        from ..geometry.comparticle_mirror import CompStructMirror
+        if isinstance(sig, CompStructMirror):
+            expanded = sig.expand()
+            return sum(self.absorption(s) for s in expanded)
 
         # Induced dipole moment
         # area: (nfaces,), pos: (nfaces, 3), sig: (nfaces,) or (nfaces, npol)
@@ -234,28 +259,23 @@ class PlaneWaveStat:
         """
         Scattering cross section for plane wave excitation.
 
-        MATLAB: scattering.m
+        MATLAB: scattering.m / planewavestatmirror/scattering.m
 
         Parameters
         ----------
-        sig : CompStruct
+        sig : CompStruct or CompStructMirror
             CompStruct object containing surface charge
 
         Returns
         -------
         sca : ndarray
             Scattering cross section for each polarization
-
-        Notes
-        -----
-        MATLAB: scattering.m lines 12-17
-
-        Formula (dipole approximation):
-        sca = (8π/3) k⁴ |dip|²
-
-        where dip is the induced dipole moment.
         """
-        # MATLAB: scattering.m line 12
+        from ..geometry.comparticle_mirror import CompStructMirror
+        if isinstance(sig, CompStructMirror):
+            expanded = sig.expand()
+            return sum(self.scattering(s) for s in expanded)
+
         # Induced dipole moment
         area_pos = sig.p.area[:, np.newaxis] * sig.p.pos  # (nfaces, 3)
 

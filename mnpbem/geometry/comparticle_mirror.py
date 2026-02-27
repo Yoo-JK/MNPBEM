@@ -36,8 +36,8 @@ class CompStructMirror(object):
         if len(self.val) == 0:
             return ()
 
-        names = [k for k in vars(self.val[0]).keys()
-                 if k not in ('p', 'enei', 'symval')]
+        names = [k for k in self.val[0].val.keys()
+                 if k != 'symval']
 
         n_out = len(self.val)
         results = []
@@ -179,14 +179,14 @@ class ComParticleMirror(object):
         if self.sym in ('x', 'xy'):
             orig_len = len(p_list)
             for i in range(orig_len):
-                p_list.append(p_list[i].flip(1))  # flip x
+                p_list.append(p_list[i].flip(0))  # flip x (0-indexed)
                 inout_list.append(inout_list[i])
 
         # mirror in y direction
         if self.sym in ('y', 'xy'):
             orig_len = len(p_list)
             for i in range(orig_len):
-                p_list.append(p_list[i].flip(2))  # flip y
+                p_list.append(p_list[i].flip(1))  # flip y (0-indexed)
                 inout_list.append(inout_list[i])
 
         inout_arr = np.array(inout_list)

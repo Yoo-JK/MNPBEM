@@ -87,7 +87,7 @@ class BEMStatMirror(object):
         """
         self._init_matrices(exc.enei)
 
-        sig = CompStructMirror(self.p, exc.enei, exc.fun)
+        sig = CompStructMirror(self.p, exc.enei, getattr(exc, 'fun', None))
 
         for i in range(len(exc.val)):
             ind = self.p.symindex(exc.val[i].symval[-1, :])

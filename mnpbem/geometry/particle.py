@@ -819,60 +819,68 @@ class Particle:
 
     def flip(self, dir=0):
         """
-        Flip particle along given direction.
+        Flip particle along given direction (returns new particle).
 
         MATLAB: obj = flip(obj, dir)
 
         Parameters
         ----------
-        dir : int
+        dir : int or list
             Direction to flip (0=x, 1=y, 2=z). Default: 0
 
         Returns
         -------
-        self : Particle
-            Flipped particle
+        new : Particle
+            Flipped particle (original is not modified)
         """
-        self.verts[:, dir] = -self.verts[:, dir]
-        if self.verts2 is not None:
-            self.verts2[:, dir] = -self.verts2[:, dir]
-
-        return self.flipfaces()
+        import copy
+        new = copy.deepcopy(self)
+        dirs = [dir] if isinstance(dir, (int, np.integer)) else dir
+        for d in dirs:
+            new.verts[:, d] = -new.verts[:, d]
+            if new.verts2 is not None:
+                new.verts2[:, d] = -new.verts2[:, d]
+        return new.flipfaces()
 
     def flipfaces(self):
         """
-        Flip orientation of surface elements (reverse face winding).
+        Flip orientation of surface elements (returns new particle).
 
         MATLAB: obj = flipfaces(obj)
 
         Returns
         -------
-        self : Particle
-            Particle with flipped faces
+        new : Particle
+            Particle with flipped faces (original is not modified)
         """
-        ind3, ind4 = self.index34()
+        import copy
+        new = copy.deepcopy(self)
+        ind3, ind4 = new.index34()
 
         # Flip triangular faces
         if len(ind3) > 0:
-            self.faces[ind3, :3] = self.faces[ind3, :3][:, ::-1]
+            new.faces[ind3, :3] = new.faces[ind3, :3][:, ::-1]
 
         # Flip quadrilateral faces
         if len(ind4) > 0:
-            self.faces[ind4, :4] = self.faces[ind4, :4][:, ::-1]
+            new.faces[ind4, :4] = new.faces[ind4, :4][:, ::-1]
 
         # Also flip faces2 if present
-        if self.faces2 is not None:
+        if new.faces2 is not None:
             if len(ind3) > 0:
-                # Flip: [1,2,3,5,6,7] -> [3,2,1,6,5,7]
-                self.faces2[ind3][:, [0, 1, 2, 4, 5, 6]] = \
-                    self.faces2[ind3][:, [2, 1, 0, 5, 4, 6]]
+                # Flip: [v0,v1,v2,m01,m12,m20] -> [v2,v1,v0,m12,m01,m20]
+                cols_src = [2, 1, 0, 5, 4, 6]
+                cols_dst = [0, 1, 2, 4, 5, 6]
+                temp = new.faces2[ind3][:, cols_src].copy()
+                new.faces2[np.ix_(ind3, cols_dst)] = temp
             if len(ind4) > 0:
-                # Flip: [1,2,3,4,5,6,7,8] -> [4,3,2,1,7,6,5,8]
-                self.faces2[ind4][:, [0, 1, 2, 3, 4, 5, 6, 7]] = \
-                    self.faces2[ind4][:, [3, 2, 1, 0, 6, 5, 4, 7]]
+                cols_src = [3, 2, 1, 0, 6, 5, 4, 7]
+                cols_dst = [0, 1, 2, 3, 4, 5, 6, 7]
+                temp = new.faces2[ind4][:, cols_src].copy()
+                new.faces2[np.ix_(ind4, cols_dst)] = temp
 
-        self._norm()
-        return self
+        new._norm()
+        return new
 
     # ==================== Selection and merging ====================
 
@@ -973,30 +981,37 @@ class Particle:
 
     def vertcat(self, *others):
         """
-        Concatenate particles vertically.
+        Concatenate particles vertically (returns new particle).
 
         MATLAB: obj = vertcat(obj1, obj2, obj3, ...)
         MATLAB: obj = [obj1; obj2; obj3; ...]
 
         Returns
         -------
-        obj : Particle
-            Combined particle surface
+        new : Particle
+            Combined particle surface (originals are not modified)
         """
+        new_verts = self.verts.copy()
+        new_faces = self.faces.copy()
+        new_verts2 = self.verts2.copy() if self.verts2 is not None else None
+        new_faces2 = self.faces2.copy() if self.faces2 is not None else None
+
         for other in others:
-            # Extend face-vertex list
-            offset = self.verts.shape[0]
-            self.faces = np.vstack([self.faces, other.faces + offset])
-            self.verts = np.vstack([self.verts, other.verts])
+            offset = new_verts.shape[0]
+            new_faces = np.vstack([new_faces, other.faces + offset])
+            new_verts = np.vstack([new_verts, other.verts])
 
-            # Extend curved data if present
-            if self.verts2 is not None and other.verts2 is not None:
-                offset2 = self.verts2.shape[0]
-                self.faces2 = np.vstack([self.faces2, other.faces2 + offset2])
-                self.verts2 = np.vstack([self.verts2, other.verts2])
+            if new_verts2 is not None and other.verts2 is not None:
+                offset2 = new_verts2.shape[0]
+                new_faces2 = np.vstack([new_faces2, other.faces2 + offset2])
+                new_verts2 = np.vstack([new_verts2, other.verts2])
 
-        self._norm()
-        return self
+        new_particle = Particle(new_verts, new_faces, interp=self.interp,
+                                norm='off')
+        new_particle.verts2 = new_verts2
+        new_particle.faces2 = new_faces2
+        new_particle._norm()
+        return new_particle
 
     # ==================== Edge and boundary methods ====================
 
