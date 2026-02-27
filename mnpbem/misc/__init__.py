@@ -15,7 +15,7 @@ from .valarray import ValArray
 from .vecarray import VecArray
 from .quadface_misc import QuadFace, triangle_unit_set, trisubdivide
 from .bemplot import BemPlot
-from .plotting import arrowplot, coneplot2, mycolormap, particlecursor
+from .plotting import arrowplot, coneplot, coneplot2, mycolormap, particlecursor
 from .misc_utils import nettable, patchcurvature, memsize, round_left, Mem, multi_waitbar
 
 
@@ -44,7 +44,7 @@ __all__ = [
     # bemplot
     'BemPlot',
     # plotting
-    'arrowplot', 'coneplot2', 'mycolormap', 'particlecursor',
+    'arrowplot', 'coneplot', 'coneplot2', 'mycolormap', 'particlecursor',
     # misc_utils
     'nettable', 'patchcurvature', 'memsize', 'round_left',
     'Mem', 'multi_waitbar',

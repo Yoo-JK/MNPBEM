@@ -1,7 +1,8 @@
 """
 Plotting utilities for MNPBEM.
 
-MATLAB: Misc/arrowplot.m, Misc/coneplot2.m, Misc/mycolormap.m, Misc/particlecursor.m
+MATLAB: Misc/arrowplot.m, Misc/coneplot.m, Misc/coneplot2.m,
+        Misc/mycolormap.m, Misc/particlecursor.m
 """
 
 import numpy as np
@@ -31,8 +32,33 @@ def arrowplot(pos: np.ndarray, vec: np.ndarray,
     -------
     bp : BemPlot
     """
-    bp = BemPlot(**kwargs)
+    bp = BemPlot.get(**kwargs)
     bp.plotarrow(pos, vec, **kwargs)
+    return bp
+
+
+def coneplot(pos: np.ndarray, vec: np.ndarray,
+        **kwargs: Any) -> BemPlot:
+    """
+    MATLAB: Misc/coneplot.m
+
+    Plot vectors at given positions using cones via BemPlot.
+
+    Parameters
+    ----------
+    pos : ndarray, shape (n, 3)
+        Positions where cones are plotted
+    vec : ndarray, shape (n, 3)
+        Vectors to be plotted
+    **kwargs
+        fun, scale, sfun - passed to BemPlot
+
+    Returns
+    -------
+    bp : BemPlot
+    """
+    bp = BemPlot.get(**kwargs)
+    bp.plotcone(pos, vec, **kwargs)
     return bp
 
 

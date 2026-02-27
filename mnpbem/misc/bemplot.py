@@ -34,7 +34,14 @@ class BemPlot(object):
     plotcone(pos, vec, **kwargs) -> None
     plottrue(p, val=None, **kwargs) -> None
     refresh(*keys) -> None
+    get(**kwargs) -> BemPlot (static)
+    figname() -> str
+    tight_caxis() -> None
     """
+
+    # class-level storage for the current BemPlot instance
+    # (replaces MATLAB figure UserData mechanism)
+    _current = None
 
     def __init__(self, **kwargs: Any) -> None:
         self.var = []
@@ -52,6 +59,37 @@ class BemPlot(object):
             self.opt['scale'] = op['scale']
         if 'sfun' in op:
             self.opt['sfun'] = op['sfun']
+
+    @staticmethod
+    def get(**kwargs: Any) -> 'BemPlot':
+        """
+        MATLAB: @bemplot/get.m
+
+        Open new figure or get existing BemPlot instance.
+        Creates a new BemPlot if none is current, otherwise
+        reinitializes the existing one with the given options.
+        """
+        if BemPlot._current is None:
+            obj = BemPlot(**kwargs)
+            BemPlot._current = obj
+        else:
+            obj = BemPlot._current
+            op = getbemoptions(kwargs)
+            if 'fun' in op:
+                obj.opt['fun'] = op['fun']
+            if 'scale' in op:
+                obj.opt['scale'] = op['scale']
+            if 'sfun' in op:
+                obj.opt['sfun'] = op['sfun']
+        return obj
+
+    @staticmethod
+    def clear_current() -> None:
+        """
+        Clear the current BemPlot instance.
+        Useful for resetting state between plots.
+        """
+        BemPlot._current = None
 
     def plotval(self, p: object, val: np.ndarray,
             **kwargs: Any) -> None:
@@ -155,6 +193,9 @@ class BemPlot(object):
         # plot
         self.var[ind].plot(self.opt, **kwargs)
 
+        # store as current instance
+        BemPlot._current = self
+
     def refresh(self, *keys: str) -> None:
         """
         MATLAB: @bemplot/refresh.m
@@ -192,6 +233,65 @@ class BemPlot(object):
 
         if keys:
             self.refresh(*keys)
+
+    def figname(self) -> str:
+        """
+        MATLAB: @bemplot/private/figname.m
+
+        Generate figure title string based on current plot options.
+        """
+        fun = self.opt['fun']
+
+        # determine function name
+        # try to detect common functions by testing behavior
+        try:
+            test_val = np.array([1.0 + 1.0j])
+            result = fun(test_val)
+            if np.isclose(result[0], 1.0):
+                name = '(real)'
+            elif np.isclose(result[0], 1.0j) or np.isclose(result[0], 1.0):
+                name = '(imag)'
+            elif np.isclose(np.abs(result[0]), np.sqrt(2.0)):
+                name = '(abs)'
+            else:
+                name = '(fun)'
+        except Exception:
+            name = '(fun)'
+
+        if self.siz is not None and self.opt['ind'] is not None:
+            ind_val = self.opt['ind']
+            ind_tuple = np.unravel_index(ind_val, self.siz)
+            # MATLAB uses 1-based indexing, Python uses 0-based
+            ind_str = str(list(ind_tuple))
+            siz_str = str(list(self.siz))
+            name = 'Element {} of {}  {}'.format(ind_str, siz_str, name)
+
+        return name
+
+    def tight_caxis(self) -> Tuple[Optional[float], Optional[float]]:
+        """
+        MATLAB: @bemplot/private/contextmenu.m/caxfun
+
+        Compute tight color axis limits from all value/vector arrays.
+
+        Returns
+        -------
+        clim : tuple of (cmin, cmax) or (None, None)
+        """
+        cmin_vals = []
+        cmax_vals = []
+        for var in self.var:
+            mn = var.min_val(self.opt)
+            mx = var.max_val(self.opt)
+            if mn is not None:
+                cmin_vals.append(mn)
+            if mx is not None:
+                cmax_vals.append(mx)
+
+        if len(cmin_vals) == 0:
+            return (None, None)
+
+        return (min(cmin_vals), max(cmax_vals))
 
     def __repr__(self) -> str:
         return 'BemPlot(nvars={}, siz={})'.format(
