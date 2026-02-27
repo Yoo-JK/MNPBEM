@@ -288,12 +288,13 @@ class LayerStructure(object):
         z1 = np.atleast_1d(pos['z1'])
         z2 = np.atleast_1d(pos['z2'])
 
-        g1 = np.exp(1j * kz[ind1 - 1] * np.abs(z1[:, np.newaxis] - self.z) if z1.ndim == 1
-                     else np.abs(z1 - self.z))
-        g2 = np.exp(1j * kz[ind2 - 1] * np.abs(z2[:, np.newaxis] - self.z) if z2.ndim == 1
-                     else np.abs(z2 - self.z))
+        abs_z1 = np.abs(z1[:, np.newaxis] - self.z) if z1.ndim == 1 else np.abs(z1 - self.z)
+        abs_z2 = np.abs(z2[:, np.newaxis] - self.z) if z2.ndim == 1 else np.abs(z2 - self.z)
+        g1 = np.exp(1j * kz[ind1 - 1][:, np.newaxis] * abs_z1)
+        g2 = np.exp(1j * kz[ind2 - 1][:, np.newaxis] * abs_z2)
         # Derivative of Green function wrt z-value
-        g1z = g1 * np.sign(z1[:, np.newaxis] - self.z if z1.ndim == 1 else z1 - self.z)
+        sign_z1 = np.sign(z1[:, np.newaxis] - self.z) if z1.ndim == 1 else np.sign(z1 - self.z)
+        g1z = g1 * sign_z1
 
         # Apply propagation factors
         r_out = {}
