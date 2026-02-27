@@ -78,7 +78,14 @@ class BEMStatIter(BEMIter):
         # Initialize preconditioner
         if self.precond is not None:
             F = self.F
-            Lambda = np.diag(self._lambda)
+            n = F.shape[0]
+
+            # Build diagonal Lambda matrix from lambda values
+            # MATLAB: spdiag(obj.lambda) handles both scalar and array
+            if np.isscalar(self._lambda) or (isinstance(self._lambda, np.ndarray) and self._lambda.ndim == 0):
+                Lambda = self._lambda * np.eye(n)
+            else:
+                Lambda = np.diag(self._lambda)
 
             if self.precond == 'hmat':
                 # MATLAB: obj.mat = lu(-lambda - F)
@@ -102,7 +109,11 @@ class BEMStatIter(BEMIter):
         vec_2d = vec.reshape(n, -1)
 
         # -(lambda + F) * vec
-        result = -(self.F @ vec_2d + vec_2d * self._lambda[:, np.newaxis])
+        # Handle both scalar and array lambda
+        if np.isscalar(self._lambda) or (isinstance(self._lambda, np.ndarray) and self._lambda.ndim == 0):
+            result = -(self.F @ vec_2d + vec_2d * self._lambda)
+        else:
+            result = -(self.F @ vec_2d + vec_2d * self._lambda[:, np.newaxis])
         return result.reshape(-1)
 
     def _mfun(self,
