@@ -154,7 +154,9 @@ class Polygon(object):
         self.pos = self.pos + vec_arr
         return self
 
-    def shiftbnd(self, dist: float) -> 'Polygon':
+    def shiftbnd(self,
+            dist: float,
+            return_dist: bool = False) -> Union['Polygon', Tuple['Polygon', np.ndarray]]:
         # MATLAB @polygon/shiftbnd.m - shift boundary along normals
         nvec = self.compute_normals()
         nvec = np.sign(dist) * nvec
@@ -187,6 +189,51 @@ class Polygon(object):
         lam_min[lam_min > abs(dist)] = abs(dist)
 
         self.pos = self.pos + np.column_stack([lam_min * nx, lam_min * ny])
+
+        if return_dist:
+            distp = np.sign(dist) * lam_min
+            return self, distp
+        return self
+
+    def midpoints(self, mode: str = 'add') -> 'Polygon':
+        # MATLAB @polygon/midpoints.m - add midpoints for smooth polygon
+        from scipy.interpolate import CubicSpline
+
+        if mode == 'same':
+            # positions already include midpoints, smooth only
+            pos_closed = np.empty((len(self.pos[::2]) + 1, 2))
+            pos_closed[:len(self.pos[::2])] = self.pos[::2]
+            pos_closed[-1] = self.pos[0]
+        else:
+            pos_closed = np.empty((self.pos.shape[0] + 1, 2))
+            pos_closed[:self.pos.shape[0]] = self.pos
+            pos_closed[-1] = self.pos[0]
+
+        n = pos_closed.shape[0] - 1
+
+        # arc length of polygon segments
+        diffs = pos_closed[1:] - pos_closed[:-1]
+        seg_len = np.sqrt(np.sum(diffs ** 2, axis = 1))
+
+        # cumulative arc length
+        x = np.empty(n + 1)
+        x[0] = 0.0
+        x[1:] = np.cumsum(seg_len)
+
+        # midpoint arc length values
+        xi = 0.5 * (x[:-1] + x[1:])
+
+        # spline interpolation for each coordinate
+        cs_x = CubicSpline(x, pos_closed[:, 0])
+        cs_y = CubicSpline(x, pos_closed[:, 1])
+        posi = np.column_stack([cs_x(xi), cs_y(xi)])
+
+        # interleave original and interpolated positions
+        new_pos = np.empty((2 * n, 2))
+        new_pos[0::2] = pos_closed[:-1]
+        new_pos[1::2] = posi
+
+        self.pos = new_pos
         return self
 
     def flip(self, axis: int = 0) -> 'Polygon':

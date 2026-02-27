@@ -174,6 +174,9 @@ class EdgeProfile(object):
             if np.isnan(self.pos[-1, 0]):
                 return 0.0
             pos = self.pos[self._upper_indices()]
+            # sort by d-values (column 0) for CubicSpline
+            sort_idx = np.argsort(pos[:, 0])
+            pos = pos[sort_idx]
             cs = CubicSpline(pos[:, 0], pos[:, 1])
             d_clamped = np.maximum(np.min(pos[:, 0]), -np.abs(d))
             return cs(d_clamped) - np.max(pos[:, 1])
@@ -182,6 +185,9 @@ class EdgeProfile(object):
             if np.isnan(self.pos[0, 0]):
                 return 0.0
             pos = self.pos[self._lower_indices()]
+            # sort by d-values (column 0) for CubicSpline
+            sort_idx = np.argsort(pos[:, 0])
+            pos = pos[sort_idx]
             cs = CubicSpline(pos[:, 0], pos[:, 1])
             d_clamped = np.maximum(np.min(pos[:, 0]), -np.abs(d))
             return cs(d_clamped) - np.min(pos[:, 1])

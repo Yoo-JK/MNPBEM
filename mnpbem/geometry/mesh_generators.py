@@ -673,3 +673,155 @@ def trispherescale(p: 'Particle',
 
     p._norm()
     return p
+
+
+# ===========================================================================
+# tripolygon: 3D particle from 2D polygon + edge profile
+# ===========================================================================
+
+def tripolygon(poly, edge, **kwargs):
+    # MATLAB: Particles/particleshapes/tripolygon.m
+    # Creates 3D nanostructure from 2D polygon cross-section + edge profile
+    from .polygon3 import Polygon3
+    from .edgeprofile import EdgeProfile
+
+    # handle single polygon or list of polygons
+    if not isinstance(poly, (list, tuple)):
+        polys = [poly]
+    else:
+        polys = list(poly)
+
+    # check edge profile type: rounded or sharp edges
+    has_nan = np.any(np.isnan(edge.pos[:, 0]))
+    nan_count_at_zero = np.sum(edge.pos[:, 0] == 0)
+    all_not_nan = not has_nan
+
+    if all_not_nan or (has_nan and nan_count_at_zero != 1):
+        # both edges rounded (or both sharp -- mode '11')
+        p = _tripolygon_both_rounded(polys, edge, **kwargs)
+    elif np.isnan(edge.pos[0, 0]):
+        # sharp lower edge
+        p = _tripolygon_sharp_lower(polys, edge, **kwargs)
+    else:
+        # sharp upper edge
+        p = _tripolygon_sharp_upper(polys, edge, **kwargs)
+
+    return p
+
+
+def _tripolygon_both_rounded(polys, edge, **kwargs):
+    # MATLAB tripolygon.m -- case: both edges rounded
+    from .polygon3 import Polygon3
+
+    # create polygon3 objects at zmin and zmax
+    polys1 = [Polygon3(p, edge.zmin) for p in polys]
+    polys2 = [Polygon3(p, edge.zmax) for p in polys]
+
+    # lower plate (dir = -1)
+    plates1 = []
+    for p3 in polys1:
+        plate, _ = p3.plate(dir = -1, edge = edge, **kwargs)
+        plates1.append(plate)
+
+    # upper plate (dir = +1)
+    polys_out = []
+    plates2 = []
+    for p3 in polys2:
+        plate, p3_out = p3.plate(dir = 1, edge = edge, **kwargs)
+        plates2.append(plate)
+        polys_out.append(p3_out)
+
+    # vertical ribbon (side walls)
+    ribbons = []
+    for p3_out in polys_out:
+        ribbon, _, _ = p3_out.vribbon(edge = edge)
+        ribbons.append(ribbon)
+
+    # combine all particles
+    all_parts = plates1 + plates2 + ribbons
+    p = all_parts[0]
+    for part in all_parts[1:]:
+        p = p + part
+
+    p = p.clean()
+    return p
+
+
+def _tripolygon_sharp_lower(polys, edge, **kwargs):
+    # MATLAB tripolygon.m -- case: sharp lower edge (NaN at start)
+    from .polygon3 import Polygon3
+
+    # polygon3 objects at zmax
+    polys3 = [Polygon3(p, edge.zmax) for p in polys]
+
+    # upper plate
+    polys_out = []
+    plates1 = []
+    for p3 in polys3:
+        plate, p3_out = p3.plate(dir = 1, edge = edge, **kwargs)
+        plates1.append(plate)
+        polys_out.append(p3_out)
+
+    # vertical ribbon
+    ribbons = []
+    lo_polys = []
+    for p3_out in polys_out:
+        ribbon, _, lo = p3_out.vribbon(edge = edge)
+        ribbons.append(ribbon)
+        lo_polys.append(lo)
+
+    # lower plate (at zmin, using the lower boundary polygon)
+    plates2 = []
+    for lo_p3 in lo_polys:
+        lo_p3.z = edge.zmin
+        plate, _ = lo_p3.plate(dir = -1, edge = edge, **kwargs)
+        plates2.append(plate)
+
+    # combine
+    all_parts = plates1 + ribbons + plates2
+    p = all_parts[0]
+    for part in all_parts[1:]:
+        p = p + part
+
+    p = p.clean()
+    return p
+
+
+def _tripolygon_sharp_upper(polys, edge, **kwargs):
+    # MATLAB tripolygon.m -- case: sharp upper edge (NaN at end)
+    from .polygon3 import Polygon3
+
+    # polygon3 objects at zmin
+    polys3 = [Polygon3(p, edge.zmin) for p in polys]
+
+    # lower plate
+    polys_out = []
+    plates1 = []
+    for p3 in polys3:
+        plate, p3_out = p3.plate(dir = -1, edge = edge, **kwargs)
+        plates1.append(plate)
+        polys_out.append(p3_out)
+
+    # vertical ribbon
+    ribbons = []
+    up_polys = []
+    for p3_out in polys_out:
+        ribbon, up, _ = p3_out.vribbon(edge = edge)
+        ribbons.append(ribbon)
+        up_polys.append(up)
+
+    # upper plate (at zmax, using the upper boundary polygon)
+    plates2 = []
+    for up_p3 in up_polys:
+        up_p3.z = edge.zmax
+        plate, _ = up_p3.plate(dir = 1, edge = edge, **kwargs)
+        plates2.append(plate)
+
+    # combine
+    all_parts = plates1 + ribbons + plates2
+    p = all_parts[0]
+    for part in all_parts[1:]:
+        p = p + part
+
+    p = p.clean()
+    return p

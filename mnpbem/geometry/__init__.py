@@ -8,6 +8,7 @@ Classes:
 - CompStructMirror: Structure for compound with mirror symmetry
 - EdgeProfile: Edge rounding profile for nanostructures
 - Polygon: 2D polygon for mesh generation
+- Polygon3: 3D polygon for extrusion of particles
 
 Functions:
 - trisphere: Generate triangulated sphere
@@ -16,6 +17,7 @@ Functions:
 - tritorus: Generate triangulated torus
 - trispheresegment: Generate triangulated sphere segment
 - trispherescale: Scale a sphere to create ellipsoid
+- tripolygon: Generate 3D particle from 2D polygon + edge profile
 - fvgrid: Convert parametric surface to face-vertex structure
 - connect: Compute connectivity between particles
 """
@@ -30,10 +32,12 @@ from .mesh_generators import (
     tritorus,
     trispheresegment,
     trispherescale,
+    tripolygon,
     fvgrid,
 )
 from .edgeprofile import EdgeProfile
 from .polygon import Polygon
+from .polygon3 import Polygon3
 from .connect import connect
 
 __all__ = [
@@ -43,12 +47,14 @@ __all__ = [
     "CompStructMirror",
     "EdgeProfile",
     "Polygon",
+    "Polygon3",
     "trisphere",
     "trirod",
     "tricube",
     "tritorus",
     "trispheresegment",
     "trispherescale",
+    "tripolygon",
     "fvgrid",
     "connect",
 ]
