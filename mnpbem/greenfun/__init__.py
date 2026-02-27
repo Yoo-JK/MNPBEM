@@ -14,6 +14,7 @@ Classes:
 - GreenTabLayer: Tabulated Green function for layer structure
 - ClusterTree: Cluster tree for hierarchical matrix bisection
 - HMatrix: Hierarchical matrix with low-rank approximation
+- ACACompGreenStat: ACA-accelerated composite Green function (quasistatic)
 """
 
 from .compgreen_stat import CompGreenStat, CompStruct
@@ -27,6 +28,7 @@ from .greenret_layer import GreenRetLayer
 from .greentab_layer import GreenTabLayer
 from .clustertree import ClusterTree
 from .hmatrix import HMatrix
+from .aca_compgreen_stat import ACACompGreenStat
 
 __all__ = [
     "CompGreenStat",
@@ -41,4 +43,5 @@ __all__ = [
     "GreenTabLayer",
     "ClusterTree",
     "HMatrix",
+    "ACACompGreenStat",
 ]
