@@ -830,9 +830,6 @@ class TestCompGreenRetMirror:
         assert CompGreenRetMirror.name == 'greenfunction'
         assert CompGreenRetMirror.needs == {'sim': 'ret', 'sym': True}
 
-    @pytest.mark.xfail(reason = "CompGreenRetMirror construction requires real "
-                                "CompGreenRet with full particle geometry",
-                        strict = False)
     def test_construction(self, mirror_particle_x):
         """Test construction creates inner Green function.
 
@@ -994,9 +991,6 @@ class TestBEMRetMirror:
         assert BEMRetMirror.name == 'bemsolver'
         assert BEMRetMirror.needs == {'sim': 'ret', 'sym': True}
 
-    @pytest.mark.xfail(reason = "BEMRetMirror construction requires real "
-                                "CompGreenRetMirror with full Green function computation",
-                        strict = False)
     def test_construction(self, mirror_particle_x):
         """Test construction creates Green function.
 
@@ -1517,9 +1511,6 @@ class TestPlaneWaveStatMirror:
         assert PlaneWaveStatMirror.name == 'planewave'
         assert PlaneWaveStatMirror.needs == {'sim': 'stat', 'sym': True}
 
-    @pytest.mark.xfail(reason = "PlaneWaveStatMirror construction requires real "
-                                "PlaneWaveStat with full excitation computation",
-                        strict = False)
     def test_construction(self):
         """Test construction creates inner PlaneWaveStat.
 
@@ -1658,9 +1649,6 @@ class TestPlaneWaveRetMirror:
         assert PlaneWaveRetMirror.name == 'planewave'
         assert PlaneWaveRetMirror.needs == {'sim': 'ret', 'sym': True}
 
-    @pytest.mark.xfail(reason = "PlaneWaveRetMirror construction requires real "
-                                "PlaneWaveRet with full excitation computation",
-                        strict = False)
     def test_construction(self):
         """Test construction with pol and dir.
 
