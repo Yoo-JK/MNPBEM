@@ -956,9 +956,9 @@ class TestBEMRetIter(object):
 
         vec = bem._pack(phi, a, phip, ap)
         # MATLAB uses column-major (:) flatten, so expected uses order='F'
-        expected = np.concatenate([
-            phi.ravel(order='F'), a.ravel(order='F'),
-            phip.ravel(order='F'), ap.ravel(order='F')])
+        expected = np.hstack([
+            phi.ravel(order = 'F'), a.ravel(order = 'F'),
+            phip.ravel(order = 'F'), ap.ravel(order = 'F')])
         np.testing.assert_array_equal(vec, expected)
 
     def test_inner_1d(self):

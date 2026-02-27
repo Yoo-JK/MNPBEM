@@ -133,9 +133,9 @@ def refinematrix(p1, p2, AbsCutoff=0, RelCutoff=3, memsize=2e7):
 
     # Combine all chunks
     if len(rows_all) > 0:
-        rows = np.concatenate(rows_all)
-        cols = np.concatenate(cols_all)
-        vals = np.concatenate(vals_all)
+        rows = np.hstack(rows_all)
+        cols = np.hstack(cols_all)
+        vals = np.hstack(vals_all)
         mat = csr_matrix((vals, (rows, cols)), shape=(n1, n2))
     else:
         mat = csr_matrix((n1, n2))

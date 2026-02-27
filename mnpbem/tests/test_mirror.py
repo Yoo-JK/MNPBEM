@@ -210,7 +210,7 @@ class MockComParticle(object):
         self.pc = type('PC', (), {
             'pos': np.vstack(all_pos) if all_pos else np.empty((0, 3)),
             'nvec': np.vstack(all_nvec) if all_nvec else np.empty((0, 3)),
-            'area': np.concatenate(all_area) if all_area else np.empty(0),
+            'area': np.hstack(all_area) if all_area else np.empty(0),
         })()
         self._mask = list(range(len(self.p)))
 
