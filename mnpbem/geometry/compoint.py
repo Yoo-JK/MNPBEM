@@ -343,6 +343,33 @@ class ComPoint(object):
             offset += npts
         return eps_vals
 
+    def eps2(self,
+            enei: float) -> np.ndarray:
+        """Outside dielectric constants at given wavelength.
+
+        For ComPoint, observation points sit in a single medium
+        (no inside/outside distinction), so eps2 == eps1.
+        """
+        return self.eps1(enei)
+
+    def index_func(self,
+            particle_indices: Any) -> np.ndarray:
+        """Point indices for given group indices (1-indexed).
+
+        Mirrors ComParticle.index_func: returns the indices into
+        the concatenated pos array for the requested point groups.
+        """
+        if np.isscalar(particle_indices):
+            particle_indices = [particle_indices]
+
+        point_indices: List[int] = []
+        offset = 0
+        for i, pt in enumerate(self.p):
+            if (i + 1) in particle_indices:
+                point_indices.extend(range(offset, offset + pt.n))
+            offset += pt.n
+        return np.array(point_indices, dtype = int)
+
     def closedparticle(self,
             ind: int) -> Tuple[None, None, None]:
         return None, None, None

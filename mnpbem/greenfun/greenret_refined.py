@@ -374,8 +374,35 @@ class GreenRetRefined(object):
                 np.fill_diagonal(H2, np.diag(F) - 2.0 * np.pi)
             return H2
 
+        elif key == 'Gp':
+            # Gradient of Green function: Gp = -r/d^2 * (ik - 1/d) * exp(ikd) * area
+            # Shape: (n1, 3, n2)
+            r = np.stack([x, y, z], axis = 2)  # (n1, n2, 3)
+            phase = np.exp(1j * k * d)
+            Gp_factor = -phase * (1j * k - 1.0 / d) / (d ** 2)
+            Gp = r * Gp_factor[:, :, np.newaxis] * area2[np.newaxis, :, np.newaxis]
+            return np.transpose(Gp, (0, 2, 1))  # (n1, 3, n2)
+
+        elif key == 'H1p':
+            Gp = self.eval(k, 'Gp')
+            H1p = Gp.copy()
+            if self.p1 is self.p2:
+                nvec = self.p1.nvec
+                for i in range(len(nvec)):
+                    H1p[i, :, i] += 2 * np.pi * nvec[i]
+            return H1p
+
+        elif key == 'H2p':
+            Gp = self.eval(k, 'Gp')
+            H2p = Gp.copy()
+            if self.p1 is self.p2:
+                nvec = self.p1.nvec
+                for i in range(len(nvec)):
+                    H2p[i, :, i] -= 2 * np.pi * nvec[i]
+            return H2p
+
         else:
-            raise ValueError("Unknown key: {}. Use 'G', 'F', 'H1', or 'H2'".format(key))
+            raise ValueError("Unknown key: {}".format(key))
 
     def __repr__(self):
         n_refined = len(self.ind) if hasattr(self, 'ind') else 0

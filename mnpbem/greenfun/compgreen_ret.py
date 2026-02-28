@@ -366,14 +366,14 @@ class CompGreenRet(object):
         # Get masked inout property
         # MATLAB: get = @(p)(p.inout(p.mask,:))
         if hasattr(p1, 'inout'):
-            inout1 = p1.inout  # (nparticles, 2) array
+            inout1 = np.atleast_2d(p1.inout)
         else:
             inout1 = np.array([[1, 2]])  # Default
 
         if p1 is p2:
             inout2 = inout1
         elif hasattr(p2, 'inout'):
-            inout2 = p2.inout
+            inout2 = np.atleast_2d(p2.inout)
         else:
             inout2 = np.array([[1, 2]])
 
@@ -631,20 +631,25 @@ class CompGreenRet(object):
         enei = sig.enei
         k = 2 * np.pi / enei
 
+        # Determine region index for p1
+        # For ComPoint with fewer regions, clamp to valid range
+        n_regions_p1 = len(self.con)
+        p1_region = min(inout - 1, n_regions_p1 - 1)
+
         # Green function and E = i k A
         # MATLAB: e = 1i * k * (matmul(eval(obj, inout, 1, 'G', enei), sig.h1) + ...)
-        G1 = self.eval(inout-1, 0, 'G', enei)  # Convert to 0-based
-        G2 = self.eval(inout-1, 1, 'G', enei)
+        G1 = self.eval(p1_region, 0, 'G', enei)
+        G2 = self.eval(p1_region, 1, 'G', enei)
 
         e = 1j * k * (self._matmul(G1, sig.h1) + self._matmul(G2, sig.h2))
 
         # Derivative of Green function
         if inout == 1:
-            H1p = self.eval(inout-1, 0, 'H1p', enei)
-            H2p = self.eval(inout-1, 1, 'H1p', enei)
+            H1p = self.eval(p1_region, 0, 'H1p', enei)
+            H2p = self.eval(p1_region, 1, 'H1p', enei)
         else:
-            H1p = self.eval(inout-1, 0, 'H2p', enei)
-            H2p = self.eval(inout-1, 1, 'H2p', enei)
+            H1p = self.eval(p1_region, 0, 'H2p', enei)
+            H2p = self.eval(p1_region, 1, 'H2p', enei)
 
         # Add derivative of scalar potential to electric field
         # MATLAB: e = e - matmul(H1p, sig.sig1) - matmul(H2p, sig.sig2)
@@ -685,18 +690,22 @@ class CompGreenRet(object):
         """
         enei = sig.enei
 
+        # Determine region index for p1
+        n_regions_p1 = len(self.con)
+        p1_region = min(inout - 1, n_regions_p1 - 1)
+
         # Set parameters that depend on inside/outside
         # MATLAB: H = subsref({'H1', 'H2'}, substruct('{}', {inout}))
         H_key = 'H1' if inout == 1 else 'H2'
 
         # Green functions
         # MATLAB: G1 = subsref(g, substruct('{}', {inout, 1}, '.', 'G', '()', var))
-        G1 = self.eval(inout-1, 0, 'G', enei)
-        G2 = self.eval(inout-1, 1, 'G', enei)
+        G1 = self.eval(p1_region, 0, 'G', enei)
+        G2 = self.eval(p1_region, 1, 'G', enei)
 
         # Surface derivatives of Green functions
-        H1 = self.eval(inout-1, 0, H_key, enei)
-        H2 = self.eval(inout-1, 1, H_key, enei)
+        H1 = self.eval(p1_region, 0, H_key, enei)
+        H2 = self.eval(p1_region, 1, H_key, enei)
 
         # Potential and surface derivative
         # Scalar potential
@@ -763,7 +772,8 @@ class CompGreenRet(object):
                 if len(sizx) == 1:
                     return a @ x
                 else:
-                    return a @ x.reshape(sizx[0], -1).reshape((sizx[0],) + sizx[1:])
+                    result = a @ x.reshape(sizx[0], -1)
+                    return result.reshape((siza[0],) + sizx[1:])
 
     def _cross(self, G, h):
         """
