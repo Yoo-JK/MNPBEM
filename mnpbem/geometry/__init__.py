@@ -42,6 +42,7 @@ from .edgeprofile import EdgeProfile
 from .polygon import Polygon
 from .polygon3 import Polygon3
 from .connect import connect
+from .layer_structure import LayerStructure
 
 __all__ = [
     "Particle",
@@ -62,4 +63,5 @@ __all__ = [
     "tripolygon",
     "fvgrid",
     "connect",
+    "LayerStructure",
 ]

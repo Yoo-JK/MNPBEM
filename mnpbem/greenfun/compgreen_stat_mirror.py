@@ -24,7 +24,9 @@ class CompGreenStatMirror(object):
             _dummy: Any = None,
             **options: Any) -> None:
         self.p = p
-        # Green function between half particle and full particle
+        # Green function between half particle and full particle.
+        # Closed surface correction is handled inside CompGreenStat._init
+        # via the loc=None path (temporary Green function approach).
         self.g = CompGreenStat(p, p.full(), **options)
 
     @property

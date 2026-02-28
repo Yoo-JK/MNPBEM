@@ -460,8 +460,8 @@ def trispheresegment(phi: np.ndarray,
     y = diameter / 2.0 * np.sin(theta_grid) * np.sin(phi_grid)
     z = diameter / 2.0 * np.cos(theta_grid)
 
-    # Use surf2patch for quadrilateral faces
-    faces, verts = _surf2patch(x, y, z, triangles = False)
+    # Use surf2patch for triangular faces (required for proper midpoints)
+    faces, verts = _surf2patch(x, y, z, triangles = True)
     faces = faces[:, ::-1]  # flip for correct normals
 
     p = Particle(verts, faces)

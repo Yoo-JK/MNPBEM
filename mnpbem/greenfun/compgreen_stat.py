@@ -127,11 +127,10 @@ class CompGreenStat(object):
         # Handle closed surfaces for diagonal elements
         # MATLAB: if any(strcmp('closed', fieldnames(full1))) && (full1 == p2) && ~isempty(full1.closed{:})
 
-        # Check for mirror symmetry
+        # For mirror particles, full1 is the full expanded particle (pfull)
         full1 = p1
-        if hasattr(p1, 'sym'):
-            if hasattr(p1, 'pfull'):
-                full1 = p1.pfull
+        if hasattr(p1, 'pfull'):
+            full1 = p1.pfull
 
         # For a closed particle the surface integral of -F should give 2*pi
         # See R. Fuchs and S. H. Liu, Phys. Rev. B 14, 5521 (1976)

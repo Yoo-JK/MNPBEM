@@ -62,31 +62,38 @@ class PlaneWaveStatMirror(object):
 
         nvec = p.nvec
 
-        # x-polarization excitation
+        # polarization basis: x, y, z
         phip_x = -nvec @ np.array([1, 0, 0])
-        # y-polarization excitation
         phip_y = -nvec @ np.array([0, 1, 0])
+        phip_z = -nvec @ np.array([0, 0, 1])
 
         if p.sym == 'x':
             val1 = CompStruct(p, enei, phip = phip_x)
             val1.symval = p.symvalue(['+', '-', '-'])
             val2 = CompStruct(p, enei, phip = phip_y)
             val2.symval = p.symvalue(['-', '+', '-'])
+            val3 = CompStruct(p, enei, phip = phip_z)
+            val3.symval = p.symvalue(['-', '-', '+'])
         elif p.sym == 'y':
             val1 = CompStruct(p, enei, phip = phip_x)
             val1.symval = p.symvalue(['+', '-', '+'])
             val2 = CompStruct(p, enei, phip = phip_y)
             val2.symval = p.symvalue(['-', '+', '-'])
+            val3 = CompStruct(p, enei, phip = phip_z)
+            val3.symval = p.symvalue(['+', '-', '+'])
         elif p.sym == 'xy':
             val1 = CompStruct(p, enei, phip = phip_x)
             val1.symval = p.symvalue(['++', '--', '-+'])
             val2 = CompStruct(p, enei, phip = phip_y)
             val2.symval = p.symvalue(['--', '++', '+-'])
+            val3 = CompStruct(p, enei, phip = phip_z)
+            val3.symval = p.symvalue(['-+', '+-', '++'])
         else:
             raise ValueError('[error] Unknown symmetry: {}'.format(p.sym))
 
         exc.val.append(val1)
         exc.val.append(val2)
+        exc.val.append(val3)
 
         return exc
 
@@ -114,36 +121,35 @@ class PlaneWaveStatMirror(object):
         if len(expanded) < 2:
             return val, val.p.full()
 
-        val1, val2 = expanded[0], expanded[1]
-        p_full = val1.p
-
-        result = CompStruct(p_full, val1.enei)
+        p_full = expanded[0].p
+        result = CompStruct(p_full, expanded[0].enei)
+        n_basis = len(expanded)
 
         # transform scalars
         for name in ('sig', 'phi', 'phip'):
-            v1 = getattr(val1, name, None)
-            v2 = getattr(val2, name, None)
-            if v1 is not None and v2 is not None:
-                n = v1.shape[0]
+            vecs = [getattr(e, name, None) for e in expanded]
+            if all(v is not None for v in vecs):
+                n = vecs[0].shape[0]
                 npol_out = pol.shape[0]
                 v = np.zeros((n, npol_out), dtype = complex)
 
                 for ip in range(npol_out):
-                    v[:, ip] = pol[ip, 0] * v1 + pol[ip, 1] * v2
+                    for ib in range(n_basis):
+                        v[:, ip] += pol[ip, ib] * vecs[ib]
 
                 setattr(result, name, v)
 
         # transform vectors
         for name in ('e',):
-            v1 = getattr(val1, name, None)
-            v2 = getattr(val2, name, None)
-            if v1 is not None and v2 is not None:
-                n = v1.shape[0]
+            vecs = [getattr(e, name, None) for e in expanded]
+            if all(v is not None for v in vecs):
+                n = vecs[0].shape[0]
                 npol_out = pol.shape[0]
                 v = np.zeros((n, 3, npol_out), dtype = complex)
 
                 for ip in range(npol_out):
-                    v[:, :, ip] = pol[ip, 0] * v1 + pol[ip, 1] * v2
+                    for ib in range(n_basis):
+                        v[:, :, ip] += pol[ip, ib] * vecs[ib]
 
                 setattr(result, name, v)
 

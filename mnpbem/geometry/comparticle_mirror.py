@@ -247,8 +247,15 @@ class ComParticleMirror(object):
         """Return particle with closed surface for particle ind.
 
         MATLAB: closedparticle(obj, ind)
+
+        Note: Always returns loc=None for mirror particles to force the
+        temporary Green function path in _handle_closed_surfaces.
+        The loc indices from pfull.closedparticle() reference the full
+        expanded particle and cannot be used to directly index the
+        mirror-reduced Green function matrix F.
         """
-        return self.pfull.closedparticle(ind)
+        full, dir_val, _loc = self.pfull.closedparticle(ind)
+        return full, dir_val, None
 
     def symindex(self, tab: np.ndarray) -> int:
         """Index of symmetry values within symmetry table.

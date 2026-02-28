@@ -171,11 +171,18 @@ class CompGreenRet(object):
         """
         # Full particle in case of mirror symmetry
         full1 = p1
+        is_mirror = False
         if hasattr(p1, 'sym'):
+            is_mirror = True
             if hasattr(p1, 'pfull'):
                 full1 = p1.pfull
 
         # Check for closed surfaces
+        # Skip for mirror particles: F is non-square and the correction
+        # requires square F matrix. Mirror BEM solver handles this.
+        if is_mirror:
+            return g
+
         if hasattr(full1, 'closed') and (full1 is p2 or full1 == p2):
             if full1.closed is not None and any(c is not None for c in full1.closed):
                 # Loop over particles
@@ -196,7 +203,11 @@ class CompGreenRet(object):
                             # MATLAB: gstat = greenstat(full, part, bemoptions(...))
                             # For closed surface correction, we use quasistatic Green function
                             from .compgreen_stat import CompGreenStat
-                            gstat = CompGreenStat(full, part, **options)
+                            gstat = CompGreenStat.__new__(CompGreenStat)
+                            gstat.deriv = 'norm'
+                            gstat.p1 = full
+                            gstat.p2 = part
+                            gstat._compute_greenstat(full, part, **options)
 
                             # Sum over closed surface
                             f = self._fun_closed_stat(gstat, **options)
