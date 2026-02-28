@@ -385,14 +385,15 @@ class CompGreenStat(object):
                     ind_array = np.array([ind])
 
                 if self.deriv == 'norm':
-                    # Set diagonal: F[ind[i], ind[i]] = -2π*dir - f[i]
+                    # Add correction to diagonal: F[ind[i], ind[i]] += -2π*dir - f[i]
+                    # MATLAB: obj.f(i1,:) = obj.f(i1,:) + f(i2,:)
                     diag_vals = -2.0 * np.pi * dir_val - f
-                    self.F[ind_array, ind_array] = diag_vals
+                    self.F[ind_array, ind_array] += diag_vals
                 else:  # 'cart'
-                    # Set diagonal: F[ind[i], ind[i]] = (-2π*dir - f[i]) * nvec[i]
+                    # Add correction to diagonal
                     diag_vals = (-2.0 * np.pi * dir_val - f)[:, np.newaxis] * part.nvec
                     for j, idx in enumerate(ind_array):
-                        self.F[idx, idx] = diag_vals[j]
+                        self.F[idx, idx] += diag_vals[j]
 
     def _closedparticle(self, p, i):
         """

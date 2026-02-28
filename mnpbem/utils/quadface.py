@@ -230,10 +230,10 @@ if __name__ == "__main__":
     # Test standard triangle quadrature
     print("\nStandard triangle quadrature:")
     print("  Points: {}".format(len(quad.x)))
-    print("  sum(w) = {:.10f} (should be 0.5)".format(np.sum(quad.w)))
+    print("  sum(w) = {:.10f} (should be 1.0)".format(np.sum(quad.w)))
     print("  All points in triangle: {}".format(np.all((quad.x >= -1e-10) & (quad.y >= -1e-10) & (quad.x + quad.y <= 1 + 1e-10))))
 
-    assert np.abs(np.sum(quad.w) - 0.5) < 1e-10, "Standard triangle weights incorrect"
+    assert np.abs(np.sum(quad.w) - 1.0) < 1e-10, "Standard triangle weights incorrect"
 
     # Test polar triangle quadrature
     print("\nPolar triangle quadrature:")

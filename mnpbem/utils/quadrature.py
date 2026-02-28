@@ -110,13 +110,17 @@ def triangle_unit_set(rule: int = 18) -> Tuple[np.ndarray, np.ndarray, np.ndarra
         y-coordinates of quadrature points
     w : np.ndarray, shape (n_points,)
         Integration weights
-        Property: sum(w) = 0.5 (area of unit triangle)
+        Property: sum(w) = 1.0 (MATLAB convention)
 
     Notes
     -----
     Quadrature rules from John Burkardt's collection.
     Rules provide exact integration for polynomials up to
     certain degree depending on the rule number.
+
+    Weights are normalized to sum to 1.0, matching the MATLAB MNPBEM
+    convention. The downstream code (particle.py _quad_curv) uses
+    jac = 0.5 * ||J|| which assumes this normalization.
 
     MATLAB reference: /Misc/integration/@quadface/private/triangle_unit_set.m
 
@@ -126,7 +130,7 @@ def triangle_unit_set(rule: int = 18) -> Tuple[np.ndarray, np.ndarray, np.ndarra
     >>> len(x)
     37
     >>> np.sum(w)
-    0.5
+    1.0
     >>> # Verify all points inside triangle
     >>> np.all((x >= 0) & (y >= 0) & (x + y <= 1))
     True
@@ -138,25 +142,25 @@ def triangle_unit_set(rule: int = 18) -> Tuple[np.ndarray, np.ndarray, np.ndarra
         # 1 point (centroid), order 1
         x = np.array([1/3])
         y = np.array([1/3])
-        w = np.array([0.5])
+        w = np.array([1.0])
 
     elif rule == 2:
         # 3 points (vertices), order 1
         x = np.array([0.0, 1.0, 0.0])
         y = np.array([0.0, 0.0, 1.0])
-        w = np.array([1/6, 1/6, 1/6])
+        w = np.array([1/3, 1/3, 1/3])
 
     elif rule == 3:
         # 3 points (edge midpoints), order 2
         x = np.array([0.5, 0.5, 0.0])
         y = np.array([0.0, 0.5, 0.5])
-        w = np.array([1/6, 1/6, 1/6])
+        w = np.array([1/3, 1/3, 1/3])
 
     elif rule == 4:
         # 4 points, order 3
         x = np.array([1/3, 0.6, 0.2, 0.2])
         y = np.array([1/3, 0.2, 0.6, 0.2])
-        w = np.array([-27/96, 25/96, 25/96, 25/96])
+        w = np.array([-27/48, 25/48, 25/48, 25/48])
 
     elif rule == 7:
         # 7 points, order 5 (Strang and Fix)
@@ -168,12 +172,12 @@ def triangle_unit_set(rule: int = 18) -> Tuple[np.ndarray, np.ndarray, np.ndarra
 
         x = np.array([a, b1, b2, b2, c1, c2, c2])
         y = np.array([a, b2, b1, b2, c2, c1, c2])
-        w = np.array([9/80, (155 - np.sqrt(15))/2400,
-                      (155 - np.sqrt(15))/2400,
-                      (155 - np.sqrt(15))/2400,
-                      (155 + np.sqrt(15))/2400,
-                      (155 + np.sqrt(15))/2400,
-                      (155 + np.sqrt(15))/2400])
+        w = np.array([9/40, (155 - np.sqrt(15))/1200,
+                      (155 - np.sqrt(15))/1200,
+                      (155 - np.sqrt(15))/1200,
+                      (155 + np.sqrt(15))/1200,
+                      (155 + np.sqrt(15))/1200,
+                      (155 + np.sqrt(15))/1200])
 
     elif rule == 18:
         # 37 points, order 13 (default, high accuracy)
@@ -226,8 +230,8 @@ def triangle_unit_set(rule: int = 18) -> Tuple[np.ndarray, np.ndarray, np.ndarra
             0.03459307165014030418
         ])
 
-        # Normalize to ensure sum(w) = 0.5
-        w = w / np.sum(w) * 0.5
+        # Normalize to MATLAB convention: sum(w) = 1.0
+        w = w / np.sum(w)
 
     else:
         raise ValueError("Quadrature rule {} not implemented. "
@@ -251,7 +255,7 @@ if __name__ == "__main__":
         in_triangle = np.all((x >= -1e-10) & (y >= -1e-10) & (x + y <= 1 + 1e-10))
         print("  rule={:2d}: {:2d} points, sum(w)={:.10f}, "
               "in_triangle={}".format(rule, len(x), w_sum, in_triangle))
-        assert np.abs(w_sum - 0.5) < 1e-10, "Weights don't sum to 0.5 for rule={}".format(rule)
+        assert np.abs(w_sum - 1.0) < 1e-10, "Weights don't sum to 1.0 for rule={}".format(rule)
         assert in_triangle, "Points outside triangle for rule={}".format(rule)
 
     print("\n✓ All tests passed!")
