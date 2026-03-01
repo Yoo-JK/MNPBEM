@@ -9,3 +9,4 @@ TEST_README.md
 *_results.mat
 *_results.npz
 *.png
+mnpbem.egg-info/
