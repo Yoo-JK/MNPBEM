@@ -428,8 +428,9 @@ def fvgrid(x: np.ndarray,
     # Use surf2patch equivalent
     faces, verts = _surf2patch(x, y, z, triangles = triangles)
 
-    # MATLAB: fliplr(faces) -- reverse column order for correct normals
-    faces = faces[:, ::-1]
+    # NOTE: MATLAB fvgrid uses fliplr(faces) on surf2patch output.
+    # Python _surf2patch already produces opposite winding from MATLAB surf2patch,
+    # so we do NOT flip here — the winding already matches MATLAB's fliplr result.
 
     # Create particle with norm='off'
     p = Particle(verts, faces, norm = 'off')
@@ -489,6 +490,7 @@ def trispheresegment(phi: np.ndarray,
 def trirod(diameter: float,
         height: float,
         n: list = None,
+        triangles: bool = False,
         **kwargs) -> 'Particle':
     # MATLAB: Particles/particleshapes/trirod.m
     if n is None:
@@ -502,6 +504,7 @@ def trirod(diameter: float,
     theta = np.linspace(0, 0.5 * np.pi, ntheta)
 
     # Upper cap: sphere segment shifted up
+    # (trispheresegment already uses triangles=True internally)
     cap1 = trispheresegment(phi, theta, diameter, **kwargs)
     cap1.shift([0, 0, 0.5 * (height - diameter)])
 
@@ -512,7 +515,7 @@ def trirod(diameter: float,
     z_vals = 0.5 * np.linspace(-1, 1, nz_cyl) * (height - diameter)
 
     # Grid for cylinder
-    verts_grid, faces_grid = fvgrid(phi, z_vals)
+    verts_grid, faces_grid = fvgrid(phi, z_vals, triangles = triangles)
     # Extract phi and z from grid vertices
     phi_cyl = verts_grid[:, 0]
     z_cyl = verts_grid[:, 1]
