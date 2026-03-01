@@ -38,6 +38,12 @@ class GreenTabLayer(object):
         self.Fr = None
         self.Fz = None
 
+        # Per-component caches
+        self._enei_comp = None
+        self._Gsav_comp = None
+        self._Frsav_comp = None
+        self._Fzsav_comp = None
+
     def eval(self,
             enei: float,
             r: np.ndarray,
@@ -190,6 +196,115 @@ class GreenTabLayer(object):
         c1 = c01 * (1 - fz1) + c11 * fz1
 
         return c0 * (1 - fz2) + c1 * fz2
+
+    def eval_components(self,
+            enei: float,
+            r: np.ndarray,
+            z1: np.ndarray,
+            z2: np.ndarray) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """Evaluate reflected Green function preserving per-component structure.
+
+        Returns (G_dict, Fr_dict, Fz_dict) where each is a dict keyed by
+        reflection names ('p', 'ss', 'hh', 'sh', 'hs').
+        """
+        if self._Gsav_comp is not None and self.r is not None:
+            return self._interp_components(enei, r, z1, z2)
+        else:
+            return self._compute_components(enei, r, z1, z2)
+
+    def _compute_components(self,
+            enei: float,
+            r: np.ndarray,
+            z1: np.ndarray,
+            z2: np.ndarray) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+
+        result = self.layer.green(enei, r, z1, z2)
+        G_dict = {k: np.asarray(v, dtype=complex) for k, v in result[0].items()}
+        Fr_dict = {k: np.asarray(v, dtype=complex) for k, v in result[1].items()}
+        Fz_dict = {k: np.asarray(v, dtype=complex) for k, v in result[2].items()}
+        return G_dict, Fr_dict, Fz_dict
+
+    def _interp_components(self,
+            enei: float,
+            r: np.ndarray,
+            z1: np.ndarray,
+            z2: np.ndarray) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+
+        r = np.asarray(r, dtype=float)
+        z1 = np.asarray(z1, dtype=float)
+        z2 = np.asarray(z2, dtype=float)
+
+        shape = r.shape
+        r_flat = r.ravel()
+        z1_flat = z1.ravel()
+        z2_flat = z2.ravel()
+        n = len(r_flat)
+
+        if self._Gsav_comp is None or (
+                self._enei_comp is not None and not np.isclose(self._enei_comp, enei)):
+            self._compute_tab_components(enei)
+
+        names = list(self._Gsav_comp.keys())
+        G_dict = {}
+        Fr_dict = {}
+        Fz_dict = {}
+
+        for name in names:
+            G_arr = np.zeros(n, dtype=complex)
+            Fr_arr = np.zeros(n, dtype=complex)
+            Fz_arr = np.zeros(n, dtype=complex)
+            Gsav = self._Gsav_comp[name]
+            Frsav = self._Frsav_comp[name]
+            Fzsav = self._Fzsav_comp[name]
+            for i in range(n):
+                r_idx = np.interp(r_flat[i], self.r, np.arange(len(self.r)))
+                z1_idx = np.interp(z1_flat[i], self.z1, np.arange(len(self.z1)))
+                z2_idx = np.interp(z2_flat[i], self.z2, np.arange(len(self.z2)))
+                ir = int(np.clip(r_idx, 0, len(self.r) - 2))
+                iz1 = int(np.clip(z1_idx, 0, len(self.z1) - 2))
+                iz2 = int(np.clip(z2_idx, 0, len(self.z2) - 2))
+                fr = r_idx - ir
+                fz1 = z1_idx - iz1
+                fz2 = z2_idx - iz2
+                G_arr[i] = self._trilinear_interp(Gsav, ir, iz1, iz2, fr, fz1, fz2)
+                Fr_arr[i] = self._trilinear_interp(Frsav, ir, iz1, iz2, fr, fz1, fz2)
+                Fz_arr[i] = self._trilinear_interp(Fzsav, ir, iz1, iz2, fr, fz1, fz2)
+            G_dict[name] = G_arr.reshape(shape)
+            Fr_dict[name] = Fr_arr.reshape(shape)
+            Fz_dict[name] = Fz_arr.reshape(shape)
+
+        return G_dict, Fr_dict, Fz_dict
+
+    def _compute_tab_components(self,
+            enei: float) -> None:
+
+        nr = len(self.r)
+        nz1 = len(self.z1)
+        nz2 = len(self.z2)
+
+        # Determine component names from a sample call
+        r_sample = self.r[:1]
+        z1_sample = np.full_like(r_sample, self.z1[0])
+        z2_sample = np.full_like(r_sample, self.z2[0])
+        result = self.layer.green(enei, r_sample, z1_sample, z2_sample)
+        names = list(result[0].keys())
+
+        self._Gsav_comp = {k: np.zeros((nr, nz1, nz2), dtype=complex) for k in names}
+        self._Frsav_comp = {k: np.zeros((nr, nz1, nz2), dtype=complex) for k in names}
+        self._Fzsav_comp = {k: np.zeros((nr, nz1, nz2), dtype=complex) for k in names}
+
+        for iz1 in range(nz1):
+            for iz2 in range(nz2):
+                r_vec = self.r
+                z1_vec = np.full_like(r_vec, self.z1[iz1])
+                z2_vec = np.full_like(r_vec, self.z2[iz2])
+                result = self.layer.green(enei, r_vec, z1_vec, z2_vec)
+                for name in names:
+                    self._Gsav_comp[name][:, iz1, iz2] = np.asarray(result[0][name], dtype=complex)
+                    self._Frsav_comp[name][:, iz1, iz2] = np.asarray(result[1][name], dtype=complex)
+                    self._Fzsav_comp[name][:, iz1, iz2] = np.asarray(result[2][name], dtype=complex)
+
+        self._enei_comp = enei
 
     @staticmethod
     def _sum_components(d):

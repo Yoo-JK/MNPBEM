@@ -33,11 +33,8 @@ class PlaneWaveRetLayer(object):
 
         # Spectrum for scattering calculations
         pinfty_arg = options.get('pinfty', None)
-        if pinfty_arg is not None:
-            from ..spectrum import SpectrumRetLayer
-            self.spec = SpectrumRetLayer(pinfty_arg, layer, medium = self.medium)
-        else:
-            self.spec = None
+        from ..spectrum import SpectrumRetLayer
+        self.spec = SpectrumRetLayer(pinfty_arg, layer, medium = self.medium)
 
     def _fresnel_layer(self,
             dir: np.ndarray,

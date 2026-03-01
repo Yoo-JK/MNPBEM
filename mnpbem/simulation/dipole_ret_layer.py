@@ -6,6 +6,7 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 import numpy as np
 
 from ..greenfun import CompStruct
+from ..greenfun.greentab_layer import GreenTabLayer
 
 
 class DipoleRetLayer(object):
@@ -54,28 +55,37 @@ class DipoleRetLayer(object):
 
         self._medium = medium
 
-        # Spectrum for radiative decay rate
-        if pinfty is not None:
-            from ..spectrum import SpectrumRetLayer
-            self.spec = SpectrumRetLayer(pinfty, self.layer, medium = medium)
+        # Tabulated Green function for reflected contribution
+        tab = options.get('tab', None)
+        if tab is not None:
+            self.tab = GreenTabLayer(self.layer, tab=tab)
         else:
-            self.spec = None
+            self.tab = GreenTabLayer(self.layer)
+
+        # Spectrum for radiative decay rate
+        from ..spectrum import SpectrumRetLayer
+        self.spec = SpectrumRetLayer(pinfty, self.layer, medium=medium)
         self._pinfty = pinfty
 
     def field(self,
             p: Any,
             enei: float,
             inout: int = 1) -> CompStruct:
+        """Electric and magnetic field for dipole excitation.
 
+        MATLAB: @dipoleretlayer/field.m
+        E = ik0*A - grad(V), H = curl(A)
+        """
         pt = self.pt
         pos1 = p.pos if hasattr(p, 'pos') else p.pc.pos
         pos2 = pt.pos
         ndip = self.dip.shape[2]
-        n = pos1.shape[0]
+        n1 = pos1.shape[0]
+        n2 = pos2.shape[0]
 
         exc = CompStruct(p, enei)
-        exc.e = np.zeros((n, 3, pt.n, ndip), dtype = complex)
-        exc.h = np.zeros((n, 3, pt.n, ndip), dtype = complex)
+        exc.e = np.zeros((n1, 3, n2, ndip), dtype=complex)
+        exc.h = np.zeros((n1, 3, n2, ndip), dtype=complex)
 
         # Direct contribution
         eps_vals = []
@@ -85,7 +95,6 @@ class DipoleRetLayer(object):
             eps_vals.append(eps)
             k_vals.append(k)
 
-        # Use medium index for direct contribution
         eps_med = eps_vals[self._medium - 1]
         k_med = k_vals[self._medium - 1]
 
@@ -93,32 +102,183 @@ class DipoleRetLayer(object):
         exc.e += e_direct
         exc.h += h_direct
 
-        # Reflected contribution via layer
-        # Image method for retarded case
-        z_layer = self.layer.z[0]
-        pos2_image = pos2.copy()
-        pos2_image[:, 2] = 2 * z_layer - pos2[:, 2]
+        # Reflected contribution using Green function derivatives
+        k0 = 2 * np.pi / enei
 
-        # Image dipole with Fresnel-modified moments
-        eps1, _ = self.layer.eps[0](enei)
-        eps2, _ = self.layer.eps[1](enei)
-        n1 = np.sqrt(eps1)
-        n2 = np.sqrt(eps2)
+        # Dielectric at dipole positions
+        eps2 = np.array([eps_med] * n2, dtype=complex)
 
-        # Simplified image coefficients for retarded case
-        rp = (n2 * 1.0 - n1 * 1.0) / (n2 * 1.0 + n1 * 1.0)  # normal incidence approx
-        rs = (n1 * 1.0 - n2 * 1.0) / (n1 * 1.0 + n2 * 1.0)
+        G, F = self._greenderiv(enei, pos1, pos2)
+        dip = self.dip                                      # (n2, 3, ndip)
+        dip2 = dip / eps2[:, np.newaxis, np.newaxis]        # reduced dipole
 
-        dip_image = self.dip.astype(complex).copy()
-        dip_image[:, 0, :] *= rs  # x (TE-like)
-        dip_image[:, 1, :] *= rs  # y (TE-like)
-        dip_image[:, 2, :] *= -rp  # z (TM-like, sign flip)
+        def fun(g, d):
+            """g: (n1,n2), d: (n2,ndip) -> (n1,n2,ndip)"""
+            if isinstance(g, (int, float)):
+                return 0 if g == 0 else g * d[np.newaxis, :, :]
+            return g[:, :, np.newaxis] * d[np.newaxis, :, :]
 
-        e_refl, h_refl = self._dipolefield(pos1, pos2_image, dip_image, eps_med, k_med)
-        exc.e += e_refl
-        exc.h += h_refl
+        # Vector potential A
+        a1 = -1j * k0 * fun(G.get('p', 0), dip[:, 0, :])
+        a2 = -1j * k0 * fun(G.get('p', 0), dip[:, 1, :])
+        a3 = (-1j * k0 * fun(G.get('hh', 0), dip[:, 2, :])
+              + fun(F[(1, 2)].get('hs', 0), dip2[:, 0, :])
+              + fun(F[(1, 3)].get('hs', 0), dip2[:, 1, :])
+              + fun(F[(1, 4)].get('hs', 0), dip2[:, 2, :]))
+
+        # E += ik0 * A
+        exc.e[:, 0, :, :] += 1j * k0 * a1
+        exc.e[:, 1, :, :] += 1j * k0 * a2
+        exc.e[:, 2, :, :] += 1j * k0 * a3
+
+        # Derivatives of A for H-field: curl(A)
+        # dA3/dy - dA2/dz
+        a23 = (-1j * k0 * fun(F[(3, 1)].get('hh', 0), dip[:, 2, :])
+              + fun(F[(3, 2)].get('hs', 0), dip2[:, 0, :])
+              + fun(F[(3, 3)].get('hs', 0), dip2[:, 1, :])
+              + fun(F[(3, 4)].get('hs', 0), dip2[:, 2, :]))
+        a32 = -1j * k0 * fun(F[(4, 1)].get('p', 0), dip[:, 1, :])
+
+        # dA1/dz - dA3/dx
+        a31 = -1j * k0 * fun(F[(4, 1)].get('p', 0), dip[:, 0, :])
+        a13 = (-1j * k0 * fun(F[(4, 1)].get('hh', 0), dip[:, 2, :])
+              + fun(F[(4, 2)].get('hs', 0), dip2[:, 0, :])
+              + fun(F[(4, 3)].get('hs', 0), dip2[:, 1, :])
+              + fun(F[(4, 4)].get('hs', 0), dip2[:, 2, :]))
+
+        # dA2/dx - dA1/dy
+        a12 = -1j * k0 * fun(F[(2, 1)].get('p', 0), dip[:, 1, :])
+        a21 = -1j * k0 * fun(F[(3, 1)].get('p', 0), dip[:, 0, :])
+
+        # grad(V): scalar potential gradients
+        phi1 = (fun(F[(2, 2)].get('ss', 0), dip2[:, 0, :])
+              + fun(F[(2, 3)].get('ss', 0), dip2[:, 1, :])
+              + fun(F[(2, 4)].get('ss', 0), dip2[:, 2, :])
+              - 1j * k0 * fun(F[(2, 1)].get('sh', 0), dip[:, 2, :]))
+        phi2 = (fun(F[(3, 2)].get('ss', 0), dip2[:, 0, :])
+              + fun(F[(3, 3)].get('ss', 0), dip2[:, 1, :])
+              + fun(F[(3, 4)].get('ss', 0), dip2[:, 2, :])
+              - 1j * k0 * fun(F[(3, 1)].get('sh', 0), dip[:, 2, :]))
+        phi3 = (fun(F[(4, 2)].get('ss', 0), dip2[:, 0, :])
+              + fun(F[(4, 3)].get('ss', 0), dip2[:, 1, :])
+              + fun(F[(4, 4)].get('ss', 0), dip2[:, 2, :])
+              - 1j * k0 * fun(F[(1, 4)].get('sh', 0), dip[:, 2, :]))
+
+        # E -= grad(V)
+        exc.e[:, 0, :, :] -= phi1
+        exc.e[:, 1, :, :] -= phi2
+        exc.e[:, 2, :, :] -= phi3
+
+        # H = curl(A) (sign convention matches MATLAB)
+        exc.h[:, 0, :, :] -= (a23 - a32)
+        exc.h[:, 1, :, :] -= (a31 - a13)
+        exc.h[:, 2, :, :] -= (a12 - a21)
 
         return exc
+
+    def _greenderiv(self,
+            enei: float,
+            pos1: np.ndarray,
+            pos2: np.ndarray) -> Tuple[Dict, Dict]:
+        """Green function and derivatives via finite differences.
+
+        MATLAB: @dipoleretlayer/private/greenderiv.m
+
+        Returns
+        -------
+        G_dict : dict
+            Reflected Green function components, each (n1, n2).
+        F : dict
+            F[(i,j)][name] = (n1, n2) array of 2nd derivatives.
+            Indices: 1=value, 2=x, 3=y, 4=z.
+        """
+        n1 = pos1.shape[0]
+        n2 = pos2.shape[0]
+
+        # Handle self-interaction: perturb pos2 to avoid singular limit
+        if n1 == n2 and np.allclose(pos1, pos2):
+            pos2 = pos2.copy()
+            pos2[:, 0] += self.layer.rmin
+
+        # Lateral distances
+        dx = pos1[:, 0:1] - pos2[:, 0:1].T  # (n1, n2)
+        dy = pos1[:, 1:2] - pos2[:, 1:2].T  # (n1, n2)
+        r = np.sqrt(dx ** 2 + dy ** 2)
+
+        # z-components
+        z1 = np.repeat(pos1[:, 2:3], n2, axis=1)  # (n1, n2)
+        z2 = np.tile(pos2[:, 2:3].T, (n1, 1))     # (n1, n2)
+
+        rmin = self.layer.rmin
+        eta = 1e-6
+
+        # Enforce minimum distance
+        r = np.maximum(r, rmin)
+        # Unit vectors
+        xhat = dx / r
+        yhat = dy / r
+
+        # Round z-values
+        z1_r, z2_r = self.layer.round_z(z1.ravel(), z2.ravel())
+        r_flat = np.maximum(r.ravel(), rmin)
+
+        # Baseline: G, Fr, Fz at (r, z1, z2)
+        G0, Fr0, Fz0 = self.tab.eval_components(enei, r_flat, z1_r, z2_r)
+
+        # Perturbed in r: (r+eta, z1, z2)
+        _, Fr_r, Fz_r = self.tab.eval_components(enei, r_flat + eta, z1_r, z2_r)
+
+        # Perturbed in z2: (r, z1, z2+eta)
+        G_z, Fr_z, Fz_z = self.tab.eval_components(enei, r_flat, z1_r, z2_r + eta)
+
+        names = list(G0.keys())
+        shape = (n1, n2)
+
+        # Reshape Green function
+        G_dict = {}
+        for name in names:
+            G_dict[name] = G0[name].reshape(shape)
+
+        # Build derivative tensor F[(i,j)][name]
+        F = {}
+        for key in [(1, 2), (1, 3), (2, 1), (3, 1), (4, 1), (1, 4),
+                     (2, 2), (2, 3), (3, 2), (3, 3),
+                     (2, 4), (3, 4), (4, 2), (4, 3), (4, 4)]:
+            F[key] = {}
+
+        for name in names:
+            Fr_val = Fr0[name].reshape(shape)
+            Fz_val = Fz0[name].reshape(shape)
+
+            # Finite difference derivatives
+            Frr = (Fr_r[name].reshape(shape) - Fr_val) / eta
+            Fr1 = (Fz_r[name].reshape(shape) - Fz_val) / eta
+            F2 = (G_z[name].reshape(shape) - G_dict[name]) / eta
+            Fr2 = (Fr_z[name].reshape(shape) - Fr_val) / eta
+            F12 = (Fz_z[name].reshape(shape) - Fz_val) / eta
+
+            # 1st derivatives (Cartesian)
+            F[(1, 2)][name] = -Fr_val * xhat       # dG/dx'
+            F[(1, 3)][name] = -Fr_val * yhat       # dG/dy'
+            F[(2, 1)][name] = Fr_val * xhat        # dG/dx
+            F[(3, 1)][name] = Fr_val * yhat        # dG/dy
+            F[(4, 1)][name] = Fz_val               # dG/dz1
+            F[(1, 4)][name] = F2                   # dG/dz2
+
+            # 2nd derivatives
+            F[(2, 2)][name] = -Fr_val * yhat ** 2 / r - Frr * xhat ** 2
+            F[(2, 3)][name] = -Fr_val * xhat * yhat / r - Frr * xhat * yhat
+            F[(3, 3)][name] = -Fr_val * xhat ** 2 / r - Frr * yhat ** 2
+            F[(3, 2)][name] = F[(2, 3)][name]      # symmetric
+
+            # Mixed z derivatives
+            F[(2, 4)][name] = Fr2 * xhat            # d2G/dx dz2
+            F[(3, 4)][name] = Fr2 * yhat            # d2G/dy dz2
+            F[(4, 2)][name] = -Fr1 * xhat           # d2G/dz1 dx'
+            F[(4, 3)][name] = -Fr1 * yhat           # d2G/dz1 dy'
+            F[(4, 4)][name] = F12                   # d2G/dz1 dz2
+
+        return G_dict, F
 
     def _dipolefield(self,
             pos1: np.ndarray,
@@ -167,23 +327,18 @@ class DipoleRetLayer(object):
     def potential(self,
             p: Any,
             enei: float) -> CompStruct:
+        """Potential of dipole excitation for use in BEM.
 
+        MATLAB: @dipoleretlayer/potential.m
+        """
         pt = self.pt
         pos1 = p.pos if hasattr(p, 'pos') else p.pc.pos
         nvec = p.nvec if hasattr(p, 'nvec') else p.pc.nvec
-        n = pos1.shape[0]
+        n1 = pos1.shape[0]
+        n2 = pt.pos.shape[0]
         ndip = self.dip.shape[2]
 
-        exc = CompStruct(p, enei)
-        exc.phi1 = np.zeros((n, pt.n, ndip), dtype = complex)
-        exc.phi1p = np.zeros((n, pt.n, ndip), dtype = complex)
-        exc.phi2 = np.zeros((n, pt.n, ndip), dtype = complex)
-        exc.phi2p = np.zeros((n, pt.n, ndip), dtype = complex)
-        exc.a1 = np.zeros((n, 3, pt.n, ndip), dtype = complex)
-        exc.a1p = np.zeros((n, 3, pt.n, ndip), dtype = complex)
-        exc.a2 = np.zeros((n, 3, pt.n, ndip), dtype = complex)
-        exc.a2p = np.zeros((n, 3, pt.n, ndip), dtype = complex)
-
+        # Direct contribution
         eps_vals = []
         k_vals = []
         for eps_func in p.eps:
@@ -194,46 +349,94 @@ class DipoleRetLayer(object):
         eps_med = eps_vals[self._medium - 1]
         k_med = k_vals[self._medium - 1]
 
-        # Direct + reflected potential
-        for inout in range(2):
-            phi, phip, a, ap = self._pot(
-                pos1, pt.pos, nvec, self.dip, eps_med, k_med)
+        exc = CompStruct(p, enei)
+        # Initialize with direct potentials (outside boundary = inout 2)
+        phi_d, phip_d, a_d, ap_d = self._pot(
+            pos1, pt.pos, nvec, self.dip, eps_med, k_med)
+        exc.phi2 = phi_d
+        exc.phi2p = phip_d
+        exc.a2 = a_d
+        exc.a2p = ap_d
+        exc.phi1 = phi_d.copy()
+        exc.phi1p = phip_d.copy()
+        exc.a1 = a_d.copy()
+        exc.a1p = ap_d.copy()
 
-            # Reflected contribution
-            z_layer = self.layer.z[0]
-            pos2_image = pt.pos.copy()
-            pos2_image[:, 2] = 2 * z_layer - pos2_image[:, 2]
+        # Reflected contribution using Green function derivatives
+        k0 = 2 * np.pi / enei
 
-            eps1, _ = self.layer.eps[0](enei)
-            eps2, _ = self.layer.eps[1](enei)
-            n1 = np.sqrt(eps1)
-            n2 = np.sqrt(eps2)
-            rp = (n2 - n1) / (n2 + n1)
-            rs = (n1 - n2) / (n1 + n2)
+        eps2_arr = np.array([eps_med] * n2, dtype=complex)
+        G, F = self._greenderiv(enei, pos1, pt.pos)
+        dip = self.dip
+        dip2 = dip / eps2_arr[:, np.newaxis, np.newaxis]
 
-            dip_image = self.dip.astype(complex).copy()
-            dip_image[:, 0, :] *= rs
-            dip_image[:, 1, :] *= rs
-            dip_image[:, 2, :] *= -rp
+        def fun(g, d):
+            """g: (n1,n2), d: (n2,ndip) -> (n1,n2,ndip)"""
+            if isinstance(g, (int, float)):
+                return 0 if g == 0 else g * d[np.newaxis, :, :]
+            return g[:, :, np.newaxis] * d[np.newaxis, :, :]
 
-            phi_r, phip_r, a_r, ap_r = self._pot(
-                pos1, pos2_image, nvec, dip_image, eps_med, k_med)
+        # Vector potential: a
+        a1 = -1j * k0 * fun(G.get('p', 0), dip[:, 0, :])
+        a2 = -1j * k0 * fun(G.get('p', 0), dip[:, 1, :])
+        a3 = (-1j * k0 * fun(G.get('hh', 0), dip[:, 2, :])
+              + fun(F[(1, 2)].get('hs', 0), dip2[:, 0, :])
+              + fun(F[(1, 3)].get('hs', 0), dip2[:, 1, :])
+              + fun(F[(1, 4)].get('hs', 0), dip2[:, 2, :]))
 
-            phi_total = phi + phi_r
-            phip_total = phip + phip_r
-            a_total = a + a_r
-            ap_total = ap + ap_r
+        # Scalar potential: phi
+        phi_r = (fun(F[(1, 2)].get('ss', 0), dip2[:, 0, :])
+               + fun(F[(1, 3)].get('ss', 0), dip2[:, 1, :])
+               + fun(F[(1, 4)].get('ss', 0), dip2[:, 2, :])
+               - 1j * k0 * fun(G.get('sh', 0), dip[:, 2, :]))
 
-            if inout == 0:
-                exc.phi1 = phi_total
-                exc.phi1p = phip_total
-                exc.a1 = a_total
-                exc.a1p = ap_total
-            else:
-                exc.phi2 = phi_total
-                exc.phi2p = phip_total
-                exc.a2 = a_total
-                exc.a2p = ap_total
+        # Add reflected to a2, phi2
+        exc.a2[:, 0, :, :] += a1
+        exc.a2[:, 1, :, :] += a2
+        exc.a2[:, 2, :, :] += a3
+        exc.phi2 += phi_r
+
+        # Surface derivatives: nvec dot grad
+        def deriv(comp_name, col_idx):
+            """Normal derivative: nvec . [F{2,j}, F{3,j}, F{4,j}]"""
+            f2 = F[(2, col_idx)].get(comp_name, None)
+            f3 = F[(3, col_idx)].get(comp_name, None)
+            f4 = F[(4, col_idx)].get(comp_name, None)
+            if f2 is None and f3 is None and f4 is None:
+                return 0
+            result = np.zeros((n1, n2, 1), dtype=complex)
+            if f2 is not None:
+                result += nvec[:, 0:1, np.newaxis] * f2[:, :, np.newaxis]
+            if f3 is not None:
+                result += nvec[:, 1:2, np.newaxis] * f3[:, :, np.newaxis]
+            if f4 is not None:
+                result += nvec[:, 2:3, np.newaxis] * f4[:, :, np.newaxis]
+            return result
+
+        def fun3(g, d):
+            """g: (n1,n2,1) or 0, d: (n2,ndip) -> (n1,n2,ndip)"""
+            if isinstance(g, (int, float)) and g == 0:
+                return 0
+            return g * d[np.newaxis, :, :]
+
+        # Surface derivative of vector potential: ap
+        a1p = -1j * k0 * fun3(deriv('p', 1), dip[:, 0, :])
+        a2p = -1j * k0 * fun3(deriv('p', 1), dip[:, 1, :])
+        a3p = (-1j * k0 * fun3(deriv('hh', 1), dip[:, 2, :])
+              + fun3(deriv('hs', 2), dip2[:, 0, :])
+              + fun3(deriv('hs', 3), dip2[:, 1, :])
+              + fun3(deriv('hs', 4), dip2[:, 2, :]))
+
+        # Surface derivative of scalar potential: phip
+        phip_r = (fun3(deriv('ss', 2), dip2[:, 0, :])
+                + fun3(deriv('ss', 3), dip2[:, 1, :])
+                + fun3(deriv('ss', 4), dip2[:, 2, :])
+                - 1j * k0 * fun3(deriv('sh', 1), dip[:, 2, :]))
+
+        exc.a2p[:, 0, :, :] += a1p
+        exc.a2p[:, 1, :, :] += a2p
+        exc.a2p[:, 2, :, :] += a3p
+        exc.phi2p += phip_r
 
         return exc
 

@@ -94,6 +94,59 @@ class GreenRetLayer(object):
         else:
             self._compute_F_cart(G, Fr, Fz)
 
+    def eval_components(self,
+            enei: float) -> None:
+        """Compute per-component reflected Green function (G, F, Gp).
+
+        Always computes both normal and Cartesian derivatives regardless
+        of self.deriv, since field() needs Gp and potential() needs F.
+
+        After calling, results are stored in:
+          self.G_comp  : dict of (n1, n2) arrays
+          self.F_comp  : dict of (n1, n2) arrays (normal derivative)
+          self.Gp_comp : dict of (n1, n2, 3) arrays (Cartesian derivative)
+        """
+        n1 = self.p1.pos.shape[0]
+        n2 = self.p2.pos.shape[0]
+
+        z1, z2 = self.layer.round_z(self._z1, self._z2)
+
+        r_flat = self._r.ravel()
+        z1_flat = np.repeat(z1, n2)
+        z2_flat = np.tile(z2, n1)
+        r_flat = np.maximum(r_flat, self.layer.rmin)
+
+        G_dict, Fr_dict, Fz_dict = self.tab.eval_components(
+            enei, r_flat, z1_flat, z2_flat)
+
+        self.G_comp = {}
+        self.F_comp = {}
+        self.Gp_comp = {}
+
+        nvec1 = self.p1.nvec
+        r_safe = np.maximum(self._r, np.finfo(float).eps)
+
+        for name in G_dict:
+            G = G_dict[name].reshape(n1, n2)
+            Fr = Fr_dict[name].reshape(n1, n2)
+            Fz = Fz_dict[name].reshape(n1, n2)
+
+            self.G_comp[name] = G
+
+            # Cartesian derivative: Gp (n1, n2, 3)
+            Gp = np.zeros((n1, n2, 3), dtype=complex)
+            Gp[:, :, 0] = Fr * self._dx / r_safe
+            Gp[:, :, 1] = Fr * self._dy / r_safe
+            Gp[:, :, 2] = Fz
+            self.Gp_comp[name] = Gp
+
+            # Normal derivative: F = nvec · Gp
+            F = np.zeros((n1, n2), dtype=complex)
+            F += nvec1[:, 0:1] * Gp[:, :, 0]
+            F += nvec1[:, 1:2] * Gp[:, :, 1]
+            F += nvec1[:, 2:3] * Gp[:, :, 2]
+            self.F_comp[name] = F
+
     def _compute_F_norm(self,
             G: np.ndarray,
             Fr: np.ndarray,
