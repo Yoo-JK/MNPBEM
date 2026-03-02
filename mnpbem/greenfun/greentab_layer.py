@@ -50,7 +50,7 @@ class GreenTabLayer(object):
             z1: np.ndarray,
             z2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
-        if self._Gsav is not None and self.r is not None:
+        if self.r is not None:
             return self._interp(enei, r, z1, z2)
         else:
             return self._compute(enei, r, z1, z2)
@@ -85,29 +85,26 @@ class GreenTabLayer(object):
             if self.G is not None:
                 return self.G, self.Fr, self.Fz
 
-        r = np.asarray(r, dtype = float)
-        z1 = np.asarray(z1, dtype = float)
-        z2 = np.asarray(z2, dtype = float)
-
-        shape = r.shape
-        r_flat = r.ravel()
-        z1_flat = z1.ravel()
-        z2_flat = z2.ravel()
-
-        n = len(r_flat)
-
-        G = np.zeros(n, dtype = complex)
-        Fr = np.zeros(n, dtype = complex)
-        Fz = np.zeros(n, dtype = complex)
+        shape = np.asarray(r).shape
 
         # Compute tabulated values if not cached at this wavelength
-        if self._Gsav is None or not np.isclose(self.enei, enei) if self.enei is not None else True:
+        if self._Gsav is None or (self.enei is not None and not np.isclose(self.enei, enei)):
             self._compute_tab(enei)
 
-        # Interpolate from tabulated values
-        for i in range(n):
-            G[i], Fr[i], Fz[i] = self._interp_single(
-                r_flat[i], z1_flat[i], z2_flat[i])
+        # Query points (clip to grid bounds)
+        r_q = np.clip(np.asarray(r, dtype = float).ravel(), self.r[0], self.r[-1])
+        z1_q = np.clip(np.asarray(z1, dtype = float).ravel(), self.z1[0], self.z1[-1])
+        z2_q = np.clip(np.asarray(z2, dtype = float).ravel(), self.z2[0], self.z2[-1])
+        points = np.column_stack([r_q, z1_q, z2_q])
+
+        grid = (self.r, self.z1, self.z2)
+
+        G = RegularGridInterpolator(grid, self._Gsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
+          + 1j * RegularGridInterpolator(grid, self._Gsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
+        Fr = RegularGridInterpolator(grid, self._Frsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
+           + 1j * RegularGridInterpolator(grid, self._Frsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
+        Fz = RegularGridInterpolator(grid, self._Fzsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
+           + 1j * RegularGridInterpolator(grid, self._Fzsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
 
         G = G.reshape(shape)
         Fr = Fr.reshape(shape)
@@ -207,7 +204,7 @@ class GreenTabLayer(object):
         Returns (G_dict, Fr_dict, Fz_dict) where each is a dict keyed by
         reflection names ('p', 'ss', 'hh', 'sh', 'hs').
         """
-        if self._Gsav_comp is not None and self.r is not None:
+        if self.r is not None:
             return self._interp_components(enei, r, z1, z2)
         else:
             return self._compute_components(enei, r, z1, z2)
@@ -230,45 +227,36 @@ class GreenTabLayer(object):
             z1: np.ndarray,
             z2: np.ndarray) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
 
-        r = np.asarray(r, dtype=float)
-        z1 = np.asarray(z1, dtype=float)
-        z2 = np.asarray(z2, dtype=float)
-
-        shape = r.shape
-        r_flat = r.ravel()
-        z1_flat = z1.ravel()
-        z2_flat = z2.ravel()
-        n = len(r_flat)
+        shape = np.asarray(r).shape
 
         if self._Gsav_comp is None or (
                 self._enei_comp is not None and not np.isclose(self._enei_comp, enei)):
             self._compute_tab_components(enei)
 
+        # Query points (clip to grid bounds)
+        r_q = np.clip(np.asarray(r, dtype = float).ravel(), self.r[0], self.r[-1])
+        z1_q = np.clip(np.asarray(z1, dtype = float).ravel(), self.z1[0], self.z1[-1])
+        z2_q = np.clip(np.asarray(z2, dtype = float).ravel(), self.z2[0], self.z2[-1])
+        points = np.column_stack([r_q, z1_q, z2_q])
+
+        grid = (self.r, self.z1, self.z2)
         names = list(self._Gsav_comp.keys())
         G_dict = {}
         Fr_dict = {}
         Fz_dict = {}
 
         for name in names:
-            G_arr = np.zeros(n, dtype=complex)
-            Fr_arr = np.zeros(n, dtype=complex)
-            Fz_arr = np.zeros(n, dtype=complex)
             Gsav = self._Gsav_comp[name]
             Frsav = self._Frsav_comp[name]
             Fzsav = self._Fzsav_comp[name]
-            for i in range(n):
-                r_idx = np.interp(r_flat[i], self.r, np.arange(len(self.r)))
-                z1_idx = np.interp(z1_flat[i], self.z1, np.arange(len(self.z1)))
-                z2_idx = np.interp(z2_flat[i], self.z2, np.arange(len(self.z2)))
-                ir = int(np.clip(r_idx, 0, len(self.r) - 2))
-                iz1 = int(np.clip(z1_idx, 0, len(self.z1) - 2))
-                iz2 = int(np.clip(z2_idx, 0, len(self.z2) - 2))
-                fr = r_idx - ir
-                fz1 = z1_idx - iz1
-                fz2 = z2_idx - iz2
-                G_arr[i] = self._trilinear_interp(Gsav, ir, iz1, iz2, fr, fz1, fz2)
-                Fr_arr[i] = self._trilinear_interp(Frsav, ir, iz1, iz2, fr, fz1, fz2)
-                Fz_arr[i] = self._trilinear_interp(Fzsav, ir, iz1, iz2, fr, fz1, fz2)
+
+            G_arr = RegularGridInterpolator(grid, Gsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
+                  + 1j * RegularGridInterpolator(grid, Gsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
+            Fr_arr = RegularGridInterpolator(grid, Frsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
+                   + 1j * RegularGridInterpolator(grid, Frsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
+            Fz_arr = RegularGridInterpolator(grid, Fzsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
+                   + 1j * RegularGridInterpolator(grid, Fzsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
+
             G_dict[name] = G_arr.reshape(shape)
             Fr_dict[name] = Fr_arr.reshape(shape)
             Fz_dict[name] = Fz_arr.reshape(shape)
@@ -305,6 +293,24 @@ class GreenTabLayer(object):
                     self._Fzsav_comp[name][:, iz1, iz2] = np.asarray(result[2][name], dtype=complex)
 
         self._enei_comp = enei
+
+    def setup_grid(self,
+            r: np.ndarray,
+            z1: np.ndarray,
+            z2: np.ndarray) -> None:
+
+        self.r = np.asarray(r, dtype = float)
+        self.z1 = np.asarray(z1, dtype = float)
+        self.z2 = np.asarray(z2, dtype = float)
+        # Invalidate caches
+        self._Gsav = None
+        self._Frsav = None
+        self._Fzsav = None
+        self._Gsav_comp = None
+        self._Frsav_comp = None
+        self._Fzsav_comp = None
+        self.enei = None
+        self._enei_comp = None
 
     @staticmethod
     def _sum_components(d):

@@ -185,6 +185,24 @@ class GreenRetLayer(object):
         self.Gp = Gp
         self.F = Gp
 
+    def setup_tabulation(self, nr = 30, nz = 20):
+
+        z1, z2 = self.layer.round_z(self._z1, self._z2)
+
+        # r: logarithmic (rmin → max radial distance)
+        r_max = max(self._r.max(), self.layer.rmin * 10)
+        r_grid = np.geomspace(self.layer.rmin, r_max, nr)
+
+        # z1, z2: linear (face z-coordinate range)
+        z_all = np.concatenate([z1, z2])
+        z_min, z_max = z_all.min(), z_all.max()
+        if np.isclose(z_min, z_max):
+            z_max = z_min + 1.0
+        z1_grid = np.linspace(z_min, z_max, nz)
+        z2_grid = np.linspace(z_min, z_max, nz)
+
+        self.tab.setup_grid(r_grid, z1_grid, z2_grid)
+
     def __repr__(self) -> str:
         return 'GreenRetLayer(n1={}, n2={}, deriv={})'.format(
             self.p1.pos.shape[0], self.p2.pos.shape[0], self.deriv)

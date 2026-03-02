@@ -784,6 +784,11 @@ class BEMRetLayerIter(BEMIter):
         # MATLAB: bemretlayeriter/potential.m
         return self.g.potential(sig, inout)
 
+    def setup_tabulation(self, nr = 30, nz = 20):
+
+        if self.g is not None:
+            self.g.setup_tabulation(nr = nr, nz = nz)
+
     def clear(self) -> 'BEMRetLayerIter':
 
         # MATLAB: bemretlayeriter/clear.m

@@ -423,6 +423,12 @@ class BEMRetLayer(object):
 
         return self.g.field(sig, inout)
 
+    def setup_tabulation(self, nr = 30, nz = 20):
+
+        if self.g is None:
+            self.g = CompGreenRetLayer(self.p, self.p, self.layer, **self.options)
+        self.g.setup_tabulation(nr = nr, nz = nz)
+
     def clear(self) -> 'BEMRetLayer':
 
         self.G1i = None

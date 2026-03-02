@@ -561,6 +561,10 @@ class CompGreenRetLayer(object):
 
         return CompStruct(self.p1, enei, e=e_total, h=h_total)
 
+    def setup_tabulation(self, nr = 30, nz = 20):
+
+        self.gr.setup_tabulation(nr = nr, nz = nz)
+
     def __repr__(self) -> str:
         n1 = self.p1.pos.shape[0] if hasattr(self.p1, 'pos') else '?'
         n2 = self.p2.pos.shape[0] if hasattr(self.p2, 'pos') else '?'
