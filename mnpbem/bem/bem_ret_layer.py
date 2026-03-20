@@ -216,9 +216,9 @@ class BEMRetLayer(object):
         diff_hh = L1 @ G2['hh'] - G2e['hh']
 
         m11 = (Sigma1e @ G2['ss'] - H2e['ss']
-            - 1j * k * (Gammapar @ diff_ss + diff_sh * nperp[np.newaxis, :]))
+            - 1j * k * (Gammapar @ diff_ss + diff_sh * nperp[:, np.newaxis]))
         m12 = (Sigma1e @ G2['sh'] - H2e['sh']
-            - 1j * k * (Gammapar @ diff_sh + diff_hh * nperp[np.newaxis, :]))
+            - 1j * k * (Gammapar @ diff_sh + diff_hh * nperp[:, np.newaxis]))
         m21 = (Sigma1 @ G2['hs'] - H2['hs']
             - 1j * k * diff_ss * nperp[:, np.newaxis])
         m22 = (Sigma1 @ G2['hh'] - H2['hh']
