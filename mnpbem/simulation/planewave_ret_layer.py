@@ -20,8 +20,8 @@ class PlaneWaveRetLayer(object):
             medium: int = 1,
             **options: Any) -> None:
 
-        self.pol = np.asarray(pol)
-        self.dir = np.asarray(dir)
+        self.pol = np.asarray(pol, dtype = float)
+        self.dir = np.asarray(dir, dtype = float)
 
         if self.pol.ndim == 1:
             self.pol = self.pol.reshape(1, -1)
@@ -29,158 +29,271 @@ class PlaneWaveRetLayer(object):
             self.dir = self.dir.reshape(1, -1)
 
         self.layer = layer
-        self.medium = options.get('medium', medium)
 
         # Spectrum for scattering calculations
         pinfty_arg = options.get('pinfty', None)
         from ..spectrum import SpectrumRetLayer
-        self.spec = SpectrumRetLayer(pinfty_arg, layer, medium = self.medium)
+        self.spec = SpectrumRetLayer(pinfty_arg, layer)
 
-    def _fresnel_layer(self,
-            dir: np.ndarray,
-            enei: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _poslayer(self,
+            z1: np.ndarray,
+            z2: float) -> Dict[str, Any]:
+        # MATLAB: poslayer() helper in potential.m
+        z1 = np.atleast_1d(z1)
+        z2_arr = np.atleast_1d(z2)
+        ind1, _ = self.layer.indlayer(z1)
+        ind2, _ = self.layer.indlayer(z2_arr)
+        return {'r': 0, 'z1': z1, 'z2': z2_arr, 'ind1': ind1, 'ind2': ind2}
+
+    def potential(self,
+            p: Any,
+            enei: float) -> CompStruct:
+        # MATLAB: @planewaveretlayer/potential.m
 
         layer = self.layer
-        npol = dir.shape[0]
-
-        eps_vals = []
-        k_vals = []
-        for eps_func in layer.eps:
-            eps, k = eps_func(enei)
-            eps_vals.append(eps)
-            k_vals.append(k)
-
         k0 = 2 * np.pi / enei
 
-        rp = np.zeros(npol, dtype = complex)
-        rs = np.zeros(npol, dtype = complex)
-        tp = np.zeros(npol, dtype = complex)
-        ts = np.zeros(npol, dtype = complex)
+        # Inside and outside medium of particle (MATLAB: p.inout expanded to faces)
+        inout = p.inout_faces  # (nfaces, 2)
+
+        # Find boundary elements connected to layer structure
+        # MATLAB: ind1 = any(bsxfun(@eq, inout(:,1), layer.ind), 2)
+        ind1 = np.zeros(p.nfaces, dtype = bool)
+        ind2 = np.zeros(p.nfaces, dtype = bool)
+        for li in layer.ind:
+            ind1 |= (inout[:, 0] == li)
+            ind2 |= (inout[:, 1] == li)
+        ind = ind1 | ind2
+
+        eta = 1e-8
+        pos = p.pos
+        nvec = p.nvec
+
+        # Positions and displaced positions for faces connected to layer
+        pos1 = pos[ind, :]
+        pos2 = pos[ind, :] + eta * nvec[ind, :]
+
+        npol = self.dir.shape[0]
+        nfaces = p.nfaces
+
+        # Initialize output arrays
+        phi = np.zeros((nfaces, npol), dtype = complex)
+        phip = np.zeros((nfaces, npol), dtype = complex)
+        a = np.zeros((nfaces, 3, npol), dtype = complex)
+        ap = np.zeros((nfaces, 3, npol), dtype = complex)
 
         for i in range(npol):
-            cos_theta = np.abs(dir[i, 2])
-            sin_theta = np.sqrt(1 - cos_theta ** 2)
+            pol_i = self.pol[i, :]
+            dir_i = self.dir[i, :]
 
-            n1 = np.sqrt(eps_vals[0])
-            n2 = np.sqrt(eps_vals[1])
-
-            sin_theta_t = n1 / n2 * sin_theta
-            cos_theta_t = np.sqrt(1 - sin_theta_t ** 2 + 0j)
-
-            # Fresnel coefficients
-            rs[i] = (n1 * cos_theta - n2 * cos_theta_t) / (n1 * cos_theta + n2 * cos_theta_t)
-            ts[i] = 2 * n1 * cos_theta / (n1 * cos_theta + n2 * cos_theta_t)
-
-            rp[i] = (n2 * cos_theta - n1 * cos_theta_t) / (n2 * cos_theta + n1 * cos_theta_t)
-            tp[i] = 2 * n1 * cos_theta / (n2 * cos_theta + n1 * cos_theta_t)
-
-        return rp, rs, tp, ts
-
-    def _decompose_pol(self,
-            pol: np.ndarray,
-            dir: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-
-        npol = pol.shape[0]
-        z_hat = np.array([0.0, 0.0, 1.0])
-
-        pol_te = np.zeros_like(pol)
-        pol_tm = np.zeros_like(pol)
-
-        for i in range(npol):
-            n_inc = np.cross(dir[i], z_hat)
-            n_inc_norm = np.linalg.norm(n_inc)
-
-            if n_inc_norm < 1e-10:
-                pol_te[i] = pol[i]
-                pol_tm[i] = np.zeros(3)
+            # Excitation through upper or lower layer
+            if dir_i[2] < 0:
+                medium = layer.ind[0]
+                z2 = layer.z[0] + 1e-10
             else:
-                n_inc = n_inc / n_inc_norm
-                pol_te[i] = np.dot(pol[i], n_inc) * n_inc
-                pol_tm[i] = pol[i] - pol_te[i]
+                medium = layer.ind[-1]
+                z2 = layer.z[-1] - 1e-10
 
-        return pol_te, pol_tm
+            # Index to embedding medium faces
+            indb = np.zeros(nfaces, dtype = bool)
+            for col in range(inout.shape[1]):
+                indb |= (inout[:, col] == medium)
+
+            # Refractive index of embedding medium
+            eps_val, _ = p.eps[medium - 1](enei)
+            nb = np.sqrt(eps_val)
+
+            # Parallel component of wavevector
+            kpar = nb * k0 * np.sqrt(dir_i[0] ** 2 + dir_i[1] ** 2)
+
+            # Reflection and transmission coefficients at pos1 and pos2
+            pos_r1 = self._poslayer(pos1[:, 2], z2)
+            pos_r2 = self._poslayer(pos2[:, 2], z2)
+
+            r1 = layer.fresnel(enei, kpar, pos_r1)
+            r2 = layer.fresnel(enei, kpar, pos_r2)
+
+            # Inner product: pos_xy * dir_xy' + z2 * dir_z
+            in1 = pos1[:, 0:2] @ dir_i[0:2] + z2 * dir_i[2]
+            in2 = pos2[:, 0:2] @ dir_i[0:2] + z2 * dir_i[2]
+
+            # Factor: exp(i * k0 * nb * inner) / (i * k0) * pol
+            fac1 = np.exp(1j * k0 * nb * in1)[:, np.newaxis] / (1j * k0) * pol_i[np.newaxis, :]  # (nind, 3)
+            fac2 = np.exp(1j * k0 * nb * in2)[:, np.newaxis] / (1j * k0) * pol_i[np.newaxis, :]
+
+            # Vector potential from reflection
+            # a(ind, 1:2) = fac1(:, 1:2) .* r1.p
+            r1_p = np.atleast_1d(r1['p']).ravel()
+            r1_hh = np.atleast_1d(r1['hh']).ravel()
+            r1_sh = np.atleast_1d(r1['sh']).ravel()
+            r2_p = np.atleast_1d(r2['p']).ravel()
+            r2_hh = np.atleast_1d(r2['hh']).ravel()
+            r2_sh = np.atleast_1d(r2['sh']).ravel()
+
+            a[ind, 0, i] = fac1[:, 0] * r1_p
+            a[ind, 1, i] = fac1[:, 1] * r1_p
+            a[ind, 2, i] = fac1[:, 2] * r1_hh
+
+            # Scalar potential from reflection
+            phi[ind, i] = fac1[:, 2] * r1_sh
+
+            # Derivative of vector potential (finite difference)
+            ap[ind, 0, i] = (fac2[:, 0] * r2_p - a[ind, 0, i]) / eta
+            ap[ind, 1, i] = (fac2[:, 1] * r2_p - a[ind, 1, i]) / eta
+            ap[ind, 2, i] = (fac2[:, 2] * r2_hh - a[ind, 2, i]) / eta
+
+            # Derivative of scalar potential (finite difference)
+            phip[ind, i] = (fac2[:, 2] * r2_sh - phi[ind, i]) / eta
+
+            # Direct excitation for faces in embedding medium
+            pos_b = pos[indb, :]
+            nvec_b = nvec[indb, :]
+
+            a0 = np.exp(1j * k0 * nb * (pos_b @ dir_i))[:, np.newaxis] / (1j * k0) * pol_i[np.newaxis, :]
+            a0p = a0 * (1j * k0 * nb * (nvec_b @ dir_i))[:, np.newaxis]
+
+            a[indb, :, i] += a0
+            ap[indb, :, i] += a0p
+
+        # Build excitation output
+        # MATLAB: exc arrays are full-sized (nfaces), only ind1/ind2 entries are non-zero
+        phi1_out = np.zeros_like(phi)
+        phi1p_out = np.zeros_like(phip)
+        phi2_out = np.zeros_like(phi)
+        phi2p_out = np.zeros_like(phip)
+        a1_out = np.zeros_like(a)
+        a1p_out = np.zeros_like(ap)
+        a2_out = np.zeros_like(a)
+        a2p_out = np.zeros_like(ap)
+
+        phi1_out[ind1, :] = phi[ind1, :]
+        phi1p_out[ind1, :] = phip[ind1, :]
+        phi2_out[ind2, :] = phi[ind2, :]
+        phi2p_out[ind2, :] = phip[ind2, :]
+        a1_out[ind1, :, :] = a[ind1, :, :]
+        a1p_out[ind1, :, :] = ap[ind1, :, :]
+        a2_out[ind2, :, :] = a[ind2, :, :]
+        a2p_out[ind2, :, :] = ap[ind2, :, :]
+
+        exc = CompStruct(p, enei)
+
+        if npol == 1:
+            exc = exc.set(
+                phi1 = phi1_out[:, 0], phi1p = phi1p_out[:, 0],
+                phi2 = phi2_out[:, 0], phi2p = phi2p_out[:, 0],
+                a1 = a1_out[:, :, 0], a1p = a1p_out[:, :, 0],
+                a2 = a2_out[:, :, 0], a2p = a2p_out[:, :, 0])
+        else:
+            exc = exc.set(
+                phi1 = phi1_out, phi1p = phi1p_out,
+                phi2 = phi2_out, phi2p = phi2p_out,
+                a1 = a1_out, a1p = a1p_out,
+                a2 = a2_out, a2p = a2p_out)
+
+        return exc
 
     def field(self,
             p: Any,
             enei: float,
             inout: int = 1) -> CompStruct:
-
-        # Refractive index
-        eps_func = p.eps[self.medium - 1]
-        eps_val, _ = eps_func(enei)
-        nb = np.sqrt(eps_val)
-
-        k0 = 2 * np.pi / enei
-        k = k0 * nb
-
-        pol = self.pol
-        dir = self.dir
-        npol = pol.shape[0]
-
-        n = p.n if hasattr(p, 'n') else p.nfaces
-        e = np.zeros((n, 3, npol), dtype = complex)
-        h = np.zeros((n, 3, npol), dtype = complex)
-
-        pos = p.pos if hasattr(p, 'pos') else p.pc.pos
-
-        # Fresnel coefficients
-        rp, rs, tp, ts = self._fresnel_layer(dir, enei)
-        pol_te, pol_tm = self._decompose_pol(pol, dir)
+        # MATLAB: @planewaveretlayer/field.m
 
         layer = self.layer
-        z_layer = layer.z[0]
+        k0 = 2 * np.pi / enei
+
+        # Inside and outside medium of particle
+        inout_arr = p.inout_faces  # (nfaces, 2)
+
+        # Find boundary elements connected to layer structure
+        ind1 = np.zeros(p.nfaces, dtype = bool)
+        ind2 = np.zeros(p.nfaces, dtype = bool)
+        for li in layer.ind:
+            ind1 |= (inout_arr[:, 0] == li)
+            ind2 |= (inout_arr[:, 1] == li)
+        ind = ind1 | ind2
+
+        eta = 1e-8
+        pos_all = p.pos
+        npol = self.dir.shape[0]
+        nfaces = p.nfaces
+
+        # 4D arrays: (nfaces, 3, npol, 4) for undisplaced + 3 displaced
+        phi = np.zeros((nfaces, npol, 4), dtype = complex)
+        a = np.zeros((nfaces, 3, npol, 4), dtype = complex)
 
         for i in range(npol):
-            phase_inc = np.exp(1j * k * pos @ dir[i])
+            pol_i = self.pol[i, :]
+            dir_i = self.dir[i, :]
 
-            # Reflected direction
-            dir_refl = dir[i].copy()
-            dir_refl[2] = -dir_refl[2]
+            if dir_i[2] < 0:
+                medium = layer.ind[0]
+                z2 = layer.z[0] + 1e-10
+            else:
+                medium = layer.ind[-1]
+                z2 = layer.z[-1] - 1e-10
 
-            # Reflected phase
-            z_shift = 2 * z_layer * dir[i, 2]
-            phase_refl = np.exp(1j * k * (pos @ dir_refl + z_shift))
+            indb = np.zeros(nfaces, dtype = bool)
+            for col in range(inout_arr.shape[1]):
+                indb |= (inout_arr[:, col] == medium)
 
-            # Reflected polarization
-            pol_refl_te = rs[i] * pol_te[i]
-            pol_refl_tm = rp[i] * pol_tm[i].copy()
-            pol_refl_tm[2] = -pol_refl_tm[2]  # z-component flips
-            pol_refl = pol_refl_te + pol_refl_tm
+            eps_val, _ = p.eps[medium - 1](enei)
+            nb = np.sqrt(eps_val)
+            kpar = nb * k0 * np.sqrt(dir_i[0] ** 2 + dir_i[1] ** 2)
 
-            above = pos[:, 2] > z_layer
-            below = ~above
+            # Loop over Cartesian displacements (0=undisplaced, 1=dx, 2=dy, 3=dz)
+            for kk in range(4):
+                pos_disp = pos_all[ind, :].copy()
+                if kk > 0:
+                    pos_disp[:, kk - 1] += eta
 
-            # Above: incident + reflected
-            e_inc = phase_inc[above, np.newaxis] * pol[i]
-            e_refl = phase_refl[above, np.newaxis] * pol_refl
-            e[above, :, i] = e_inc + e_refl
+                pos_r = self._poslayer(pos_disp[:, 2], z2)
+                r = layer.fresnel(enei, kpar, pos_r)
 
-            # Magnetic field
-            dir_rep_inc = np.tile(dir[i], (np.sum(above), 1))
-            dir_rep_refl = np.tile(dir_refl, (np.sum(above), 1))
-            h[above, :, i] = nb * (np.cross(dir_rep_inc, e_inc) +
-                np.cross(dir_rep_refl, e_refl))
+                inner = pos_disp[:, 0:2] @ dir_i[0:2] + z2 * dir_i[2]
+                fac = np.exp(1j * k0 * nb * inner)[:, np.newaxis] / (1j * k0) * pol_i[np.newaxis, :]
 
-            # Below: transmitted
-            # Transmitted direction
-            eps2, _ = layer.eps[1](enei)
-            n2 = np.sqrt(eps2)
-            k_trans = k0 * n2
+                r_p = np.atleast_1d(r['p']).ravel()
+                r_hh = np.atleast_1d(r['hh']).ravel()
+                r_sh = np.atleast_1d(r['sh']).ravel()
 
-            sin_theta = np.sqrt(dir[i, 0] ** 2 + dir[i, 1] ** 2)
-            cos_theta_t = np.sqrt(1 - (nb / n2 * sin_theta) ** 2 + 0j)
-            dir_trans = dir[i].copy()
-            if sin_theta > 1e-10:
-                dir_trans[0] = dir[i, 0] * nb / n2
-                dir_trans[1] = dir[i, 1] * nb / n2
-            dir_trans[2] = -np.real(cos_theta_t) * np.sign(dir[i, 2])
+                a[ind, 0, i, kk] = fac[:, 0] * r_p
+                a[ind, 1, i, kk] = fac[:, 1] * r_p
+                a[ind, 2, i, kk] = fac[:, 2] * r_hh
+                phi[ind, i, kk] = fac[:, 2] * r_sh
 
-            pol_trans = ts[i] * pol_te[i] + tp[i] * pol_tm[i]
-            phase_trans = np.exp(1j * k_trans * pos[below] @ dir_trans)
-            e[below, :, i] = phase_trans[:, np.newaxis] * pol_trans
+                # Direct excitation
+                pos_dir = pos_all[indb, :].copy()
+                if kk > 0:
+                    pos_dir[:, kk - 1] += eta
 
-            dir_rep_trans = np.tile(dir_trans, (np.sum(below), 1))
-            h[below, :, i] = n2 * np.cross(dir_rep_trans, e[below, :, i])
+                a0 = np.exp(1j * k0 * nb * (pos_dir @ dir_i))[:, np.newaxis] / (1j * k0) * pol_i[np.newaxis, :]
+                a[indb, :, i, kk] += a0
+
+        # Electric field: E = i*k0*A - grad(phi)
+        e = 1j * k0 * a[:, :, :, 0]
+
+        for kk in range(3):
+            dphi = (phi[:, :, kk + 1] - phi[:, :, 0]) / eta  # (nfaces, npol)
+            e[:, kk, :] -= dphi
+
+        # Magnetic field: H = curl(A)
+        h = np.zeros_like(e)
+        for kk in range(3):
+            for ii in range(3):
+                da = (a[:, ii, :, kk + 1] - a[:, ii, :, 0]) / eta  # (nfaces, npol)
+                # H_x = dA_z/dy - dA_y/dz, etc (Levi-Civita)
+                if (kk, ii) == (1, 2):
+                    h[:, 0, :] += da
+                elif (kk, ii) == (2, 1):
+                    h[:, 0, :] -= da
+                elif (kk, ii) == (2, 0):
+                    h[:, 1, :] += da
+                elif (kk, ii) == (0, 2):
+                    h[:, 1, :] -= da
+                elif (kk, ii) == (0, 1):
+                    h[:, 2, :] += da
+                elif (kk, ii) == (1, 0):
+                    h[:, 2, :] -= da
 
         if npol == 1:
             e = e[:, :, 0]
@@ -188,126 +301,86 @@ class PlaneWaveRetLayer(object):
 
         return CompStruct(p, enei, e = e, h = h)
 
-    def potential(self,
-            p: Any,
-            enei: float) -> CompStruct:
+    def extinction(self,
+            sig: CompStruct) -> np.ndarray:
+        # MATLAB: @planewaveretlayer/extinction.m
+        # Uses efresnel to get reflected/transmitted fields and wavevectors
 
-        eps_func = p.eps[self.medium - 1]
-        eps_val, _ = eps_func(enei)
-        nb = np.sqrt(eps_val)
+        layer = self.layer
+        npol = self.dir.shape[0]
+        ext = np.zeros(npol)
 
-        k0 = 2 * np.pi / enei
-        k = k0 * nb
+        e, k = layer.efresnel(self.pol, self.dir, sig.enei)
 
-        pol = self.pol
-        dir = self.dir
-        npol = pol.shape[0]
-        nfaces = p.nfaces if hasattr(p, 'nfaces') else p.n
+        for i in range(npol):
+            # Scattered far-field in reflection direction
+            kr = k['r'][i, :]
+            kr_norm = np.sqrt(np.sum(np.abs(kr) ** 2))
+            kr_hat = kr / kr_norm
+            esr_field = self.spec.farfield(sig, kr_hat.reshape(1, -1))
+            esr = esr_field.e
+            if esr.ndim == 3:
+                esr = esr[0, :, i]
+            elif esr.ndim == 2:
+                esr = esr[0, :]
 
-        exc = CompStruct(p, enei)
-
-        for inout in range(1, 3):
-            a = np.zeros((nfaces, 3, npol), dtype = complex)
-            ap = np.zeros((nfaces, 3, npol), dtype = complex)
-            phi = np.zeros((nfaces, npol), dtype = complex)
-            phip = np.zeros((nfaces, npol), dtype = complex)
-
-            pos = p.pos if hasattr(p, 'pos') else p.pc.pos
-            nvec = p.nvec if hasattr(p, 'nvec') else p.pc.nvec
-
-            layer = self.layer
-            z_layer = layer.z[0]
-
-            rp, rs, tp, ts = self._fresnel_layer(dir, enei)
-            pol_te, pol_tm = self._decompose_pol(pol, dir)
-
-            for i in range(npol):
-                # Phase factor for incident wave
-                phase = np.exp(1j * k * pos @ dir[i]) / (1j * k0)
-
-                # Vector potential: A = phase * pol
-                a[:, :, i] = phase[:, np.newaxis] * pol[i]
-
-                # Surface derivative
-                nvec_dot_dir = nvec @ dir[i]
-                ap[:, :, i] = (1j * k * nvec_dot_dir)[:, np.newaxis] * phase[:, np.newaxis] * pol[i]
-
-                # Add reflected/transmitted contributions depending on position
-                above = pos[:, 2] > z_layer
-
-                # Reflected contribution for faces above layer
-                dir_refl = dir[i].copy()
-                dir_refl[2] = -dir_refl[2]
-                z_shift = 2 * z_layer * dir[i, 2]
-                phase_refl = np.exp(1j * k * (pos[above] @ dir_refl + z_shift)) / (1j * k0)
-
-                pol_refl_te = rs[i] * pol_te[i]
-                pol_refl_tm = rp[i] * pol_tm[i].copy()
-                pol_refl_tm[2] = -pol_refl_tm[2]
-                pol_refl = pol_refl_te + pol_refl_tm
-
-                a[above, :, i] += phase_refl[:, np.newaxis] * pol_refl
-                nvec_dot_dir_refl = nvec[above] @ dir_refl
-                ap[above, :, i] += (1j * k * nvec_dot_dir_refl)[:, np.newaxis] * phase_refl[:, np.newaxis] * pol_refl
-
-            if npol == 1:
-                a = a[:, :, 0]
-                ap = ap[:, :, 0]
-
-            if inout == 1:
-                exc = exc.set(a1 = a, a1p = ap)
+            # Scattered far-field in transmission direction
+            kt = k['t'][i, :]
+            if np.abs(np.imag(kt[2])) > 1e-10:
+                # Evanescent field
+                est = np.zeros(3, dtype = complex)
             else:
-                exc = exc.set(a2 = a, a2p = ap)
+                kt_norm = np.sqrt(np.sum(np.abs(kt) ** 2))
+                kt_hat = kt / kt_norm
+                est_field = self.spec.farfield(sig, kt_hat.reshape(1, -1))
+                est = est_field.e
+                if est.ndim == 3:
+                    est = est[0, :, i]
+                elif est.ndim == 2:
+                    est = est[0, :]
 
-        return exc
+            # Extinction of reflected and transmitted beam
+            # MATLAB: 4*pi/norm(k.r(i,:)) where norm = sqrt(dot(abs(k), abs(k)))
+            extr = 4 * np.pi / kr_norm * np.imag(np.sum(e['r'][i, :] * esr))
+            extt = 4 * np.pi / kr_norm * np.imag(np.sum(e['t'][i, :] * est))
+            ext[i] = np.real(extr + extt)
+
+        if npol == 1:
+            return float(ext[0])
+        return ext
 
     def absorption(self,
             sig: CompStruct) -> np.ndarray:
-
-        ext = self.extinction(sig)
-        sca, _ = self.scattering(sig)
-        return ext - sca
+        # MATLAB: @planewaveretlayer/absorption.m
+        return self.extinction(sig) - self.scattering(sig)[0]
 
     def scattering(self,
             sig: CompStruct) -> Tuple[np.ndarray, Any]:
-
-        if self.spec is None:
-            raise ValueError('[error] Scattering requires spectrum object. '
-                'Provide <pinfty> in constructor.')
+        # MATLAB: @planewaveretlayer/scattering.m
 
         sca, dsca = self.spec.scattering(sig)
 
-        eps_func = sig.p.eps[0]
-        eps_val, _ = eps_func(sig.enei)
-        nb = np.real(np.sqrt(eps_val))
+        # Refractive indices of each layer
+        nb = np.zeros(len(self.layer.eps), dtype = complex)
+        for i, eps_func in enumerate(self.layer.eps):
+            eps_val, _ = eps_func(sig.enei)
+            nb[i] = np.sqrt(eps_val)
 
-        sca = np.real(sca / (0.5 * nb))
+        npol = self.dir.shape[0]
+        sca = np.atleast_1d(sca)
 
+        for i in range(npol):
+            if self.dir[i, 2] < 0:
+                # Excitation through upper medium
+                sca[i] = sca[i] / (0.5 * np.real(nb[0]))
+            else:
+                # Excitation through lower medium
+                sca[i] = sca[i] / (0.5 * np.real(nb[-1]))
+
+        sca = np.real(sca)
+        if npol == 1:
+            return float(sca[0]), dsca
         return sca, dsca
-
-    def extinction(self,
-            sig: CompStruct) -> np.ndarray:
-
-        if self.spec is None:
-            raise ValueError('[error] Extinction requires spectrum object. '
-                'Provide <pinfty> in constructor.')
-
-        field = self.spec.farfield(sig, self.dir)
-
-        _, k = sig.p.eps[self.medium - 1](sig.enei)
-
-        e_forward = field.e[0] if field.e.ndim >= 2 else field.e
-
-        if e_forward.ndim == 1:
-            pol_dot_e = np.sum(np.conj(self.pol[0]) * e_forward)
-        else:
-            pol_dot_e = np.sum(np.conj(self.pol.T) * e_forward, axis = 0)
-
-        ext = 4 * np.pi / k * np.imag(pol_dot_e)
-
-        if np.isscalar(ext) or (isinstance(ext, np.ndarray) and ext.size == 1):
-            return float(np.real(ext)) if np.isscalar(ext) else float(np.real(ext.ravel()[0]))
-        return np.real(ext)
 
     def __call__(self,
             p: Any,
@@ -316,5 +389,5 @@ class PlaneWaveRetLayer(object):
         return self.potential(p, enei)
 
     def __repr__(self) -> str:
-        return 'PlaneWaveRetLayer(pol={}, dir={}, medium={})'.format(
-            self.pol.tolist(), self.dir.tolist(), self.medium)
+        return 'PlaneWaveRetLayer(pol={}, dir={})'.format(
+            self.pol.tolist(), self.dir.tolist())
