@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
 
-from .spectrum_ret import trisphere_unit, _PinftyStruct
+from .spectrum_ret import SpectrumRet, trisphere_unit, _PinftyStruct
 from ..greenfun import CompStruct
 
 
@@ -16,7 +16,6 @@ class SpectrumRetLayer(object):
             layer: Optional[Any] = None,
             medium: int = 1) -> None:
 
-        self.medium = medium
         self.layer = layer
 
         # Handle different input types
@@ -40,122 +39,185 @@ class SpectrumRetLayer(object):
         self.area = self.pinfty.area if hasattr(self.pinfty, 'area') else self.pinfty['area']
         self.ndir = len(self.nvec)
 
+        # Upper and lower medium indices from layer
+        if layer is not None:
+            self.medium = [layer.ind[0], layer.ind[-1]]
+        else:
+            self.medium = [medium, medium]
+
         # Separate into upper and lower hemisphere
         self._init_hemispheres()
 
     def _init_hemispheres(self) -> None:
-
         z = self.nvec[:, 2]
         self.ind_up = np.where(z >= 0)[0]
         self.ind_down = np.where(z < 0)[0]
 
-        self.nvec_up = self.nvec[self.ind_up]
-        self.area_up = self.area[self.ind_up]
-        self.nvec_down = self.nvec[self.ind_down]
-        self.area_down = self.area[self.ind_down]
-
     def farfield(self,
             sig: Any,
             direction: Optional[np.ndarray] = None) -> CompStruct:
-
-        # MATLAB: spectrumretlayer uses same structure as spectrumret
-        # but accounts for Fresnel coefficients at the layer interface
+        # MATLAB: @spectrumretlayer/farfield.m
 
         if direction is None:
             direction = self.nvec
 
+        direction = np.atleast_2d(direction)
+
         p = sig.p if hasattr(sig, 'p') else sig['p']
         enei = sig.enei if hasattr(sig, 'enei') else sig['enei']
 
-        # Wavenumber
-        _, k = p.eps[self.medium - 1](enei)
+        layer = self.layer
         k0 = 2 * np.pi / enei
 
-        pos = p.pos
-        area_p = p.area
+        # Wavenumbers in layer media
+        k_vals = np.empty(len(layer.eps), dtype = complex)
+        for i, eps_func in enumerate(layer.eps):
+            _, k_vals[i] = eps_func(enei)
+
+        # Upper and lower medium
+        medium = [layer.ind[0], layer.ind[-1]]
+
+        # Indices for upper (z >= 0) and lower (z < 0) hemispheres
+        ind1 = np.where(direction[:, 2] >= 0)[0]
+        ind2 = np.where(direction[:, 2] < 0)[0]
 
         # Get charges and currents
-        sig1 = sig.sig1 if hasattr(sig, 'sig1') else np.zeros(p.nfaces)
         sig2 = sig.sig2 if hasattr(sig, 'sig2') else np.zeros(p.nfaces)
-        h1 = sig.h1 if hasattr(sig, 'h1') else np.zeros((p.nfaces, 3))
         h2 = sig.h2 if hasattr(sig, 'h2') else np.zeros((p.nfaces, 3))
 
-        if sig1.ndim == 1:
-            sig1 = sig1[:, np.newaxis]
+        if sig2.ndim == 1:
             sig2 = sig2[:, np.newaxis]
-        if h1.ndim == 2:
-            h1 = h1[:, :, np.newaxis]
+        if h2.ndim == 2:
             h2 = h2[:, :, np.newaxis]
 
-        npol = sig1.shape[1] if sig1.ndim > 1 else 1
+        npol = h2.shape[2]
         ndir = len(direction)
 
-        e = np.zeros((ndir, 3, npol), dtype = complex)
-        h = np.zeros((ndir, 3, npol), dtype = complex)
+        # Allocate reflected/transmitted vector potential
+        a = np.zeros((ndir, 3, npol), dtype = complex)
 
-        # Phase factor
-        phase = np.exp(-1j * k * np.dot(direction, pos.T)) * area_p  # (ndir, nfaces)
+        # Boundary elements connected to layer structure
+        inout_arr = p.inout_faces
+        ind_layer = np.zeros(p.nfaces, dtype = bool)
+        for li in layer.ind:
+            ind_layer |= (inout_arr[:, 1] == li)
 
-        if phase.ndim == 1:
-            phase = phase.reshape(1, -1)
+        # z-values of particle centroids for connected faces
+        z2_part = p.pos[ind_layer, 2]
 
-        # Layer Fresnel coefficients
-        layer = self.layer
-        if layer is not None:
-            eps1_val, k1 = layer.eps[0](enei)
-            eps2_val, k2 = layer.eps[1](enei)
-            n1 = np.sqrt(eps1_val)
-            n2 = np.sqrt(eps2_val)
-        else:
-            n1 = np.sqrt(1.0)
-            n2 = n1
+        # Position structures for upper and lower hemisphere
+        # MATLAB: pos1 for upper (z1 = layer.z[0], ind1_pos = 1)
+        # MATLAB: pos2 for lower (z1 = layer.z[-1], ind1_pos = n+1)
+        ind2_layer, _ = layer.indlayer(z2_part)
 
+        pos_up = {
+            'z1': np.atleast_1d(layer.z[0]),
+            'ind1': np.atleast_1d(1),
+            'z2': z2_part,
+            'ind2': ind2_layer
+        }
+        pos_down = {
+            'z1': np.atleast_1d(layer.z[-1]),
+            'ind1': np.atleast_1d(layer.n + 1),
+            'z2': z2_part,
+            'ind2': ind2_layer
+        }
+
+        # Upper hemisphere (positive z propagation)
+        if np.imag(k_vals[0]) == 0 and len(ind1) > 0:
+            for idx in ind1:
+                d = direction[idx, :]
+                kpar = np.real(k_vals[0]) * np.sqrt(1 - d[2] ** 2)
+
+                r, _ = layer.reflection(enei, kpar, pos_up)
+
+                # Distance for phase factor
+                dist = p.pos[ind_layer, 0:2] @ d[0:2] + layer.z[0] * d[2]
+
+                # Phase factor: exp(-i*k*dist) * area
+                phase_arr = np.exp(-1j * k_vals[0] * dist) * p.area[ind_layer]  # (nind,)
+
+                r_p = np.asarray(r['p']).ravel()     # (nind,)
+                r_hh = np.asarray(r['hh']).ravel()
+                r_hs = np.asarray(r['hs']).ravel()
+
+                rp_phase = r_p * phase_arr    # (nind,)
+                rhh_phase = r_hh * phase_arr
+                rhs_phase = r_hs * phase_arr
+
+                for ipol in range(npol):
+                    h2_x = h2[ind_layer, 0, ipol]
+                    h2_y = h2[ind_layer, 1, ipol]
+                    h2_z = h2[ind_layer, 2, ipol]
+                    sig2_pol = sig2[ind_layer, ipol]
+
+                    a[idx, 0, ipol] = np.dot(rp_phase, h2_x)
+                    a[idx, 1, ipol] = np.dot(rp_phase, h2_y)
+                    a[idx, 2, ipol] = np.dot(rhh_phase, h2_z) + np.dot(rhs_phase, sig2_pol)
+
+        # Lower hemisphere (negative z propagation)
+        if np.imag(k_vals[-1]) == 0 and len(ind2) > 0:
+            for idx in ind2:
+                d = direction[idx, :]
+                kpar = np.real(k_vals[-1]) * np.sqrt(1 - d[2] ** 2)
+
+                r, _ = layer.reflection(enei, kpar, pos_down)
+
+                dist = p.pos[ind_layer, 0:2] @ d[0:2] + layer.z[-1] * d[2]
+                phase_arr = np.exp(-1j * k_vals[-1] * dist) * p.area[ind_layer]
+
+                r_p = np.asarray(r['p']).ravel()
+                r_hh = np.asarray(r['hh']).ravel()
+                r_hs = np.asarray(r['hs']).ravel()
+
+                rp_phase = r_p * phase_arr
+                rhh_phase = r_hh * phase_arr
+                rhs_phase = r_hs * phase_arr
+
+                for ipol in range(npol):
+                    h2_x = h2[ind_layer, 0, ipol]
+                    h2_y = h2[ind_layer, 1, ipol]
+                    h2_z = h2[ind_layer, 2, ipol]
+                    sig2_pol = sig2[ind_layer, ipol]
+
+                    a[idx, 0, ipol] = np.dot(rp_phase, h2_x)
+                    a[idx, 1, ipol] = np.dot(rp_phase, h2_y)
+                    a[idx, 2, ipol] = np.dot(rhh_phase, h2_z) + np.dot(rhs_phase, sig2_pol)
+
+        # Electric field from reflected/transmitted potentials
+        e = 1j * k0 * a
+
+        # Direct far-fields in upper and lower medium
+        if len(ind1) > 0:
+            spec1 = SpectrumRet(self.pinfty, medium = medium[0])
+            field1 = spec1.farfield(sig, direction[ind1, :])
+            e1 = field1.e
+            if e1.ndim == 2:
+                e1 = e1[:, :, np.newaxis]
+            e[ind1, :, :] += e1
+
+        if len(ind2) > 0:
+            spec2 = SpectrumRet(self.pinfty, medium = medium[1])
+            field2 = spec2.farfield(sig, direction[ind2, :])
+            e2 = field2.e
+            if e2.ndim == 2:
+                e2 = e2[:, :, np.newaxis]
+            e[ind2, :, :] += e2
+
+        # Make electric field transversal: e = e - dir * dot(dir, e)
         for ipol in range(npol):
-            # Direct far-field contribution
-            # Current term
-            h_term = 1j * k0 * np.dot(phase, h1[:, :, ipol])  # (ndir, 3)
-            h_term += 1j * k0 * np.dot(phase, h2[:, :, ipol])
+            dot_de = np.sum(direction * e[:, :, ipol], axis = 1)  # (ndir,)
+            e[:, :, ipol] -= direction * dot_de[:, np.newaxis]
 
-            # Charge term
-            sig_term = np.dot(phase, sig1[:, ipol]) + np.dot(phase, sig2[:, ipol])  # (ndir,)
-            e_term = -1j * k * direction * sig_term[:, np.newaxis]
-
-            e[:, :, ipol] = h_term + e_term
-
-            # Magnetic field
-            h[:, :, ipol] = 1j * k * np.cross(
-                direction,
-                np.dot(phase, h1[:, :, ipol]) + np.dot(phase, h2[:, :, ipol]))
-
-        # Apply Fresnel modifications for layer
-        if layer is not None:
-            z_layer = layer.z[0]
-
-            for idir in range(ndir):
-                cos_theta = np.abs(direction[idir, 2])
-                sin_theta = np.sqrt(1 - cos_theta ** 2)
-
-                if direction[idir, 2] >= 0:
-                    # Upper hemisphere: add reflected contribution
-                    cos_theta_t = np.sqrt(1 - (n1 / n2 * sin_theta) ** 2 + 0j)
-                    rs = (n1 * cos_theta - n2 * cos_theta_t) / (n1 * cos_theta + n2 * cos_theta_t)
-                    rp = (n2 * cos_theta - n1 * cos_theta_t) / (n2 * cos_theta + n1 * cos_theta_t)
-
-                    # Phase from reflection off substrate
-                    for ipol in range(npol):
-                        e_refl = e[idir, :, ipol].copy()
-                        # Apply average Fresnel coefficient
-                        r_avg = 0.5 * (rs + rp)
-                        e[idir, :, ipol] += r_avg * e_refl * np.exp(-2j * k * z_layer * cos_theta)
-                else:
-                    # Lower hemisphere: transmitted contribution
-                    cos_theta_i = np.sqrt(1 - (n2 / n1 * sin_theta) ** 2 + 0j)
-                    ts = 2 * n1 * cos_theta_i / (n1 * cos_theta_i + n2 * cos_theta)
-                    tp = 2 * n1 * cos_theta_i / (n2 * cos_theta_i + n1 * cos_theta)
-
-                    for ipol in range(npol):
-                        t_avg = 0.5 * (ts + tp)
-                        e[idir, :, ipol] *= t_avg
+        # Magnetic field: H = (k/k0) * cross(dir, E)
+        h = np.zeros_like(e)
+        for ipol in range(npol):
+            if len(ind1) > 0:
+                dir_up = direction[ind1, :]
+                h[ind1, :, ipol] = (k_vals[0] / k0) * np.cross(dir_up, e[ind1, :, ipol])
+            if len(ind2) > 0:
+                dir_down = direction[ind2, :]
+                h[ind2, :, ipol] = (k_vals[-1] / k0) * np.cross(dir_down, e[ind2, :, ipol])
 
         if npol == 1:
             e = e[:, :, 0]
@@ -166,6 +228,8 @@ class SpectrumRetLayer(object):
 
     def scattering(self,
             sig: Any) -> Tuple[np.ndarray, Any]:
+        # MATLAB: @spectrumretlayer/scattering.m
+        # scattering(farfield(obj, sig), obj.medium)
 
         field = self.farfield(sig)
         e = field.e
@@ -195,4 +259,4 @@ class SpectrumRetLayer(object):
         return sca, dsca
 
     def __repr__(self) -> str:
-        return 'SpectrumRetLayer(ndir={}, medium={})'.format(self.ndir, self.medium)
+        return 'SpectrumRetLayer(ndir={})'.format(self.ndir)
