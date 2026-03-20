@@ -4,6 +4,7 @@ import sys
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
@@ -173,9 +174,11 @@ class BEMRetLayerIter(BEMIter):
         G2_p = G2.p if hasattr(G2, 'p') else (G2['p'] if isinstance(G2, dict) else G2)
         H2_p = H2.p if hasattr(H2, 'p') else (H2['p'] if isinstance(H2, dict) else H2)
 
-        # Inverse of G1 and of parallel component
-        G1i = np.linalg.inv(G1)
-        G2pi = np.linalg.inv(G2_p)
+        # LU factorizations of G1 and parallel component
+        G1_lu = lu_factor(G1)
+        G2p_lu = lu_factor(G2_p)
+        G1i = lu_solve(G1_lu, np.eye(G1.shape[0]))
+        G2pi = lu_solve(G2p_lu, np.eye(G2_p.shape[0]))
 
         # Sigma matrices [Eq. (21)]
         Sigma1 = H1 @ G1i
@@ -185,7 +188,8 @@ class BEMRetLayerIter(BEMIter):
         nperp_diag = np.diag(nvec[:, 3 - 1])  # nvec(:,3)
 
         # Gamma matrix
-        Gamma = np.linalg.inv(Sigma1 - Sigma2p)
+        Gamma_lu = lu_factor(Sigma1 - Sigma2p)
+        Gamma = lu_solve(Gamma_lu, np.eye(Sigma1.shape[0]))
 
         # Gammapar with only parallel normal vector components
         Gammapar = ikdeps @ self._decorate_gamma(Gamma, nvec)
@@ -208,13 +212,16 @@ class BEMRetLayerIter(BEMIter):
 
         # LU decomposition as block inverse
         # L11 * U11 = M11
-        im11 = np.linalg.inv(m11)
+        m11_lu = lu_factor(m11)
+        im11 = lu_solve(m11_lu, np.eye(m11.shape[0]))
         # L11 * U12 = M12 -> U12 = inv(L11) * M12
         im12 = im11 @ m12
         # L21 * U11 = M21 -> L21 = M21 * inv(U11)
         im21 = m21 @ im11
         # L22 * U22 = M22 - L21 * U12
-        im22 = np.linalg.inv(m22 - im21 @ m12)
+        schur = m22 - im21 @ m12
+        schur_lu = lu_factor(schur)
+        im22 = lu_solve(schur_lu, np.eye(schur.shape[0]))
 
         # Save variables
         sav = {}
@@ -222,8 +229,8 @@ class BEMRetLayerIter(BEMIter):
         sav['nvec'] = nvec
         sav['eps1'] = eps1_diag
         sav['eps2'] = eps2_diag
-        sav['G1i'] = G1i
-        sav['G2pi'] = G2pi
+        sav['G1_lu'] = G1_lu
+        sav['G2p_lu'] = G2p_lu
         sav['G2'] = G2
         sav['Sigma1'] = Sigma1
         sav['Gamma'] = Gamma
@@ -571,8 +578,8 @@ class BEMRetLayerIter(BEMIter):
         k = sav['k']
         nvec = sav['nvec']
         G2 = sav['G2']
-        G1i = sav['G1i']
-        G2pi = sav['G2pi']
+        G1_lu = sav['G1_lu']
+        G2p_lu = sav['G2p_lu']
         eps1 = sav['eps1']
         eps2 = sav['eps2']
         Sigma1 = sav['Sigma1']
@@ -595,12 +602,11 @@ class BEMRetLayerIter(BEMIter):
             n_rows = a_mat.shape[0]
             return (a_mat @ b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
 
-        def matmul2(a_mat: np.ndarray, b: np.ndarray) -> np.ndarray:
-            # For preconditioner: equivalent to solve(a_mat, b) or a_mat @ b
+        def _ls(lu_piv, b):
             if b.ndim == 1:
-                return a_mat @ b
-            n_rows = a_mat.shape[0]
-            return (a_mat @ b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
+                return lu_solve(lu_piv, b)
+            n_rows = lu_piv[0].shape[0]
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
 
         # Modify alpha
         alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, eps1 @ phi if phi.ndim <= 1 else eps1 @ phi)
@@ -620,22 +626,23 @@ class BEMRetLayerIter(BEMIter):
         sig2, h2perp = self._solve_block_lu(im, De, alphaperp)
 
         # Get G2 components
+        n_g = G1_lu[0].shape[0]
         G2_ss = G2.ss if hasattr(G2, 'ss') else (G2['ss'] if isinstance(G2, dict) else G2)
-        G2_sh = G2.sh if hasattr(G2, 'sh') else (G2['sh'] if isinstance(G2, dict) else np.zeros_like(G1i))
+        G2_sh = G2.sh if hasattr(G2, 'sh') else (G2['sh'] if isinstance(G2, dict) else np.zeros((n_g, n_g)))
         G2_p = G2.p if hasattr(G2, 'p') else (G2['p'] if isinstance(G2, dict) else G2)
         G2_hh = G2.hh if hasattr(G2, 'hh') else (G2['hh'] if isinstance(G2, dict) else G2)
-        G2_hs = G2.hs if hasattr(G2, 'hs') else (G2['hs'] if isinstance(G2, dict) else np.zeros_like(G1i))
+        G2_hs = G2.hs if hasattr(G2, 'hs') else (G2['hs'] if isinstance(G2, dict) else np.zeros((n_g, n_g)))
 
         # Parallel component, Eq. (A.1)
-        h2par = matmul2(G2pi, matmul1(Gamma, alphapar +
+        h2par = _ls(G2p_lu, matmul1(Gamma, alphapar +
             1j * k * self._outer(npar, deps @ (G2_ss @ sig2 + G2_sh @ h2perp))))
 
         # Surface charges at inner interface
-        sig1 = matmul2(G1i, G2_ss @ sig2 + G2_sh @ h2perp + phi)
+        sig1 = _ls(G1_lu, G2_ss @ sig2 + G2_sh @ h2perp + phi)
 
         # Surface currents at inner interface
-        h1perp = matmul2(G1i, G2_hh @ h2perp + G2_hs @ sig2 + aperp)
-        h1par = matmul2(G1i, matmul1(G2_p, h2par) + apar)
+        h1perp = _ls(G1_lu, G2_hh @ h2perp + G2_hs @ sig2 + aperp)
+        h1par = _ls(G1_lu, matmul1(G2_p, h2par) + apar)
 
         result = self._pack(sig1, h1par, h1perp, sig2, h2par, h2perp)
         return result

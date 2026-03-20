@@ -4,6 +4,7 @@ import sys
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 
 from ..greenfun import CompGreenRetLayer, CompStruct
 
@@ -29,13 +30,13 @@ class BEMRetLayer(object):
         self.eps2 = None
 
         # BEM matrices
-        self.G1i = None
-        self.G2i = None
+        self.G1_lu = None
+        self.G2_lu = None
         self.L1 = None
         self.L2 = None
         self.Sigma1 = None
-        self.Deltai = None
-        self.Sigmai = None
+        self.Delta_lu = None
+        self.Sigma_lu = None
 
         # Green function with layer
         self.g = None
@@ -100,24 +101,28 @@ class BEMRetLayer(object):
         H1_mat = H11 - H21 if not (isinstance(H21, (int, float)) and H21 == 0) else H11
         H2_mat = H22 - H12 if not (isinstance(H12, (int, float)) and H12 == 0) else H22
 
-        # Compute inverses
-        self.G1i = np.linalg.inv(G1)
-        self.G2i = np.linalg.inv(G2)
+        # LU factorizations of Green functions
+        self.G1_lu = lu_factor(G1)
+        self.G2_lu = lu_factor(G2)
+        G1i = lu_solve(self.G1_lu, np.eye(G1.shape[0]))
+        G2i = lu_solve(self.G2_lu, np.eye(G2.shape[0]))
 
         # L matrices
         if np.isscalar(self.eps1):
             self.L1 = self.eps1
             self.L2 = self.eps2
         else:
-            self.L1 = G1 @ self.eps1 @ self.G1i
-            self.L2 = G2 @ self.eps2 @ self.G2i
+            self.L1 = G1 @ self.eps1 @ G1i
+            self.L2 = G2 @ self.eps2 @ G2i
 
         # Sigma matrices
-        self.Sigma1 = H1_mat @ self.G1i
-        Sigma2 = H2_mat @ self.G2i
+        self.Sigma1 = H1_mat @ G1i
+        Sigma2 = H2_mat @ G2i
 
-        # Inverse Delta matrix
-        self.Deltai = np.linalg.inv(self.Sigma1 - Sigma2)
+        # LU factorization of Delta matrix
+        Delta = self.Sigma1 - Sigma2
+        self.Delta_lu = lu_factor(Delta)
+        Deltai = lu_solve(self.Delta_lu, np.eye(Delta.shape[0]))
 
         # Combined Sigma matrix with layer structure
         L = self.L1 - self.L2
@@ -125,13 +130,13 @@ class BEMRetLayer(object):
         if np.isscalar(L):
             Sigma = self.Sigma1 * self.L1 - Sigma2 * self.L2
             nvec_outer = self.nvec @ self.nvec.T
-            Sigma = Sigma + self.k ** 2 * L * (self.Deltai * nvec_outer) * L
+            Sigma = Sigma + self.k ** 2 * L * (Deltai * nvec_outer) * L
         else:
             nvec_outer = self.nvec @ self.nvec.T
             Sigma = (self.Sigma1 @ self.L1 - Sigma2 @ self.L2 +
-                self.k ** 2 * ((L @ self.Deltai) * nvec_outer) @ L)
+                self.k ** 2 * ((L @ Deltai) * nvec_outer) @ L)
 
-        self.Sigmai = np.linalg.inv(Sigma)
+        self.Sigma_lu = lu_factor(Sigma)
 
         return self
 
@@ -267,14 +272,19 @@ class BEMRetLayer(object):
 
         k = self.k
         nvec = self.nvec
-        G1i = self.G1i
-        G2i = self.G2i
+        G1_lu = self.G1_lu
+        G2_lu = self.G2_lu
         L1 = self.L1
         L2 = self.L2
         Sigma1 = self.Sigma1
-        Deltai = self.Deltai
-        Sigmai = self.Sigmai
+        Delta_lu = self.Delta_lu
+        Sigma_lu = self.Sigma_lu
         nfaces = self.p.nfaces if hasattr(self.p, 'nfaces') else self.p.n
+
+        def _ls(lu_piv, b):
+            if b.ndim == 1:
+                return lu_solve(lu_piv, b)
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
 
         # Ensure proper shapes
         if not isinstance(phi, np.ndarray) or phi.size == 0:
@@ -325,22 +335,22 @@ class BEMRetLayer(object):
 
             L_diff = L1 - L2
             if np.isscalar(L_diff):
-                inner_term = np.sum(nvec * (L_diff * (Deltai @ alpha_mod)), axis = 1)
+                inner_term = np.sum(nvec * (L_diff * _ls(Delta_lu, alpha_mod)), axis = 1)
             else:
-                inner_term = np.sum(nvec * (L_diff @ (Deltai @ alpha_mod)), axis = 1)
+                inner_term = np.sum(nvec * (L_diff @ _ls(Delta_lu, alpha_mod)), axis = 1)
 
-            sig2 = Sigmai @ (De_mod + 1j * k * inner_term)
+            sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
 
             if np.isscalar(L_diff):
                 outer_term = nvec * (L_diff * sig2)[:, np.newaxis]
             else:
                 outer_term = nvec * (L_diff @ sig2)[:, np.newaxis]
-            h2 = Deltai @ (1j * k * outer_term + alpha_mod)
+            h2 = _ls(Delta_lu, 1j * k * outer_term + alpha_mod)
 
-            sig1_all = G1i @ (sig2 + phi)
-            h1_all = G1i @ (h2 + a)
-            sig2_all = G2i @ sig2
-            h2_all = G2i @ h2
+            sig1_all = _ls(G1_lu, sig2 + phi)
+            h1_all = _ls(G1_lu, h2 + a)
+            sig2_all = _ls(G2_lu, sig2)
+            h2_all = _ls(G2_lu, h2)
         else:
             # Multiple polarizations
             sig1_all = np.zeros((nfaces, npol), dtype = complex)
@@ -370,22 +380,22 @@ class BEMRetLayer(object):
 
                 L_diff = L1 - L2
                 if np.isscalar(L_diff):
-                    inner_term = np.sum(nvec * (L_diff * (Deltai @ alpha_mod)), axis = 1)
+                    inner_term = np.sum(nvec * (L_diff * _ls(Delta_lu, alpha_mod)), axis = 1)
                 else:
-                    inner_term = np.sum(nvec * (L_diff @ (Deltai @ alpha_mod)), axis = 1)
+                    inner_term = np.sum(nvec * (L_diff @ _ls(Delta_lu, alpha_mod)), axis = 1)
 
-                sig2 = Sigmai @ (De_mod + 1j * k * inner_term)
+                sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
 
                 if np.isscalar(L_diff):
                     outer_term = nvec * (L_diff * sig2)[:, np.newaxis]
                 else:
                     outer_term = nvec * (L_diff @ sig2)[:, np.newaxis]
-                h2 = Deltai @ (1j * k * outer_term + alpha_mod)
+                h2 = _ls(Delta_lu, 1j * k * outer_term + alpha_mod)
 
-                sig1_all[:, ipol] = G1i @ (sig2 + phi_i)
-                h1_all[:, :, ipol] = G1i @ (h2 + a_i)
-                sig2_all[:, ipol] = G2i @ sig2
-                h2_all[:, :, ipol] = G2i @ h2
+                sig1_all[:, ipol] = _ls(G1_lu, sig2 + phi_i)
+                h1_all[:, :, ipol] = _ls(G1_lu, h2 + a_i)
+                sig2_all[:, ipol] = _ls(G2_lu, sig2)
+                h2_all[:, :, ipol] = _ls(G2_lu, h2)
 
         sig = CompStruct(self.p, enei, sig1 = sig1_all, sig2 = sig2_all,
             h1 = h1_all, h2 = h2_all)
@@ -431,13 +441,13 @@ class BEMRetLayer(object):
 
     def clear(self) -> 'BEMRetLayer':
 
-        self.G1i = None
-        self.G2i = None
+        self.G1_lu = None
+        self.G2_lu = None
         self.L1 = None
         self.L2 = None
         self.Sigma1 = None
-        self.Deltai = None
-        self.Sigmai = None
+        self.Delta_lu = None
+        self.Sigma_lu = None
         self.enei = None
         return self
 

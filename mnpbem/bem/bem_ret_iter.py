@@ -4,6 +4,7 @@ import sys
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
@@ -120,16 +121,19 @@ class BEMRetIter(BEMIter):
             eps1_diag = np.diag(eps1)
             eps2_diag = np.diag(eps2)
 
-        # Inverse Green function
-        G1i = np.linalg.inv(G1)
-        G2i = np.linalg.inv(G2)
+        # LU factorizations of Green functions
+        G1_lu = lu_factor(G1)
+        G2_lu = lu_factor(G2)
+        G1i = lu_solve(G1_lu, np.eye(G1.shape[0]))
+        G2i = lu_solve(G2_lu, np.eye(G2.shape[0]))
 
         # Sigma matrices [Eq. (21)]
         Sigma1 = H1 @ G1i
         Sigma2 = H2 @ G2i
 
-        # Inverse Delta matrix
-        Deltai = np.linalg.inv(Sigma1 - Sigma2)
+        # LU factorization of Delta matrix
+        Delta_lu = lu_factor(Sigma1 - Sigma2)
+        Deltai = lu_solve(Delta_lu, np.eye(Sigma1.shape[0]))
 
         # deps = eps1 - eps2
         if np.isscalar(eps1_diag):
@@ -147,19 +151,19 @@ class BEMRetIter(BEMIter):
         else:
             Sigma_mat = eps1_diag @ Sigma1 - eps2_diag @ Sigma2 + k ** 2 * deps @ Deltai_nvec @ deps
 
-        Sigmai = np.linalg.inv(Sigma_mat)
+        Sigma_lu = lu_factor(Sigma_mat)
 
         # Save variables for preconditioner
         sav = {}
         sav['k'] = k
         sav['nvec'] = nvec
-        sav['G1i'] = G1i
-        sav['G2i'] = G2i
+        sav['G1_lu'] = G1_lu
+        sav['G2_lu'] = G2_lu
         sav['eps1'] = eps1_diag
         sav['eps2'] = eps2_diag
         sav['Sigma1'] = Sigma1
-        sav['Deltai'] = Deltai
-        sav['Sigmai'] = Sigmai
+        sav['Delta_lu'] = Delta_lu
+        sav['Sigma_lu'] = Sigma_lu
 
         self._sav = sav
 
@@ -410,24 +414,23 @@ class BEMRetIter(BEMIter):
         sav = self._sav
         k = sav['k']
         nvec = sav['nvec']
-        G1i = sav['G1i']
-        G2i = sav['G2i']
+        G1_lu = sav['G1_lu']
+        G2_lu = sav['G2_lu']
         eps1 = sav['eps1']
         eps2 = sav['eps2']
         Sigma1 = sav['Sigma1']
-        Deltai = sav['Deltai']
-        Sigmai = sav['Sigmai']
+        Delta_lu = sav['Delta_lu']
+        Sigma_lu = sav['Sigma_lu']
 
         def matmul1(a_mat: np.ndarray, b: np.ndarray) -> np.ndarray:
             if b.ndim == 1:
                 return a_mat @ b
             return a_mat @ b.reshape(b.shape[0], -1)
 
-        def matmul2(a_mat: np.ndarray, b: np.ndarray) -> np.ndarray:
-            # Solve a_mat * x = b (equivalent to inv(a_mat) @ b for LU-based)
+        def _ls(lu_piv, b):
             if b.ndim == 1:
-                return a_mat @ b
-            return a_mat @ b.reshape(b.shape[0], -1)
+                return lu_solve(lu_piv, b)
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
 
         # Modify alpha and De
         # MATLAB: alpha = alpha - matmul1(Sigma1, a) + 1i*k*outer(nvec, eps1*phi)
@@ -441,23 +444,23 @@ class BEMRetIter(BEMIter):
         # Eq. (19)
         deps = eps1 - eps2
         if np.isscalar(deps):
-            inner_alpha = self._inner(nvec, matmul1(Deltai, alpha))
-            sig2 = matmul2(Sigmai, De + 1j * k * deps * inner_alpha)
+            inner_alpha = self._inner(nvec, _ls(Delta_lu, alpha))
+            sig2 = _ls(Sigma_lu, De + 1j * k * deps * inner_alpha)
         else:
-            inner_alpha = self._inner(nvec, matmul1(Deltai, alpha))
-            sig2 = matmul2(Sigmai, De + 1j * k * deps @ inner_alpha if inner_alpha.ndim <= 1 else De + 1j * k * (deps @ inner_alpha))
+            inner_alpha = self._inner(nvec, _ls(Delta_lu, alpha))
+            sig2 = _ls(Sigma_lu, De + 1j * k * deps @ inner_alpha if inner_alpha.ndim <= 1 else De + 1j * k * (deps @ inner_alpha))
 
         # Eq. (20)
         if np.isscalar(deps):
-            h2 = matmul1(Deltai, 1j * k * self._outer(nvec, deps * sig2) + alpha)
+            h2 = _ls(Delta_lu, 1j * k * self._outer(nvec, deps * sig2) + alpha)
         else:
-            h2 = matmul1(Deltai, 1j * k * self._outer(nvec, deps @ sig2 if sig2.ndim <= 1 else deps @ sig2) + alpha)
+            h2 = _ls(Delta_lu, 1j * k * self._outer(nvec, deps @ sig2 if sig2.ndim <= 1 else deps @ sig2) + alpha)
 
         # Surface charges and currents
-        sig1 = matmul2(G1i, sig2 + phi)
-        h1 = matmul2(G1i, h2 + a)
-        sig2_out = matmul2(G2i, sig2)
-        h2_out = matmul2(G2i, h2)
+        sig1 = _ls(G1_lu, sig2 + phi)
+        h1 = _ls(G1_lu, h2 + a)
+        sig2_out = _ls(G2_lu, sig2)
+        h2_out = _ls(G2_lu, h2)
 
         result = self._pack(sig1, h1, sig2_out, h2_out)
         return result

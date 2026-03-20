@@ -579,11 +579,11 @@ class TestBEMStatIter(object):
         bem = _make_stat_iter(particle, solver='gmres')
         bem._init_matrices(500.0)
         lambda1 = bem._lambda
-        mat1 = bem._mat
+        mat1 = bem._mat_lu
 
         bem._init_matrices(500.0)
         assert bem._lambda is lambda1
-        assert bem._mat is mat1
+        assert bem._mat_lu is mat1
 
     def test_init_matrices_precond_hmat(self, particle):
         """
@@ -592,8 +592,8 @@ class TestBEMStatIter(object):
         """
         bem = _make_stat_iter(particle, solver='gmres', precond='hmat')
         bem._init_matrices(500.0)
-        assert bem._mat is not None
-        assert bem._mat.shape == (particle.n, particle.n)
+        assert bem._mat_lu is not None
+        assert bem._mat_lu[0].shape == (particle.n, particle.n)
 
     def test_init_matrices_precond_full(self, particle):
         """
@@ -602,7 +602,7 @@ class TestBEMStatIter(object):
         """
         bem = _make_stat_iter(particle, solver='gmres', precond='full')
         bem._init_matrices(500.0)
-        assert bem._mat is not None
+        assert bem._mat_lu is not None
 
     def test_init_matrices_precond_unknown_raises(self, particle):
         """
@@ -662,8 +662,9 @@ class TestBEMStatIter(object):
         vec = np.ones(n, dtype=complex)
         result = bem._mfun(vec)
         assert result.shape == (n,)
-        # result = mat @ vec
-        expected = bem._mat @ vec.reshape(n, -1)
+        # result = lu_solve(mat_lu, vec)
+        from scipy.linalg import lu_solve
+        expected = lu_solve(bem._mat_lu, vec.reshape(n, -1))
         np.testing.assert_allclose(result, expected.reshape(-1))
 
     def test_mfun_full(self, particle):
@@ -745,9 +746,9 @@ class TestBEMStatIter(object):
         """
         bem = _make_stat_iter(particle, solver='gmres', precond='hmat')
         bem._init_matrices(500.0)
-        assert bem._mat is not None
+        assert bem._mat_lu is not None
         bem.clear()
-        assert bem._mat is None
+        assert bem._mat_lu is None
 
     def test_call_init_matrices(self, particle):
         """

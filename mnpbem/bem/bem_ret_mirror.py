@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 from typing import Optional, List, Tuple, Any, Dict, Union
 
 from ..greenfun import CompStruct
@@ -41,14 +42,14 @@ class BEMRetMirror(object):
         self._nvec = None
         self._eps1 = None
         self._eps2 = None
-        self._G1i = None  # type: Optional[List]
-        self._G2i = None  # type: Optional[List]
+        self._G1_lu = None  # type: Optional[List]
+        self._G2_lu = None  # type: Optional[List]
         self._L1 = None  # type: Optional[List]
         self._L2 = None  # type: Optional[List]
         self._Sigma1 = None  # type: Optional[List]
         self._Sigma2 = None  # type: Optional[List]
-        self._Deltai = None  # type: Optional[List]
-        self._Sigmai = None  # type: Optional[Any]
+        self._Delta_lu = None  # type: Optional[List]
+        self._Sigma_lu = None  # type: Optional[Any]
 
         # Green function
         self.g = CompGreenRetMirror(p, p, **options)
@@ -97,22 +98,24 @@ class BEMRetMirror(object):
         H1 = _subtract_list(H1_list, H1_cross)
         H2 = _subtract_list(H2_list, H2_cross)
 
-        self._G1i = []
-        self._G2i = []
+        self._G1_lu = []
+        self._G2_lu = []
         self._L1 = []
         self._L2 = []
         self._Sigma1 = []
         self._Sigma2 = []
-        self._Deltai = []
+        self._Delta_lu = []
 
         con_cross_zero = True  # check if cross connectivity is zero
         # MATLAB: if all(obj.g.con{1,2} == 0)
 
         for i in range(n_sym):
-            g1i = np.linalg.inv(G1[i])
-            g2i = np.linalg.inv(G2[i])
-            self._G1i.append(g1i)
-            self._G2i.append(g2i)
+            g1_lu = lu_factor(G1[i])
+            g2_lu = lu_factor(G2[i])
+            g1i = lu_solve(g1_lu, np.eye(G1[i].shape[0]))
+            g2i = lu_solve(g2_lu, np.eye(G2[i].shape[0]))
+            self._G1_lu.append(g1_lu)
+            self._G2_lu.append(g2_lu)
 
             if con_cross_zero:
                 self._L1.append(self._eps1)
@@ -125,23 +128,23 @@ class BEMRetMirror(object):
             sigma2 = H2[i] @ g2i
             self._Sigma1.append(sigma1)
             self._Sigma2.append(sigma2)
-            self._Deltai.append(np.linalg.inv(sigma1 - sigma2))
+            self._Delta_lu.append(lu_factor(sigma1 - sigma2))
 
-        # Sigmai cache: indexed by (x, y, z) symmetry indices
+        # Sigma_lu cache: indexed by (x, y, z) symmetry indices
         n_tab = self.p.symtable.shape[0]
-        self._Sigmai = {}
+        self._Sigma_lu = {}
 
         return self
 
-    def _init_sigmai(self, x: int, y: int, z: int) -> np.ndarray:
-        """Initialize Sigmai matrix for BEM solver (if needed).
+    def _init_sigma_lu(self, x: int, y: int, z: int) -> Tuple:
+        """Initialize Sigma LU factorization for BEM solver (if needed).
 
         MATLAB: @bemretmirror/private/initsigmai.m
         Eq. (21,22) of Garcia de Abajo and Howie, PRB 65, 115418 (2002).
         """
         key = (x, y, z)
-        if key in self._Sigmai:
-            return self._Sigmai[key]
+        if key in self._Sigma_lu:
+            return self._Sigma_lu[key]
 
         k = self.k
         nvec = self._nvec
@@ -169,19 +172,20 @@ class BEMRetMirror(object):
             Sigma = (self._Sigma1[z] @ self._L1[z] - self._Sigma2[z] @ self._L2[z])
 
         for dim, idx in enumerate([x, y, z]):
+            Deltai_idx = lu_solve(self._Delta_lu[idx], np.eye(self._Sigma1[0].shape[0]))
             if np.isscalar(L[dim]):
-                term = k ** 2 * (L[dim] * self._Deltai[idx] * outer_ii(dim))
+                term = k ** 2 * (L[dim] * Deltai_idx * outer_ii(dim))
                 if np.isscalar(L[2]):
                     Sigma = Sigma + term * L[2]
                 else:
                     Sigma = Sigma + term @ L[2]
             else:
-                term = k ** 2 * ((L[dim] @ self._Deltai[idx]) * outer_ii(dim))
+                term = k ** 2 * ((L[dim] @ Deltai_idx) * outer_ii(dim))
                 Sigma = Sigma + term @ (self._L1[z] - self._L2[z])
 
-        Sigmai = np.linalg.inv(Sigma)
-        self._Sigmai[key] = Sigmai
-        return Sigmai
+        sigma_lu = lu_factor(Sigma)
+        self._Sigma_lu[key] = sigma_lu
+        return sigma_lu
 
     def _excitation(self, exc: Any) -> Tuple:
         """Compute excitation variables for BEM solver.
@@ -250,7 +254,7 @@ class BEMRetMirror(object):
             y = self.p.symindex(symval[1, :])
             z = self.p.symindex(symval[2, :])
 
-            Sigmai = self._init_sigmai(x, y, z)
+            sigma_lu = self._init_sigma_lu(x, y, z)
 
             # modify alpha and De
             alphax = (_index_vec(alpha, 0)
@@ -275,33 +279,33 @@ class BEMRetMirror(object):
             L_diff_z = _scalar_or_mat_sub(self._L1[z], self._L2[z])
 
             inner_term = (1j * k * (
-                _matmul_diag_vec(nx, _matmul(L_diff_x, _matmul(self._Deltai[x], alphax)))
-                + _matmul_diag_vec(ny, _matmul(L_diff_y, _matmul(self._Deltai[y], alphay)))
-                + _matmul_diag_vec(nz, _matmul(L_diff_z, _matmul(self._Deltai[z], alphaz)))))
+                _matmul_diag_vec(nx, _matmul(L_diff_x, _lu_solve_multi(self._Delta_lu[x], alphax)))
+                + _matmul_diag_vec(ny, _matmul(L_diff_y, _lu_solve_multi(self._Delta_lu[y], alphay)))
+                + _matmul_diag_vec(nz, _matmul(L_diff_z, _lu_solve_multi(self._Delta_lu[z], alphaz)))))
 
-            sig2 = _matmul(Sigmai, De_mod + inner_term)
+            sig2 = _lu_solve_multi(sigma_lu, De_mod + inner_term)
 
             # Eq. (20)
-            h2x = _matmul(self._Deltai[x],
+            h2x = _lu_solve_multi(self._Delta_lu[x],
                 1j * k * _matmul_diag_vec(nx, _matmul(L_diff_z, sig2)) + alphax)
-            h2y = _matmul(self._Deltai[y],
+            h2y = _lu_solve_multi(self._Delta_lu[y],
                 1j * k * _matmul_diag_vec(ny, _matmul(L_diff_z, sig2)) + alphay)
-            h2z = _matmul(self._Deltai[z],
+            h2z = _lu_solve_multi(self._Delta_lu[z],
                 1j * k * _matmul_diag_vec(nz, _matmul(L_diff_z, sig2)) + alphaz)
 
             # surface charges and currents
-            sig1_val = _matmul(self._G1i[z], _add(sig2, phi))
-            sig2_val = _matmul(self._G2i[z], sig2)
+            sig1_val = _lu_solve_multi(self._G1_lu[z], _add(sig2, phi))
+            sig2_val = _lu_solve_multi(self._G2_lu[z], sig2)
 
             h1_val = _vector(
-                _matmul(self._G1i[x], _add(h2x, _index_vec(a, 0))),
-                _matmul(self._G1i[y], _add(h2y, _index_vec(a, 1))),
-                _matmul(self._G1i[z], _add(h2z, _index_vec(a, 2))))
+                _lu_solve_multi(self._G1_lu[x], _add(h2x, _index_vec(a, 0))),
+                _lu_solve_multi(self._G1_lu[y], _add(h2y, _index_vec(a, 1))),
+                _lu_solve_multi(self._G1_lu[z], _add(h2z, _index_vec(a, 2))))
 
             h2_val = _vector(
-                _matmul(self._G2i[x], h2x),
-                _matmul(self._G2i[y], h2y),
-                _matmul(self._G2i[z], h2z))
+                _lu_solve_multi(self._G2_lu[x], h2x),
+                _lu_solve_multi(self._G2_lu[y], h2y),
+                _lu_solve_multi(self._G2_lu[z], h2z))
 
             val = CompStruct(self.p, exc.enei,
                              sig1 = sig1_val, sig2 = sig2_val,
@@ -365,6 +369,17 @@ class BEMRetMirror(object):
 
 
 # ==================== Helper functions ====================
+
+def _lu_solve_multi(lu_piv: Tuple, b: Any) -> Any:
+    if isinstance(b, (int, float)) and b == 0:
+        return 0
+    if isinstance(b, np.ndarray):
+        if b.ndim == 1:
+            return lu_solve(lu_piv, b)
+        else:
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
+    return lu_solve(lu_piv, np.asarray(b))
+
 
 def _subtract_list(a_list: List, b_list: List) -> List:
     """Subtract two lists of matrices element-wise."""

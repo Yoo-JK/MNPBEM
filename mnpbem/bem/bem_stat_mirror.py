@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 from typing import Optional, List, Tuple, Any, Union
 
 from ..greenfun import CompStruct
@@ -40,7 +41,7 @@ class BEMStatMirror(object):
         self.F = self.g.F
 
         # resolvent matrices
-        self.mat = None  # type: Optional[List]
+        self.mat_lu = None  # type: Optional[List]
 
         if enei is not None:
             self._init_matrices(enei)
@@ -60,10 +61,10 @@ class BEMStatMirror(object):
         # Lambda [Garcia de Abajo, Eq. (23)]
         lambda_diag = 2 * np.pi * (eps1 + eps2) / (eps1 - eps2)
 
-        self.mat = []
+        self.mat_lu = []
         for i in range(len(self.F)):
             # BEM resolvent matrix
-            self.mat.append(-np.linalg.inv(np.diag(lambda_diag) + self.F[i]))
+            self.mat_lu.append(lu_factor(-(np.diag(lambda_diag) + self.F[i])))
 
         self.enei = enei
         return self
@@ -92,7 +93,7 @@ class BEMStatMirror(object):
         for i in range(len(exc.val)):
             ind = self.p.symindex(exc.val[i].symval[-1, :])
 
-            sig_val = _matmul(self.mat[ind], exc.val[i].phip)
+            sig_val = _lu_solve_multi(self.mat_lu[ind], exc.val[i].phip)
 
             val = CompStruct(self.p, exc.enei, sig = sig_val)
             val.symval = exc.val[i].symval
@@ -151,6 +152,15 @@ class BEMStatMirror(object):
     def __repr__(self) -> str:
         status = 'enei={}'.format(self.enei) if self.enei is not None else 'not initialized'
         return 'BEMStatMirror(p={}, {})'.format(self.p, status)
+
+
+def _lu_solve_multi(lu_piv: Tuple, b: Any) -> Any:
+    if isinstance(b, np.ndarray):
+        if b.ndim == 1:
+            return lu_solve(lu_piv, b)
+        else:
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
+    return lu_solve(lu_piv, np.asarray(b))
 
 
 def _matmul(a: Any, x: Any) -> Any:

@@ -14,6 +14,7 @@ Reference:
 """
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 from ..greenfun import CompGreenStat, CompStruct
 
 
@@ -108,7 +109,7 @@ class BEMStat(object):
 
         # Initialize properties
         self.enei = None
-        self.mat = None
+        self.mat_lu = None
 
         # Green function
         # MATLAB: obj.g = compgreenstat(p, p, varargin{:})
@@ -149,7 +150,7 @@ class BEMStat(object):
             # BEM resolvent matrix
             # MATLAB: obj.mat = -inv(diag(lambda) + obj.F)
             Lambda = np.diag(lambda_diag)
-            self.mat = -np.linalg.inv(Lambda + self.F)
+            self.mat_lu = lu_factor(-(Lambda + self.F))
 
             # Save energy
             # MATLAB: obj.enei = enei
@@ -214,7 +215,7 @@ class BEMStat(object):
 
         # Solve: σ = mat · φₚ
         # MATLAB: sig = compstruct(obj.p, exc.enei, 'sig', matmul(obj.mat, exc.phip))
-        sig_result = self._matmul(self.mat, exc.phip)
+        sig_result = self._lu_solve(self.mat_lu, exc.phip)
         sig = CompStruct(self.p, exc.enei, sig=sig_result)
 
         return sig, self
@@ -369,7 +370,7 @@ class BEMStat(object):
         >>> bem = bem.clear()
         """
         # MATLAB: obj.mat = []
-        self.mat = None
+        self.mat_lu = None
         return self
 
     def __call__(self, enei):
@@ -393,6 +394,13 @@ class BEMStat(object):
         >>> bem = bem(600.0)
         """
         return self._init_matrices(enei)
+
+    @staticmethod
+    def _lu_solve(lu_piv, b):
+        if b.ndim == 1:
+            return lu_solve(lu_piv, b)
+        else:
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
 
     def _matmul(self, a, x):
         """
@@ -481,5 +489,5 @@ class BEMStat(object):
                 self.p,
                 self.F.shape if hasattr(self, 'F') else 'not computed',
                 self.enei,
-                self.mat.shape if self.mat is not None else 'not computed')
+                self.mat_lu[0].shape if self.mat_lu is not None else 'not computed')
         )

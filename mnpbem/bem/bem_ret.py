@@ -12,6 +12,7 @@ Matches MATLAB MNPBEM implementation exactly.
 """
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 from ..greenfun import CompGreenRet, CompStruct
 
 
@@ -103,13 +104,13 @@ class BEMRet(object):
         self.nvec = None
         self.eps1 = None
         self.eps2 = None
-        self.G1i = None
-        self.G2i = None
+        self.G1_lu = None
+        self.G2_lu = None
         self.L1 = None
         self.L2 = None
         self.Sigma1 = None
-        self.Deltai = None
-        self.Sigmai = None
+        self.Delta_lu = None
+        self.Sigma_lu = None
 
         # Green function object (for field/potential computation)
         self.g = None
@@ -200,9 +201,13 @@ class BEMRet(object):
         H1_mat = H11 - H21 if not (isinstance(H21, int) and H21 == 0) else H11
         H2_mat = H22 - H12 if not (isinstance(H12, int) and H12 == 0) else H22
 
-        # Compute inverses
-        self.G1i = np.linalg.inv(G1)
-        self.G2i = np.linalg.inv(G2)
+        # LU factorizations of Green functions
+        self.G1_lu = lu_factor(G1)
+        self.G2_lu = lu_factor(G2)
+
+        # Compute inverses for intermediate matrix construction
+        G1i = lu_solve(self.G1_lu, np.eye(G1.shape[0]))
+        G2i = lu_solve(self.G2_lu, np.eye(G2.shape[0]))
 
         # L matrices [Eq. (22)]
         # MATLAB: if all(obj.g.con{1,2} == 0), L1 = eps1; L2 = eps2
@@ -212,17 +217,19 @@ class BEMRet(object):
             self.L2 = self.eps2
         else:
             # Full case: L1 = G1 * eps1 * G1^(-1)
-            self.L1 = G1 @ self.eps1 @ self.G1i
-            self.L2 = G2 @ self.eps2 @ self.G2i
+            self.L1 = G1 @ self.eps1 @ G1i
+            self.L2 = G2 @ self.eps2 @ G2i
 
         # Sigma matrices [Eq. (21)]
         # Sigma1 = H1 * G1^(-1)
         # Sigma2 = H2 * G2^(-1)
-        self.Sigma1 = H1_mat @ self.G1i
-        Sigma2 = H2_mat @ self.G2i
+        self.Sigma1 = H1_mat @ G1i
+        Sigma2 = H2_mat @ G2i
 
-        # Inverse Delta matrix
-        self.Deltai = np.linalg.inv(self.Sigma1 - Sigma2)
+        # LU factorization of Delta matrix
+        Delta = self.Sigma1 - Sigma2
+        self.Delta_lu = lu_factor(Delta)
+        Deltai = lu_solve(self.Delta_lu, np.eye(Delta.shape[0]))
 
         # Combined Sigma matrix [Eq. (21,22)]
         # Sigma = Sigma1*L1 - Sigma2*L2 + k²*(L*Deltai)*(nvec*nvec')*L
@@ -233,14 +240,14 @@ class BEMRet(object):
             Sigma = self.Sigma1 * self.L1 - Sigma2 * self.L2
             # Add magnetic coupling term
             nvec_outer = self.nvec @ self.nvec.T  # (nfaces, nfaces)
-            Sigma = Sigma + self.k**2 * L * (self.Deltai * nvec_outer) * L
+            Sigma = Sigma + self.k**2 * L * (Deltai * nvec_outer) * L
         else:
             # Full matrix case
             nvec_outer = self.nvec @ self.nvec.T
             Sigma = (self.Sigma1 @ self.L1 - Sigma2 @ self.L2 +
-                     self.k**2 * ((L @ self.Deltai) * nvec_outer) @ L)
+                     self.k**2 * ((L @ Deltai) * nvec_outer) @ L)
 
-        self.Sigmai = np.linalg.inv(Sigma)
+        self.Sigma_lu = lu_factor(Sigma)
 
         return self
 
@@ -506,14 +513,19 @@ class BEMRet(object):
         # Get stored variables
         k = self.k
         nvec = self.nvec
-        G1i = self.G1i
-        G2i = self.G2i
+        G1_lu = self.G1_lu
+        G2_lu = self.G2_lu
         L1 = self.L1
         L2 = self.L2
         Sigma1 = self.Sigma1
-        Deltai = self.Deltai
-        Sigmai = self.Sigmai
+        Delta_lu = self.Delta_lu
+        Sigma_lu = self.Sigma_lu
         nfaces = self.p.nfaces
+
+        def _ls(lu_piv, b):
+            if b.ndim == 1:
+                return lu_solve(lu_piv, b)
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
 
         # Ensure phi, a have proper shapes
         if not isinstance(phi, np.ndarray) or phi.ndim == 0 or (isinstance(phi, np.ndarray) and phi.size == 1 and phi == 0):
@@ -574,24 +586,24 @@ class BEMRet(object):
             # Eq. (19): surface charge
             L_diff = L1 - L2
             if np.isscalar(L_diff):
-                inner_term = np.sum(nvec * (L_diff * (Deltai @ alpha_mod)), axis=1)
+                inner_term = np.sum(nvec * (L_diff * _ls(Delta_lu, alpha_mod)), axis=1)
             else:
-                inner_term = np.sum(nvec * (L_diff @ (Deltai @ alpha_mod)), axis=1)
+                inner_term = np.sum(nvec * (L_diff @ _ls(Delta_lu, alpha_mod)), axis=1)
 
-            sig2 = Sigmai @ (De_mod + 1j * k * inner_term)
+            sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
 
             # Eq. (20): surface current
             if np.isscalar(L_diff):
                 outer_term = nvec * (L_diff * sig2)[:, np.newaxis]
             else:
                 outer_term = nvec * (L_diff @ sig2)[:, np.newaxis]
-            h2 = Deltai @ (1j * k * outer_term + alpha_mod)
+            h2 = _ls(Delta_lu, 1j * k * outer_term + alpha_mod)
 
             # Surface charges and currents [from Eqs. (10-11)]
-            sig1_all = G1i @ (sig2 + phi)
-            h1_all = G1i @ (h2 + a)
-            sig2_all = G2i @ sig2
-            h2_all = G2i @ h2
+            sig1_all = _ls(G1_lu, sig2 + phi)
+            h1_all = _ls(G1_lu, h2 + a)
+            sig2_all = _ls(G2_lu, sig2)
+            h2_all = _ls(G2_lu, h2)
 
         else:
             # Multiple polarizations
@@ -622,22 +634,22 @@ class BEMRet(object):
 
                 L_diff = L1 - L2
                 if np.isscalar(L_diff):
-                    inner_term = np.sum(nvec * (L_diff * (Deltai @ alpha_mod)), axis=1)
+                    inner_term = np.sum(nvec * (L_diff * _ls(Delta_lu, alpha_mod)), axis=1)
                 else:
-                    inner_term = np.sum(nvec * (L_diff @ (Deltai @ alpha_mod)), axis=1)
+                    inner_term = np.sum(nvec * (L_diff @ _ls(Delta_lu, alpha_mod)), axis=1)
 
-                sig2 = Sigmai @ (De_mod + 1j * k * inner_term)
+                sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
 
                 if np.isscalar(L_diff):
                     outer_term = nvec * (L_diff * sig2)[:, np.newaxis]
                 else:
                     outer_term = nvec * (L_diff @ sig2)[:, np.newaxis]
-                h2 = Deltai @ (1j * k * outer_term + alpha_mod)
+                h2 = _ls(Delta_lu, 1j * k * outer_term + alpha_mod)
 
-                sig1_all[:, ipol] = G1i @ (sig2 + phi_i)
-                h1_all[:, :, ipol] = G1i @ (h2 + a_i)
-                sig2_all[:, ipol] = G2i @ sig2
-                h2_all[:, :, ipol] = G2i @ h2
+                sig1_all[:, ipol] = _ls(G1_lu, sig2 + phi_i)
+                h1_all[:, :, ipol] = _ls(G1_lu, h2 + a_i)
+                sig2_all[:, ipol] = _ls(G2_lu, sig2)
+                h2_all[:, :, ipol] = _ls(G2_lu, h2)
 
         # MATLAB: sig = compstruct(obj.p, exc.enei, 'sig1', sig1, 'sig2', sig2, 'h1', h1, 'h2', h2)
         from ..greenfun import CompStruct
@@ -726,13 +738,13 @@ class BEMRet(object):
         >>> bem = bem.clear()
         """
         # MATLAB: [obj.G1i, obj.G2i, obj.L1, obj.L2, obj.Sigma1, obj.Deltai, obj.Sigmai] = deal([])
-        self.G1i = None
-        self.G2i = None
+        self.G1_lu = None
+        self.G2_lu = None
         self.L1 = None
         self.L2 = None
         self.Sigma1 = None
-        self.Deltai = None
-        self.Sigmai = None
+        self.Delta_lu = None
+        self.Sigma_lu = None
         return self
 
     def __call__(self, enei):
@@ -763,7 +775,7 @@ class BEMRet(object):
 
     def __str__(self):
         status = "Initialized at λ={:.2f} nm".format(self.enei) if self.enei is not None else "Not initialized"
-        mat_info = "  Sigmai matrix: {}".format(self.Sigmai.shape) if self.Sigmai is not None else "  Sigmai matrix: Not computed"
+        mat_info = "  Sigma_lu matrix: {}".format(self.Sigma_lu[0].shape) if self.Sigma_lu is not None else "  Sigma_lu matrix: Not computed"
 
         return (
             "BEM Solver (Retarded/Full Maxwell):\n"

@@ -4,6 +4,7 @@ import sys
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
@@ -33,7 +34,7 @@ class BEMStatIter(BEMIter):
         self._op = options
         self._g = None
         self._lambda = None
-        self._mat = None
+        self._mat_lu = None
 
         # Green function
         # MATLAB: obj.g = aca.compgreenstat(p, varargin{:}, 'htol', ...)
@@ -89,12 +90,11 @@ class BEMStatIter(BEMIter):
 
             if self.precond == 'hmat':
                 # MATLAB: obj.mat = lu(-lambda - F)
-                # For Python, store the inverse for solving
-                self._mat = np.linalg.inv(-Lambda - F)
+                self._mat_lu = lu_factor(-Lambda - F)
 
             elif self.precond == 'full':
                 # MATLAB: obj.mat = inv(-lambda - full(F))
-                self._mat = np.linalg.inv(-Lambda - F)
+                self._mat_lu = lu_factor(-Lambda - F)
 
             else:
                 raise ValueError('[error] preconditioner not known: <{}>'.format(self.precond))
@@ -125,7 +125,7 @@ class BEMStatIter(BEMIter):
 
         if self.precond == 'hmat' or self.precond == 'full':
             # MATLAB: vec = solve(obj.mat, vec) or obj.mat * vec
-            result = self._mat @ vec_2d
+            result = lu_solve(self._mat_lu, vec_2d)
         else:
             result = vec_2d
 
@@ -229,7 +229,7 @@ class BEMStatIter(BEMIter):
     def clear(self) -> 'BEMStatIter':
 
         # MATLAB: bemstatiter/clear.m
-        self._mat = None
+        self._mat_lu = None
         return self
 
     def __call__(self,

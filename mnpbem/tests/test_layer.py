@@ -985,7 +985,7 @@ class TestBEMStatLayer:
         bem = BEMStatLayer(p, layer)
         assert bem.p is p
         assert bem.layer is layer
-        assert bem.mat is None
+        assert bem.mat_lu is None
         assert bem.g is not None
 
     def test_init_matrices(self, particle_above_layer):
@@ -993,8 +993,8 @@ class TestBEMStatLayer:
         p, layer = particle_above_layer
         bem = BEMStatLayer(p, layer)
         bem._init_matrices(500.0)
-        assert bem.mat is not None
-        assert bem.mat.shape == (p.n, p.n)
+        assert bem.mat_lu is not None
+        assert bem.mat_lu[0].shape == (p.n, p.n)
         assert bem.enei == pytest.approx(500.0)
 
     def test_caching(self, particle_above_layer):
@@ -1002,9 +1002,9 @@ class TestBEMStatLayer:
         p, layer = particle_above_layer
         bem = BEMStatLayer(p, layer)
         bem._init_matrices(500.0)
-        mat1 = bem.mat.copy()
+        mat1_lu0 = bem.mat_lu[0].copy()
         bem._init_matrices(500.0)
-        np.testing.assert_array_equal(bem.mat, mat1)
+        np.testing.assert_array_equal(bem.mat_lu[0], mat1_lu0)
 
     def test_solve(self, particle_above_layer):
         """solve (truediv) should return surface charges."""
@@ -1023,7 +1023,7 @@ class TestBEMStatLayer:
         bem = BEMStatLayer(p, layer)
         result = bem(500.0)
         assert result.enei == pytest.approx(500.0)
-        assert result.mat is not None
+        assert result.mat_lu is not None
 
     def test_clear(self, particle_above_layer):
         """clear() resets mat and enei."""
@@ -1031,7 +1031,7 @@ class TestBEMStatLayer:
         bem = BEMStatLayer(p, layer)
         bem(500.0)
         bem.clear()
-        assert bem.mat is None
+        assert bem.mat_lu is None
         assert bem.enei is None
 
     def test_repr(self, particle_above_layer):

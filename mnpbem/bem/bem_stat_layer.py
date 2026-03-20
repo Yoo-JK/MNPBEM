@@ -4,6 +4,7 @@ import sys
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 
 from ..greenfun import CompGreenStatLayer, CompStruct
 
@@ -23,7 +24,7 @@ class BEMStatLayer(object):
         self.layer = layer
 
         self.enei = None
-        self.mat = None
+        self.mat_lu = None
 
         # Green function with layer
         # MATLAB: obj.g = compgreenstatlayer(p, p, layer, varargin{:})
@@ -55,7 +56,7 @@ class BEMStatLayer(object):
         # BEM resolvent matrix
         # MATLAB: obj.mat = -inv(diag(lambda) + F_total)
         Lambda = np.diag(lambda_diag)
-        self.mat = -np.linalg.inv(Lambda + F_total)
+        self.mat_lu = lu_factor(-(Lambda + F_total))
 
         self.enei = enei
 
@@ -71,7 +72,7 @@ class BEMStatLayer(object):
 
         self._init_matrices(exc.enei)
 
-        sig_result = self.mat @ exc.phip
+        sig_result = lu_solve(self.mat_lu, exc.phip)
         sig = CompStruct(self.p, exc.enei, sig = sig_result)
 
         return sig, self
@@ -101,7 +102,7 @@ class BEMStatLayer(object):
 
     def clear(self) -> 'BEMStatLayer':
 
-        self.mat = None
+        self.mat_lu = None
         self.enei = None
         return self
 
