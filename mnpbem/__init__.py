@@ -160,6 +160,12 @@ from .misc import (
     multi_waitbar,
 )
 
+# Utils: parallel computation
+from .utils import (
+    compute_spectrum,
+    compute_spectrum_parallel,
+)
+
 __all__ = [
     # Materials
     "EpsConst",
@@ -296,4 +302,7 @@ __all__ = [
     "round_left",
     "Mem",
     "multi_waitbar",
+    # Utils: parallel
+    "compute_spectrum",
+    "compute_spectrum_parallel",
 ]

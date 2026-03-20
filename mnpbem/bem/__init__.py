@@ -31,6 +31,7 @@ from .bem_stat_iter import BEMStatIter
 from .bem_ret_iter import BEMRetIter
 from .bem_ret_layer_iter import BEMRetLayerIter
 from .plasmonmode import plasmonmode
+from .solver_factory import create_solver
 
 __all__ = [
     "BEMStat",
@@ -47,4 +48,5 @@ __all__ = [
     "BEMRetIter",
     "BEMRetLayerIter",
     "plasmonmode",
+    "create_solver",
 ]
