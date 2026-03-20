@@ -340,10 +340,11 @@ class PlaneWaveRetLayer(object):
                     est = est[0, :]
 
             # Extinction of reflected and transmitted beam
-            # MATLAB: 4*pi/norm(k.r(i,:)) where norm = sqrt(dot(abs(k), abs(k)))
-            extr = 4 * np.pi / kr_norm * np.imag(np.sum(e['r'][i, :] * esr))
-            extt = 4 * np.pi / kr_norm * np.imag(np.sum(e['t'][i, :] * est))
-            ext[i] = np.real(extr + extt)
+            # MATLAB: 4*pi/norm(k.r(i,:)) * imag(dot(e.r(i,:), esr))
+            # MATLAB dot(a,b) = sum(conj(a).*b), so conjugate of e is needed
+            extr = 4 * np.pi / kr_norm * np.imag(np.sum(np.conj(e['r'][i, :]) * esr))
+            extt = 4 * np.pi / kr_norm * np.imag(np.sum(np.conj(e['t'][i, :]) * est))
+            ext[i] = extr + extt
 
         if npol == 1:
             return float(ext[0])
@@ -372,10 +373,10 @@ class PlaneWaveRetLayer(object):
         for i in range(npol):
             if self.dir[i, 2] < 0:
                 # Excitation through upper medium
-                sca[i] = sca[i] / (0.5 * np.real(nb[0]))
+                sca[i] = sca[i] / (0.5 * nb[0])
             else:
                 # Excitation through lower medium
-                sca[i] = sca[i] / (0.5 * np.real(nb[-1]))
+                sca[i] = sca[i] / (0.5 * nb[-1])
 
         sca = np.real(sca)
         if npol == 1:
