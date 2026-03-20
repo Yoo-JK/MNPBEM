@@ -294,36 +294,187 @@ def _add_safe(a, b):
     return a + b
 
 
-def _matmul_structured(G: _StructuredGreen,
-        x: np.ndarray,
-        nvec: np.ndarray,
-        mode: str = 'sig') -> np.ndarray:
-    """Legacy structured matmul for backward compatibility."""
+def _matmul(A, x):
+    # Generalized matrix multiply handling scalar/zero, 2D, and 3D cases
+    if isinstance(A, (int, float)):
+        if A == 0:
+            return 0
+        return A * x
+    if isinstance(x, (int, float)):
+        if x == 0:
+            return 0
+        return A * x
+    if not isinstance(A, np.ndarray):
+        return 0
 
-    if mode == 'sig':
-        if isinstance(G.ss, np.ndarray):
-            return G.ss @ x
-        elif G.ss != 0:
-            return G.ss * x
+    siz_a = A.shape
+    siz_x = x.shape
+
+    if len(siz_a) == 3:
+        # A is (n1, 3, n2), x is (n2,) or (n2, npol)
+        n1, _, n2 = siz_a
+        if len(siz_x) == 1:
+            return np.tensordot(A, x, axes = ([2], [0]))
         else:
-            return np.zeros_like(x)
-    elif mode == 'h':
-        if isinstance(G.hh, np.ndarray) and x.ndim >= 2:
-            n = x.shape[0]
-            result = np.zeros_like(x)
-            for j in range(3):
-                if x.ndim == 2:
-                    result[:, j] = G.hh @ x[:, j]
-                else:
-                    for ipol in range(x.shape[2]):
-                        result[:, j, ipol] = G.hh @ x[:, j, ipol]
-            return result
-        elif G.hh != 0:
-            return G.hh * x
-        else:
-            return np.zeros_like(x)
+            a_flat = A.reshape(n1 * 3, n2)
+            x_flat = x.reshape(n2, -1)
+            y_flat = a_flat @ x_flat
+            return y_flat.reshape((n1, 3) + siz_x[1:])
     else:
-        raise ValueError('[error] Unknown matmul mode: <{}>'.format(mode))
+        # Standard 2D
+        if len(siz_x) == 1:
+            return A @ x
+        else:
+            result = A @ x.reshape(siz_x[0], -1)
+            return result.reshape((siz_a[0],) + siz_x[1:])
+
+
+def _matmul2(G, sig, name):
+    # MATLAB: @compgreenretlayer/private/matmul2.m
+    # G can be plain array or structured dict
+    if not isinstance(G, dict):
+        # Plain Green function
+        return _matmul(G, getattr(sig, name))
+
+    # Structured Green function
+    sig1 = sig.sig1
+    sig2 = sig.sig2
+    h1 = sig.h1
+    h2 = sig.h2
+
+    if name == 'sig1':
+        # G.ss @ sig1 + G.sh @ h1(:,3,:)
+        h_z = h1[:, 2] if h1.ndim == 2 else h1[:, 2, :]
+        return _add_safe(
+            _matmul(G['ss'], sig1),
+            _matmul(G['sh'], h_z))
+    elif name == 'sig2':
+        # G.ss @ sig2 + G.sh @ h2(:,3,:)
+        h_z = h2[:, 2] if h2.ndim == 2 else h2[:, 2, :]
+        return _add_safe(
+            _matmul(G['ss'], sig2),
+            _matmul(G['sh'], h_z))
+    elif name == 'h1':
+        return _matmul2_h(G, sig1, h1)
+    elif name == 'h2':
+        return _matmul2_h(G, sig2, h2)
+    else:
+        raise ValueError('[error] Unknown matmul2 name: <{}>'.format(name))
+
+
+def _matmul2_h(G, sig_charge, h):
+    # [G.p @ h(:,1,:), G.p @ h(:,2,:), G.hh @ h(:,3,:) + G.hs @ sig]
+    h_x = h[:, 0] if h.ndim == 2 else h[:, 0, :]
+    h_y = h[:, 1] if h.ndim == 2 else h[:, 1, :]
+    h_z = h[:, 2] if h.ndim == 2 else h[:, 2, :]
+
+    pot_x = _matmul(G['p'], h_x)
+    pot_y = _matmul(G['p'], h_y)
+    pot_z = _add_safe(_matmul(G['hh'], h_z), _matmul(G['hs'], sig_charge))
+
+    parts = [pot_x, pot_y, pot_z]
+    # Find reference shape
+    ref = None
+    for part in parts:
+        if not isinstance(part, (int, float)):
+            ref = part
+            break
+
+    if ref is None:
+        return 0
+
+    # empty + slice assignment (no np.concatenate / np.stack)
+    out_shape = (ref.shape[0], 3) + ref.shape[1:]
+    out = np.zeros(out_shape, dtype = complex)
+    for idx, part in enumerate(parts):
+        if isinstance(part, (int, float)):
+            pass  # already zero
+        else:
+            out[:, idx] = part
+
+    return out
+
+
+def _matmul3(G, sig, name, i1, i2):
+    # MATLAB: @compgreenretlayer/private/matmul3.m
+    # G can be plain 3D array (n1, 3, n2) or structured dict of 3D arrays
+    if not isinstance(G, dict):
+        # Plain Green function: G(:, i1, :) @ sig.(name)(:, i2, :)
+        h = getattr(sig, name)
+        siz = list(h.shape)
+        siz[0:2] = [G.shape[0], 1]
+        h_slice = h[:, i2] if h.ndim == 2 else h[:, i2, :]
+        val = _matmul(G[:, i1, :], h_slice)
+        if isinstance(val, (int, float)):
+            return np.zeros(siz, dtype = complex)
+        return val.reshape(siz)
+
+    # Structured: treat parallel and perpendicular components differently
+    if name == 'h1':
+        sig_charge = sig.sig1
+        h = sig.h1
+    else:
+        sig_charge = sig.sig2
+        h = sig.h2
+
+    siz = list(h.shape)
+    siz[0:2] = [G['p'].shape[0], 1]
+
+    if i2 in (0, 1):
+        # Parallel: use G.p
+        h_slice = h[:, i2] if h.ndim == 2 else h[:, i2, :]
+        val = _matmul(G['p'][:, i1, :], h_slice)
+        if isinstance(val, (int, float)):
+            return np.zeros(siz, dtype = complex)
+        return val.reshape(siz)
+    else:
+        # Perpendicular (z): use G.hh + G.hs
+        h_z = h[:, 2] if h.ndim == 2 else h[:, 2, :]
+        val = _add_safe(
+            _matmul(G['hh'][:, i1, :], h_z),
+            _matmul(G['hs'][:, i1, :], sig_charge))
+        if isinstance(val, (int, float)):
+            return np.zeros(siz, dtype = complex)
+        return val.reshape(siz)
+
+
+def _cross3(G, sig, name):
+    # MATLAB: field.m cross() function
+    # cross product: curl of G @ h
+    if isinstance(G, (int, float)):
+        return 0
+    if isinstance(G, np.ndarray) and G.size == 1:
+        return 0
+
+    hx = _sub_safe(_matmul3(G, sig, name, 1, 2), _matmul3(G, sig, name, 2, 1))
+    hy = _sub_safe(_matmul3(G, sig, name, 2, 0), _matmul3(G, sig, name, 0, 2))
+    hz = _sub_safe(_matmul3(G, sig, name, 0, 1), _matmul3(G, sig, name, 1, 0))
+
+    parts = [hx, hy, hz]
+    ref = None
+    for part in parts:
+        if not isinstance(part, (int, float)):
+            ref = part
+            break
+
+    if ref is None:
+        return 0
+
+    result_parts = []
+    for part in parts:
+        if isinstance(part, (int, float)):
+            result_parts.append(np.zeros_like(ref))
+        else:
+            result_parts.append(part)
+
+    # cat(2, ...) in MATLAB — use empty + slice assignment
+    out_shape = list(ref.shape)
+    out_shape[1] = 3
+    out = np.zeros(out_shape, dtype = complex)
+    out[:, 0:1] = result_parts[0]
+    out[:, 1:2] = result_parts[1]
+    out[:, 2:3] = result_parts[2]
+    return out
 
 
 class CompGreenRetLayer(object):
@@ -366,6 +517,16 @@ class CompGreenRetLayer(object):
         self.ind1 = np.arange(pos1.shape[0])
         self.ind2 = np.arange(pos2.shape[0])
 
+    def _is_outer_surface(self, i, j):
+        # MATLAB eval1.m line 33: i1 == size(obj.p1.inout, 2) && i2 == 2
+        # Python 0-based: i == n_regions_p1 - 1 && j == 1
+        if hasattr(self.p1, 'inout'):
+            inout1 = np.atleast_2d(self.p1.inout)
+            n_regions = inout1.shape[1]
+        else:
+            n_regions = 2
+        return i == n_regions - 1 and j == 1
+
     def eval(self,
             i: int,
             j: int,
@@ -373,33 +534,65 @@ class CompGreenRetLayer(object):
             enei: float,
             ind: Optional[np.ndarray] = None) -> Any:
 
-        # Compute reflected Green function
-        self.gr.eval(enei)
-
         # Get direct Green function
-        g_direct = self.g.eval(i, j, key, enei, ind=ind)
+        g_direct = self.g.eval(i, j, key, enei, ind = ind)
 
-        # Add reflected contribution
-        g_refl = self._get_reflected(key)
-
+        # Make sure g_direct is not zero (MATLAB eval1.m lines 23-30)
         if isinstance(g_direct, (int, float)) and g_direct == 0:
-            return g_refl
-        elif isinstance(g_refl, (int, float)) and g_refl == 0:
+            if key in ('Gp', 'H1p', 'H2p'):
+                g_direct = np.zeros((self.p1.n, 3, self.p2.n), dtype = complex)
+            else:
+                g_direct = np.zeros((self.p1.n, self.p2.n), dtype = complex)
+
+        # Only add reflected Green function for outer surface
+        # MATLAB eval1.m line 33: if i1 == size(obj.p1.inout,2) && i2 == 2
+        if not self._is_outer_surface(i, j):
             return g_direct
-        else:
-            return g_direct + g_refl
 
-    def _get_reflected(self,
-            key: str) -> Any:
+        # Compute reflected Green function components
+        self.gr.eval_components(enei)
 
+        # Select reflected Green function based on key
         if key == 'G':
-            return self.gr.G if self.gr.G is not None else 0
+            gr_comp = self.gr.G_comp
         elif key in ('F', 'H1', 'H2'):
-            return self.gr.F if self.gr.F is not None else 0
-        elif key == 'Gp':
-            return self.gr.Gp if self.gr.Gp is not None else 0
+            gr_comp = self.gr.F_comp
+        elif key in ('Gp', 'H1p', 'H2p'):
+            gr_comp = self.gr.Gp_comp
         else:
-            return 0
+            return g_direct
+
+        if not gr_comp:
+            return g_direct
+
+        # Assemble structured output (MATLAB eval1.m assembly() function)
+        return self._assembly(g_direct, gr_comp)
+
+    def _assembly(self, g_direct, gr_comp):
+        # MATLAB eval1.m assembly() function
+        # For each component name in gr_comp:
+        #   'ss', 'hh', 'p' -> G_direct + G_refl (diagonal coupling)
+        #   'sh', 'hs'      -> 0 + G_refl (off-diagonal coupling)
+        result = {}
+        ind1 = self.ind1
+        ind2 = self.ind2
+
+        for name in gr_comp:
+            if name in ('ss', 'hh', 'p'):
+                g_base = g_direct.copy()
+            else:
+                g_base = g_direct * 0
+
+            gr_val = gr_comp[name]
+            if g_direct.ndim == 2:
+                g_base[np.ix_(ind1, ind2)] = g_base[np.ix_(ind1, ind2)] + gr_val
+            else:
+                g_base[np.ix_(ind1, range(3), ind2)] = (
+                    g_base[np.ix_(ind1, range(3), ind2)] + gr_val)
+
+            result[name] = g_base
+
+        return result
 
     def eval_structured(self,
             enei: float) -> _StructuredGreen:
@@ -421,145 +614,88 @@ class CompGreenRetLayer(object):
     def potential(self,
             sig: Any,
             inout: int = 1) -> CompStruct:
-        """Potentials and surface derivatives including reflected contribution.
-
-        MATLAB: @compgreenretlayer/potential.m
-        """
+        # MATLAB: @compgreenretlayer/potential.m
         enei = sig.enei
 
-        # Get direct potential
-        pot_direct = self.g.potential(sig, inout)
+        # Determine region index for p1
+        n_regions_p1 = len(self.g.con)
+        p1_region = min(inout - 1, n_regions_p1 - 1)
 
-        # Compute reflected contribution using structured Green functions
-        self.gr.eval_components(enei)
-        G_comp = self.gr.G_comp
-        F_comp = self.gr.F_comp
+        # Set H key based on inside/outside
+        H_key = 'H1' if inout == 1 else 'H2'
 
-        if not G_comp:
-            return pot_direct
+        # Green functions (may be plain array or structured dict)
+        G1 = self.eval(p1_region, 0, 'G', enei)
+        G2 = self.eval(p1_region, 1, 'G', enei)
+        H1 = self.eval(p1_region, 0, H_key, enei)
+        H2 = self.eval(p1_region, 1, H_key, enei)
 
         # Surface charges and currents
-        sig1 = sig.sig1 if hasattr(sig, 'sig1') else getattr(sig, 'sig', None)
-        sig2 = sig.sig2 if hasattr(sig, 'sig2') else None
-        h1 = sig.h1 if hasattr(sig, 'h1') else None
-        h2 = sig.h2 if hasattr(sig, 'h2') else None
+        sig1 = sig.sig1
+        sig2 = sig.sig2
+        h1 = sig.h1
+        h2 = sig.h2
 
-        if sig1 is None:
-            return pot_direct
-        if h1 is None:
-            h1 = np.zeros((sig1.shape[0], 3), dtype=complex)
-        if sig2 is None:
-            sig2 = np.zeros_like(sig1)
-        if h2 is None:
-            h2 = np.zeros_like(h1)
+        # Potential and surface derivative via matmul2
+        phi = _add_safe(
+            _matmul2(G1, sig, 'sig1'),
+            _matmul2(G2, sig, 'sig2'))
+        phip = _add_safe(
+            _matmul2(H1, sig, 'sig1'),
+            _matmul2(H2, sig, 'sig2'))
+        a = _add_safe(
+            _matmul2(G1, sig, 'h1'),
+            _matmul2(G2, sig, 'h2'))
+        ap = _add_safe(
+            _matmul2(H1, sig, 'h1'),
+            _matmul2(H2, sig, 'h2'))
 
-        # Scalar potential: phi_refl = matmul2(G, sig, 'sig1') + matmul2(G, sig, 'sig2')
-        phi_refl = _add_safe(
-            _matmul2_refl(G_comp, sig1, h1, 'sig'),
-            _matmul2_refl(G_comp, sig2, h2, 'sig'))
-
-        # Surface derivative of scalar potential
-        phip_refl = _add_safe(
-            _matmul2_refl(F_comp, sig1, h1, 'sig'),
-            _matmul2_refl(F_comp, sig2, h2, 'sig'))
-
-        # Vector potential: a_refl = matmul2(G, sig, 'h1') + matmul2(G, sig, 'h2')
-        a_refl = _add_safe(
-            _matmul2_refl(G_comp, sig1, h1, 'h'),
-            _matmul2_refl(G_comp, sig2, h2, 'h'))
-
-        # Surface derivative of vector potential
-        ap_refl = _add_safe(
-            _matmul2_refl(F_comp, sig1, h1, 'h'),
-            _matmul2_refl(F_comp, sig2, h2, 'h'))
-
-        # Combine direct + reflected
         if inout == 1:
-            phi = _add_to_attr(pot_direct, 'phi1', phi_refl)
-            phip = _add_to_attr(pot_direct, 'phi1p', phip_refl)
-            a = _add_to_attr(pot_direct, 'a1', a_refl)
-            ap = _add_to_attr(pot_direct, 'a1p', ap_refl)
             return CompStruct(self.p1, enei,
-                phi1=phi, phi1p=phip, a1=a, a1p=ap)
+                phi1 = phi, phi1p = phip, a1 = a, a1p = ap)
         else:
-            phi = _add_to_attr(pot_direct, 'phi2', phi_refl)
-            phip = _add_to_attr(pot_direct, 'phi2p', phip_refl)
-            a = _add_to_attr(pot_direct, 'a2', a_refl)
-            ap = _add_to_attr(pot_direct, 'a2p', ap_refl)
             return CompStruct(self.p1, enei,
-                phi2=phi, phi2p=phip, a2=a, a2p=ap)
+                phi2 = phi, phi2p = phip, a2 = a, a2p = ap)
 
     def field(self,
             sig: Any,
             inout: int = 1) -> CompStruct:
-        """Electric and magnetic field including reflected contribution.
-
-        MATLAB: @compgreenretlayer/field.m
-
-        E = i*k*A - grad(phi)
-          = i*k*(G@h1 + G@h2) - (Gp@sig1 + Gp@sig2)
-        H = curl(A)
-          = curl(Gp@h1) + curl(Gp@h2)
-        """
+        # MATLAB: @compgreenretlayer/field.m
         enei = sig.enei
         k = 2 * np.pi / enei
 
-        # Direct field (free-space contribution)
-        field_direct = self.g.field(sig, inout)
+        # Determine region index for p1
+        n_regions_p1 = len(self.g.con)
+        p1_region = min(inout - 1, n_regions_p1 - 1)
 
-        # Compute reflected structured Green functions
-        self.gr.eval_components(enei)
-        G_comp = self.gr.G_comp
-        Gp_comp = self.gr.Gp_comp
+        # Green function for E = i*k*A
+        G1 = self.eval(p1_region, 0, 'G', enei)
+        G2 = self.eval(p1_region, 1, 'G', enei)
 
-        if not G_comp:
-            return field_direct
+        e = 1j * k * _add_safe(
+            _matmul2(G1, sig, 'h1'),
+            _matmul2(G2, sig, 'h2'))
 
-        # Surface charges and currents
-        sig1 = sig.sig1 if hasattr(sig, 'sig1') else getattr(sig, 'sig', None)
-        sig2 = sig.sig2 if hasattr(sig, 'sig2') else None
-        h1 = sig.h1 if hasattr(sig, 'h1') else None
-        h2 = sig.h2 if hasattr(sig, 'h2') else None
+        # Derivative of Green function for grad(phi) and curl(A)
+        if inout == 1:
+            H1p = self.eval(p1_region, 0, 'H1p', enei)
+            H2p = self.eval(p1_region, 1, 'H1p', enei)
+        else:
+            H1p = self.eval(p1_region, 0, 'H2p', enei)
+            H2p = self.eval(p1_region, 1, 'H2p', enei)
 
-        if sig1 is None:
-            return field_direct
-        if h1 is None:
-            h1 = np.zeros((sig1.shape[0], 3), dtype=complex)
-        if sig2 is None:
-            sig2 = np.zeros_like(sig1)
-        if h2 is None:
-            h2 = np.zeros_like(h1)
-
-        # E_refl = i*k*(G_refl @ h) - Gp_refl @ sig
-        # Vector potential contribution: i*k*(matmul2(G, sig, 'h1') + matmul2(G, sig, 'h2'))
-        ik_A = _add_safe(
-            _matmul2_refl(G_comp, sig1, h1, 'h'),
-            _matmul2_refl(G_comp, sig2, h2, 'h'))
-        if not isinstance(ik_A, (int, float)):
-            ik_A = 1j * k * ik_A
-
-        # Gradient of scalar potential: matmul2(Gp, sig, 'sig1') + matmul2(Gp, sig, 'sig2')
+        # Subtract gradient of scalar potential
         grad_phi = _add_safe(
-            _matmul2_refl_3d(Gp_comp, sig1, h1, 'sig'),
-            _matmul2_refl_3d(Gp_comp, sig2, h2, 'sig'))
+            _matmul2(H1p, sig, 'sig1'),
+            _matmul2(H2p, sig, 'sig2'))
+        e = _sub_safe(e, grad_phi)
 
-        # E_refl = ik*A - grad(phi)
-        e_refl = _sub_safe(ik_A, grad_phi)
+        # Magnetic field: H = curl(Gp @ h)
+        h = _add_safe(
+            _cross3(H1p, sig, 'h1'),
+            _cross3(H2p, sig, 'h2'))
 
-        # H_refl = curl(Gp @ h1) + curl(Gp @ h2)
-        h_refl = _add_safe(
-            _cross_refl_3d(Gp_comp, sig1, h1),
-            _cross_refl_3d(Gp_comp, sig2, h2))
-
-        # Combine direct + reflected
-        e_total = field_direct.e
-        h_total = field_direct.h
-        if not isinstance(e_refl, (int, float)):
-            e_total = e_total + e_refl
-        if not isinstance(h_refl, (int, float)):
-            h_total = h_total + h_refl
-
-        return CompStruct(self.p1, enei, e=e_total, h=h_total)
+        return CompStruct(self.p1, enei, e = e, h = h)
 
     def setup_tabulation(self, nr = 30, nz = 20):
 

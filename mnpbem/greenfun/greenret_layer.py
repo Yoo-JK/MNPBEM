@@ -85,6 +85,12 @@ class GreenRetLayer(object):
         Fr = Fr.reshape(n1, n2)
         Fz = Fz.reshape(n1, n2)
 
+        # Multiply with p2.area (MATLAB initrefl1.m line 36, initrefl2.m line 35)
+        area2 = self.p2.area  # (n2,)
+        G = G * area2[np.newaxis, :]
+        Fr = Fr * area2[np.newaxis, :]
+        Fz = Fz * area2[np.newaxis, :]
+
         # Store Green function
         self.G = G
 
@@ -125,26 +131,32 @@ class GreenRetLayer(object):
 
         nvec1 = self.p1.nvec
         r_safe = np.maximum(self._r, np.finfo(float).eps)
+        area2 = self.p2.area  # (n2,)
 
         for name in G_dict:
             G = G_dict[name].reshape(n1, n2)
             Fr = Fr_dict[name].reshape(n1, n2)
             Fz = Fz_dict[name].reshape(n1, n2)
 
+            # Multiply with p2.area (MATLAB initrefl1.m line 36, initrefl2.m line 35)
+            G = G * area2[np.newaxis, :]
+            Fr = Fr * area2[np.newaxis, :]
+            Fz = Fz * area2[np.newaxis, :]
+
             self.G_comp[name] = G
 
-            # Cartesian derivative: Gp (n1, n2, 3)
-            Gp = np.zeros((n1, n2, 3), dtype=complex)
-            Gp[:, :, 0] = Fr * self._dx / r_safe
-            Gp[:, :, 1] = Fr * self._dy / r_safe
-            Gp[:, :, 2] = Fz
+            # Cartesian derivative: Gp (n1, 3, n2) — matches MATLAB shape
+            Gp = np.zeros((n1, 3, n2), dtype = complex)
+            Gp[:, 0, :] = Fr * self._dx / r_safe
+            Gp[:, 1, :] = Fr * self._dy / r_safe
+            Gp[:, 2, :] = Fz
             self.Gp_comp[name] = Gp
 
-            # Normal derivative: F = nvec · Gp
-            F = np.zeros((n1, n2), dtype=complex)
-            F += nvec1[:, 0:1] * Gp[:, :, 0]
-            F += nvec1[:, 1:2] * Gp[:, :, 1]
-            F += nvec1[:, 2:3] * Gp[:, :, 2]
+            # Normal derivative: F = nvec . Gp  (inner product)
+            F = np.zeros((n1, n2), dtype = complex)
+            F += nvec1[:, 0:1] * Gp[:, 0, :]
+            F += nvec1[:, 1:2] * Gp[:, 1, :]
+            F += nvec1[:, 2:3] * Gp[:, 2, :]
             self.F_comp[name] = F
 
     def _compute_F_norm(self,
