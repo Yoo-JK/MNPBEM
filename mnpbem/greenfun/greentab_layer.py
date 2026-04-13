@@ -19,6 +19,9 @@ class GreenTabLayer(object):
         self.layer = layer
 
         if tab is not None:
+            # Handle list of tabs (from tabspace with particle argument)
+            if isinstance(tab, list):
+                tab = self._merge_tabs(tab)
             self.r = tab.get('r', None)
             self.z1 = tab.get('z1', None)
             self.z2 = tab.get('z2', None)
@@ -43,6 +46,84 @@ class GreenTabLayer(object):
         self._Gsav_comp = None
         self._Frsav_comp = None
         self._Fzsav_comp = None
+
+    @staticmethod
+    def _merge_tabs(tabs):
+        """Merge a list of tabspace dicts into a single dict.
+
+        When tabspace is called with a particle, it returns a list of dicts
+        (one per layer combination). This merges them by taking the union
+        of all r, z1, z2 grids.
+        """
+        if len(tabs) == 1:
+            return tabs[0]
+
+        # Merge grids by taking the union
+        all_r = np.concatenate([t['r'] for t in tabs])
+        all_z1 = np.concatenate([np.atleast_1d(t['z1']) for t in tabs])
+        all_z2 = np.concatenate([np.atleast_1d(t['z2']) for t in tabs])
+
+        r = np.sort(np.unique(all_r))
+        z1 = np.sort(np.unique(all_z1))
+        z2 = np.sort(np.unique(all_z2))
+
+        return {'r': r, 'z1': z1, 'z2': z2}
+
+    def set(self, enei_arr, **options):
+        """Pre-compute Green function table at multiple wavelengths.
+
+        MATLAB: @compgreentablayer/set.m
+        Stores 4D arrays (nr, nz1, nz2, n_enei) for interpolation.
+        """
+        enei_arr = np.atleast_1d(np.asarray(enei_arr, dtype=float))
+        n_enei = len(enei_arr)
+        nr = len(self.r)
+        nz1 = len(self.z1)
+        nz2 = len(self.z2)
+
+        # Determine component names
+        r_sample = self.r[:1]
+        z1_sample = np.full_like(r_sample, self.z1[0])
+        z2_sample = np.full_like(r_sample, self.z2[0])
+        result = self.layer.green(enei_arr[0], r_sample, z1_sample, z2_sample)
+        names = list(result[0].keys())
+
+        # 4D arrays: (nr, nz1, nz2, n_enei)
+        self._Gsav_multi = {k: np.zeros((nr, nz1, nz2, n_enei), dtype=complex) for k in names}
+        self._Frsav_multi = {k: np.zeros((nr, nz1, nz2, n_enei), dtype=complex) for k in names}
+        self._Fzsav_multi = {k: np.zeros((nr, nz1, nz2, n_enei), dtype=complex) for k in names}
+
+        for ie, enei in enumerate(enei_arr):
+            for iz1 in range(nz1):
+                for iz2 in range(nz2):
+                    r_vec = self.r
+                    z1_vec = np.full_like(r_vec, self.z1[iz1])
+                    z2_vec = np.full_like(r_vec, self.z2[iz2])
+                    result = self.layer.green(enei, r_vec, z1_vec, z2_vec)
+                    for name in names:
+                        self._Gsav_multi[name][:, iz1, iz2, ie] = np.asarray(result[0][name], dtype=complex)
+                        self._Frsav_multi[name][:, iz1, iz2, ie] = np.asarray(result[1][name], dtype=complex)
+                        self._Fzsav_multi[name][:, iz1, iz2, ie] = np.asarray(result[2][name], dtype=complex)
+
+        self._enei_tab = enei_arr
+        return self
+
+    def _interp_wavelength(self, enei):
+        """Interpolate 4D multi-wavelength table to 3D at given wavelength."""
+        enei_arr = self._enei_tab
+        idx = np.searchsorted(enei_arr, enei, side='right') - 1
+        idx = np.clip(idx, 0, len(enei_arr) - 2)
+        frac = (enei - enei_arr[idx]) / (enei_arr[idx + 1] - enei_arr[idx])
+
+        names = list(self._Gsav_multi.keys())
+        self._Gsav_comp = {}
+        self._Frsav_comp = {}
+        self._Fzsav_comp = {}
+        for name in names:
+            self._Gsav_comp[name] = (1 - frac) * self._Gsav_multi[name][:, :, :, idx] + frac * self._Gsav_multi[name][:, :, :, idx + 1]
+            self._Frsav_comp[name] = (1 - frac) * self._Frsav_multi[name][:, :, :, idx] + frac * self._Frsav_multi[name][:, :, :, idx + 1]
+            self._Fzsav_comp[name] = (1 - frac) * self._Fzsav_multi[name][:, :, :, idx] + frac * self._Fzsav_multi[name][:, :, :, idx + 1]
+        self._enei_comp = enei
 
     def eval(self,
             enei: float,
@@ -229,7 +310,9 @@ class GreenTabLayer(object):
 
         shape = np.asarray(r).shape
 
-        if self._Gsav_comp is None or (
+        if hasattr(self, '_Gsav_multi') and self._Gsav_multi is not None:
+            self._interp_wavelength(enei)
+        elif self._Gsav_comp is None or (
                 self._enei_comp is not None and not np.isclose(self._enei_comp, enei)):
             self._compute_tab_components(enei)
 

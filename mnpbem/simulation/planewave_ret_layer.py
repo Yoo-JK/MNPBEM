@@ -368,17 +368,15 @@ class PlaneWaveRetLayer(object):
             nb[i] = np.sqrt(eps_val)
 
         npol = self.dir.shape[0]
-        sca = np.atleast_1d(sca)
+        sca = np.atleast_1d(np.real(sca).astype(float))
 
         for i in range(npol):
             if self.dir[i, 2] < 0:
                 # Excitation through upper medium
-                sca[i] = sca[i] / (0.5 * nb[0])
+                sca[i] = sca[i] / np.real(0.5 * nb[0])
             else:
                 # Excitation through lower medium
-                sca[i] = sca[i] / (0.5 * nb[-1])
-
-        sca = np.real(sca)
+                sca[i] = sca[i] / np.real(0.5 * nb[-1])
         if npol == 1:
             return float(sca[0]), dsca
         return sca, dsca
