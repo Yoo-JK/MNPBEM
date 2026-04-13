@@ -1480,3 +1480,204 @@ def mesh2d(node: np.ndarray,
         p_all, t_all, _, _ = fixmesh(p_all, t_all)
 
     return p_all, t_all
+
+
+def meshfaces(node: np.ndarray,
+        edge: np.ndarray,
+        face: List[np.ndarray],
+        hdata: Optional[Dict[str, Any]] = None,
+        options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    2D unstructured mesh generation for multi-face polygonal geometry.
+
+    Generates a 2D unstructured triangular mesh for a geometry with
+    multiple polygonal faces. Each face can contain an arbitrary number
+    of cavities. This is the multi-face counterpart to mesh2d().
+
+    MATLAB: meshfaces.m
+
+    Parameters
+    ----------
+    node : ndarray, shape (N, 2)
+        XY coordinates of geometry vertices for all faces.
+    edge : ndarray, shape (M, 2)
+        Connectivity between nodes. Each row [n1, n2] defines an edge.
+    face : list of ndarray
+        Each element face[k] is an array of edge indices (0-based) that
+        define the k-th polygonal face.
+    hdata : dict, optional
+        Element size information:
+        - hdata['hmax']: maximum global element size
+        - hdata['edgeh']: element sizes on specific edges, shape (K, 2)
+        - hdata['fun']: user-defined size function fun(x, y, *args)
+        - hdata['args']: additional arguments for hdata['fun']
+    options : dict, optional
+        Solver tuning parameters:
+        - options['mlim']: convergence tolerance (default 0.02)
+        - options['maxit']: maximum iterations (default 20)
+        - options['dhmax']: max relative gradient in size function (default 0.3)
+        - options['output']: display output (default False)
+
+    Returns
+    -------
+    p : ndarray, shape (Np, 2)
+        Nodal XY coordinates.
+    t : ndarray, shape (Nt, 3)
+        Triangles as indices into p (CCW ordered).
+    fnum : ndarray, shape (Nt,)
+        Face number (1-based) for each triangle in t.
+
+    Examples
+    --------
+    >>> # Two adjacent squares sharing an edge
+    >>> node = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [2, 0], [2, 1]])
+    >>> edge = np.array([[0, 1], [1, 2], [2, 3], [3, 0],
+    ...                  [1, 4], [4, 5], [5, 2]])
+    >>> face = [np.array([0, 1, 2, 3]), np.array([4, 5, 6, 1])]
+    >>> hdata = {'hmax': 0.2}
+    >>> p, t, fnum = meshfaces(node, edge, face, hdata)
+    """
+    node = np.asarray(node, dtype = float)
+    edge = np.asarray(edge, dtype = int)
+
+    face_arrays = []
+    for f in face:
+        face_arrays.append(np.asarray(f, dtype = int))
+
+    opts = _getoptions(options)
+    node, edge, face_arrays, hdata = _checkgeometry(node, edge, face_arrays, hdata)
+
+    # quadtree decomposition
+    qt_p, qt_t, qt_h = quadtree(node, edge, hdata, opts['dhmax'], opts.get('output', False))
+    qt = {'p': qt_p, 't': qt_t, 'h': qt_h}
+
+    # boundary nodes
+    pbnd = _boundarynodes(qt_p, qt_t, qt_h, node, edge)
+
+    # mesh each face separately
+    p_all = np.empty((0, 2))
+    t_all = np.empty((0, 3), dtype = int)
+    fnum_all = np.empty(0, dtype = int)
+
+    for k in range(len(face_arrays)):
+        face_edges = edge[face_arrays[k]]
+        pnew, tnew = meshpoly(node, face_edges, qt, pbnd, opts)
+
+        if tnew.shape[0] > 0:
+            tnew_shifted = tnew + p_all.shape[0]
+
+            total_t = t_all.shape[0] + tnew_shifted.shape[0]
+            t_combined = np.empty((total_t, 3), dtype = int)
+            t_combined[:t_all.shape[0]] = t_all
+            t_combined[t_all.shape[0]:] = tnew_shifted
+            t_all = t_combined
+
+            total_p = p_all.shape[0] + pnew.shape[0]
+            p_combined = np.empty((total_p, 2))
+            p_combined[:p_all.shape[0]] = p_all
+            p_combined[p_all.shape[0]:] = pnew
+            p_all = p_combined
+
+            # face number (1-based, matching MATLAB)
+            fnum_new = np.full(tnew.shape[0], k + 1, dtype = int)
+            fnum_all = np.concatenate([fnum_all, fnum_new])
+
+    # fix mesh (preserve face numbers)
+    if p_all.shape[0] > 0 and t_all.shape[0] > 0:
+        p_all, t_all, _, fnum_all = fixmesh(p_all, t_all, tfun = fnum_all)
+
+    return p_all, t_all, fnum_all
+
+
+def mesh_collection(num: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Collection of meshing examples.
+
+    Provides predefined geometries for testing and demonstration of the
+    mesh generation capabilities.
+
+    MATLAB: mesh_collection.m
+
+    Parameters
+    ----------
+    num : int
+        Example number (1-5):
+        1 - Simple rotated rectangle (driven cavity)
+        2 - Rectangle with circular hole
+        3 - L-shaped domain
+        4 - U-shaped domain
+        5 - Simple square
+
+    Returns
+    -------
+    p : ndarray, shape (N, 2)
+        Nodal XY coordinates.
+    t : ndarray, shape (M, 3)
+        Triangle connectivity.
+
+    Examples
+    --------
+    >>> p, t = mesh_collection(1)
+    >>> print(p.shape, t.shape)
+    """
+    if num == 1:
+        # Simple rotated rectangle (driven cavity)
+        node = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 1.0], [0.0, 1.0]])
+        # rotate by 45 degrees
+        theta = np.radians(45)
+        c, s = np.cos(theta), np.sin(theta)
+        rot = np.array([[c, s], [-s, c]])
+        node = node @ rot
+        hdata = {'hmax': 0.5}
+        p, t = mesh2d(node, None, hdata)
+
+    elif num == 2:
+        # Rectangle with circular hole
+        theta = np.linspace(0, 2 * np.pi, 100, endpoint = False)
+        x = np.cos(theta) / 2
+        y = np.sin(theta) / 2
+
+        n_circ = len(theta)
+        rect_nodes = np.array([[-5.0, -5.0], [5.0, -5.0], [5.0, 15.0], [-5.0, 15.0]])
+        node = np.vstack([np.column_stack([x, y]), rect_nodes])
+
+        # circle edges
+        circ_edges = np.column_stack([np.arange(n_circ), np.roll(np.arange(n_circ), -1)])
+        # rectangle edges
+        n = n_circ
+        rect_edges = np.array([[n, n + 1], [n + 1, n + 2], [n + 2, n + 3], [n + 3, n]])
+
+        edge = np.vstack([circ_edges, rect_edges])
+        hdata = {'hmax': 0.5}
+        p, t = mesh2d(node, edge, hdata)
+
+    elif num == 3:
+        # L-shaped domain
+        node = np.array([
+            [0.0, 0.0], [1.0, 0.0], [1.0, 0.5],
+            [0.5, 0.5], [0.5, 1.0], [0.0, 1.0],
+        ])
+        hdata = {'hmax': 0.05}
+        p, t = mesh2d(node, None, hdata)
+
+    elif num == 4:
+        # U-shaped domain
+        node = np.array([
+            [0.0, 0.0], [3.0, 0.0], [3.0, 3.0], [2.5, 3.0],
+            [2.5, 0.5], [0.5, 0.5], [0.5, 3.0], [0.0, 3.0],
+        ])
+        hdata = {'hmax': 0.1}
+        p, t = mesh2d(node, None, hdata)
+
+    elif num == 5:
+        # Simple unit square
+        node = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        hdata = {'hmax': 0.1}
+        p, t = mesh2d(node, None, hdata)
+
+    else:
+        raise ValueError(
+            "Example number {} not available. Choose 1-5.".format(num)
+        )
+
+    return p, t
