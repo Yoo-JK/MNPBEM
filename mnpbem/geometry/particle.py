@@ -539,6 +539,10 @@ class Particle(object):
         self.area = np.array(w.sum(axis=1)).flatten()
 
         ind3, ind4 = self.index34()
+        # Use totriangles to get the 6-column face layout
+        # MATLAB: faces = totriangles(obj)
+        # For triangles: [v0, v1, v2, e01, e12, e20]
+        # For quads (first tri): [v0, v1, v2, e01, e12, centroid]
         faces = self.totriangles()[0]
 
         # Allocate arrays
@@ -554,24 +558,26 @@ class Particle(object):
             triy = np.array([0, 1, -1, 4, 0, -4]) / 3
 
             for i in ind3:
-                face_idx = self.faces2[i, [0, 1, 2, 4, 5, 6]].astype(int)
+                face_idx = faces[i].astype(int)
                 for j in range(6):
                     pos[i] += tri[j] * self.verts2[face_idx[j]]
                     vec1[i] += triy[j] * self.verts2[face_idx[j]]
                     vec2[i] += trix[j] * self.verts2[face_idx[j]]
 
         # Quadrilateral elements
+        # MATLAB: pos(ind4,:) = obj.verts2(faces(ind4, 6), :)
+        # faces(ind4, 6) is the centroid (6th column of totriangles output)
         if len(ind4) > 0:
             for i in ind4:
-                # Centroid is last midpoint
-                face_idx = self.faces2[i, 5].astype(int)
-                pos[i] = self.verts2[face_idx]
+                # Centroid is the 6th element (index 5) of the totriangles output
+                centroid_idx = int(faces[i, 5])
+                pos[i] = self.verts2[centroid_idx]
 
-                # Derivatives
+                # Derivatives using the 6-column totriangles face layout
                 trix = np.array([1, 0, -1, 0, 0, 0])
                 triy = np.array([0, -1, -1, 2, 2, -2])
 
-                face_idx = self.faces2[i, :6].astype(int)
+                face_idx = faces[i, :6].astype(int)
                 for j in range(6):
                     vec1[i] += triy[j] * self.verts2[face_idx[j]]
                     vec2[i] += trix[j] * self.verts2[face_idx[j]]

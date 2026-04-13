@@ -134,6 +134,8 @@ def _add_midpoints_flat(p):
 
     MATLAB: Particles/@particle/midpoints.m (case 'flat')
 
+    Handles both triangular and quadrilateral faces.
+
     Parameters
     ----------
     p : Particle
@@ -144,20 +146,22 @@ def _add_midpoints_flat(p):
     p : Particle
         Particle with verts2 and faces2 added
     """
-    # Get edges of particle
-    # MATLAB: midpoints.m line 20
-    edges, edge_indices = _get_edges(p.verts, p.faces)
+    # Determine which faces are triangles and which are quads
+    ind3, ind4 = _index34(p.faces)
+
+    # Get edges of particle (handles both tri and quad)
+    edges, edge_indices = _get_edges(p.verts, p.faces, ind3, ind4)
 
     # Number of vertices
     # MATLAB: midpoints.m line 22
     n = len(p.verts)
 
-    # Add midpoints to vertex list
+    # Add edge midpoints to vertex list
     # MATLAB: midpoints.m line 24-25
     edge_midpoints = 0.5 * (p.verts[edges[:, 0]] + p.verts[edges[:, 1]])
     p.verts2 = np.vstack([p.verts, edge_midpoints])
 
-    # Extend face list
+    # Extend face list with 5 extra columns
     # MATLAB: midpoints.m line 29
     nfaces = len(p.faces)
     p.faces2 = np.column_stack([p.faces, np.full((nfaces, 5), np.nan)])
@@ -165,53 +169,138 @@ def _add_midpoints_flat(p):
     # For triangular faces, add edge midpoint indices
     # MATLAB: midpoints.m line 32
     # faces2 columns: [v0, v1, v2, nan, e01, e12, e20, nan, nan]
-    # where e01 is midpoint between v0 and v1, etc.
-    p.faces2[:, 4] = n + edge_indices[:, 0]  # edge 0-1
-    p.faces2[:, 5] = n + edge_indices[:, 1]  # edge 1-2
-    p.faces2[:, 6] = n + edge_indices[:, 2]  # edge 2-0
+    if len(ind3) > 0:
+        p.faces2[ind3, 4] = n + edge_indices[ind3, 0]  # edge 0-1
+        p.faces2[ind3, 5] = n + edge_indices[ind3, 1]  # edge 1-2
+        p.faces2[ind3, 6] = n + edge_indices[ind3, 2]  # edge 2-0
+
+    # For quadrilateral faces, add edge midpoint indices + centroids
+    # MATLAB: midpoints.m line 36-46
+    # faces2 columns: [v0, v1, v2, v3, e01, e12, e23, e30, centroid]
+    if len(ind4) > 0:
+        p.faces2[ind4, 4] = n + edge_indices[ind4, 0]  # edge 0-1
+        p.faces2[ind4, 5] = n + edge_indices[ind4, 1]  # edge 1-2
+        p.faces2[ind4, 6] = n + edge_indices[ind4, 2]  # edge 2-3
+        p.faces2[ind4, 7] = n + edge_indices[ind4, 3]  # edge 3-0
+
+        # Add centroids to face list and vertex list
+        f4 = p.faces[ind4].astype(int)
+        centroids = 0.25 * (p.verts[f4[:, 0]] + p.verts[f4[:, 1]] +
+                            p.verts[f4[:, 2]] + p.verts[f4[:, 3]])
+        centroid_start = len(p.verts2)
+        p.verts2 = np.vstack([p.verts2, centroids])
+        p.faces2[ind4, 8] = centroid_start + np.arange(len(ind4))
 
     return p
 
 
-def _get_edges(verts, faces):
+def _index34(faces):
+    """
+    Get indices of triangular and quadrilateral faces.
+
+    Parameters
+    ----------
+    faces : ndarray, shape (nfaces, 3 or 4)
+        Face array where NaN in column 3 indicates triangle
+
+    Returns
+    -------
+    ind3 : ndarray
+        Indices of triangular faces
+    ind4 : ndarray
+        Indices of quadrilateral faces
+    """
+    if faces.shape[1] < 4:
+        return np.arange(len(faces)), np.array([], dtype = int)
+    is_tri = np.isnan(faces[:, 3])
+    return np.where(is_tri)[0], np.where(~is_tri)[0]
+
+
+def _get_edges(verts, faces, ind3 = None, ind4 = None):
     """
     Get unique edges and their indices for each face.
 
     MATLAB: Particles/@particle/edges.m
+
+    Handles both triangular (3 edges) and quadrilateral (4 edges) faces.
 
     Parameters
     ----------
     verts : ndarray
         Vertices
     faces : ndarray
-        Face indices (triangles)
+        Face indices (shape nfaces x 3 or nfaces x 4)
+    ind3 : ndarray, optional
+        Indices of triangular faces
+    ind4 : ndarray, optional
+        Indices of quadrilateral faces
 
     Returns
     -------
     edges : ndarray, shape (n_edges, 2)
         Unique edges as pairs of vertex indices
-    edge_indices : ndarray, shape (n_faces, 3)
-        Index of each edge in the edges array for each face
+    edge_indices : ndarray, shape (n_faces, max_edges)
+        Index of each edge in the edges array for each face.
+        For triangles: 3 valid columns. For quads: 4 valid columns.
+        Shape is (nfaces, 4) with -1 for unused entries.
     """
     nfaces = len(faces)
 
-    # All edges in all faces (each triangle has 3 edges)
-    # MATLAB stores edges as (v1, v2), (v2, v3), (v3, v1)
-    all_edges = np.zeros((nfaces * 3, 2), dtype=int)
-    all_edges[0::3] = faces[:, [0, 1]]  # edge 0: v0-v1
-    all_edges[1::3] = faces[:, [1, 2]]  # edge 1: v1-v2
-    all_edges[2::3] = faces[:, [2, 0]]  # edge 2: v2-v0
+    if ind3 is None or ind4 is None:
+        ind3, ind4 = _index34(faces)
+
+    # Collect all edges
+    all_edges_list = []
+    # Map: face_index -> list of edge positions in all_edges_list
+    face_edge_positions = {}  # face_idx -> list of global edge positions
+
+    pos = 0  # running position counter
+
+    # Triangular faces: edges (0,1), (1,2), (2,0)
+    if len(ind3) > 0:
+        f3 = faces[ind3, :3].astype(int)
+        tri_edges = np.empty((len(ind3) * 3, 2), dtype = int)
+        tri_edges[0::3] = f3[:, [0, 1]]
+        tri_edges[1::3] = f3[:, [1, 2]]
+        tri_edges[2::3] = f3[:, [2, 0]]
+        for i, idx in enumerate(ind3):
+            face_edge_positions[idx] = [pos + i * 3, pos + i * 3 + 1, pos + i * 3 + 2]
+        all_edges_list.append(tri_edges)
+        pos += len(tri_edges)
+
+    # Quadrilateral faces: edges (0,1), (1,2), (2,3), (3,0)
+    if len(ind4) > 0:
+        f4 = faces[ind4, :4].astype(int)
+        quad_edges = np.empty((len(ind4) * 4, 2), dtype = int)
+        quad_edges[0::4] = f4[:, [0, 1]]
+        quad_edges[1::4] = f4[:, [1, 2]]
+        quad_edges[2::4] = f4[:, [2, 3]]
+        quad_edges[3::4] = f4[:, [3, 0]]
+        for i, idx in enumerate(ind4):
+            face_edge_positions[idx] = [pos + i * 4, pos + i * 4 + 1,
+                                        pos + i * 4 + 2, pos + i * 4 + 3]
+        all_edges_list.append(quad_edges)
+        pos += len(quad_edges)
+
+    if len(all_edges_list) == 0:
+        return np.array([], dtype = int).reshape(0, 2), np.full((nfaces, 4), -1, dtype = int)
+
+    all_edges = np.vstack(all_edges_list)
 
     # Sort edge vertices so (v1, v2) and (v2, v1) are treated as same edge
-    all_edges_sorted = np.sort(all_edges, axis=1)
+    all_edges_sorted = np.sort(all_edges, axis = 1)
 
     # Find unique edges
     unique_edges, inverse_indices = np.unique(
-        all_edges_sorted, axis=0, return_inverse=True
+        all_edges_sorted, axis = 0, return_inverse = True
     )
 
-    # Reshape inverse indices to (nfaces, 3)
-    edge_indices = inverse_indices.reshape(nfaces, 3)
+    # Build edge_indices array: (nfaces, max_edges_per_face)
+    max_edges = 4  # quads have 4 edges
+    edge_indices = np.full((nfaces, max_edges), -1, dtype = int)
+    for face_idx, edge_positions in face_edge_positions.items():
+        for j, edge_pos in enumerate(edge_positions):
+            edge_indices[face_idx, j] = inverse_indices[edge_pos]
 
     return unique_edges, edge_indices
 
@@ -450,6 +539,7 @@ def fvgrid(x: np.ndarray,
 def trispheresegment(phi: np.ndarray,
         theta: np.ndarray,
         diameter: float = 1.0,
+        triangles: bool = False,
         **kwargs) -> 'Particle':
     # MATLAB: Particles/particleshapes/trispheresegment.m
     phi = np.asarray(phi, dtype = float)
@@ -463,9 +553,15 @@ def trispheresegment(phi: np.ndarray,
     y = diameter / 2.0 * np.sin(theta_grid) * np.sin(phi_grid)
     z = diameter / 2.0 * np.cos(theta_grid)
 
-    # Use surf2patch for triangular faces (required for proper midpoints)
-    faces, verts = _surf2patch(x, y, z, triangles = True)
-    faces = faces[:, ::-1]  # flip for correct normals
+    # Use surf2patch to create faces
+    # MATLAB trispheresegment uses surf2patch without fliplr (unlike fvgrid)
+    # Python _surf2patch has opposite winding from MATLAB, so we flip.
+    if triangles:
+        faces, verts = _surf2patch(x, y, z, triangles = True)
+        faces = faces[:, ::-1]  # flip for correct normals
+    else:
+        faces, verts = _surf2patch(x, y, z, triangles = False)
+        faces = faces[:, ::-1]  # flip for correct normals
 
     p = Particle(verts, faces)
     p = p.clean()
@@ -506,8 +602,8 @@ def trirod(diameter: float,
     theta = np.linspace(0, 0.5 * np.pi, ntheta)
 
     # Upper cap: sphere segment shifted up
-    # (trispheresegment already uses triangles=True internally)
-    cap1 = trispheresegment(phi, theta, diameter, **kwargs)
+    # MATLAB trispheresegment uses quadrilateral faces by default
+    cap1 = trispheresegment(phi, theta, diameter, triangles = triangles, **kwargs)
     cap1.shift([0, 0, 0.5 * (height - diameter)])
 
     # Lower cap: flip cap1 along z-axis

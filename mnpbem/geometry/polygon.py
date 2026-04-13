@@ -502,3 +502,69 @@ class Polygon(object):
         new_poly.dir = self.dir
         new_poly.sym = self.sym
         return new_poly
+
+    def interp1(self, pos: np.ndarray) -> 'Polygon':
+        """
+        Make new polygon through given positions using interpolation.
+
+        MATLAB: @polygon/interp1.m
+
+        Finds all points in `pos` that lie on the polygon boundary
+        (within tolerance 1e-6) and creates a new polygon from those points,
+        ordered along the boundary.
+
+        Parameters
+        ----------
+        pos : ndarray, shape (n, 2)
+            Candidate positions (e.g. mesh vertices)
+
+        Returns
+        -------
+        self : Polygon
+            Modified polygon with positions from `pos` on boundary
+        """
+        pos = np.asarray(pos, dtype = float)
+        if pos.ndim == 1:
+            pos = pos.reshape(1, -1)
+
+        # Find points that are on the polygon boundary (distance < 1e-6)
+        d, inst = self.dist(pos)
+
+        on_boundary = np.abs(d) < 1e-6
+        ipos = np.where(on_boundary)[0]
+        inst_sel = inst[on_boundary]
+
+        if len(ipos) == 0:
+            return self
+
+        # Compute parameter along polygon boundary for ordering
+        # For each boundary point, compute its position along the polygon
+        # as segment_index + fraction_along_segment
+        poly_pos = self.pos
+        n_seg = len(poly_pos)
+        xa, ya = poly_pos[:, 0], poly_pos[:, 1]
+        xb = np.roll(xa, -1)
+        yb = np.roll(ya, -1)
+
+        param = np.empty(len(ipos))
+        for k in range(len(ipos)):
+            seg = inst_sel[k]
+            px, py = pos[ipos[k], 0], pos[ipos[k], 1]
+            # Fraction along segment
+            dx = xb[seg] - xa[seg]
+            dy = yb[seg] - ya[seg]
+            seg_len2 = dx * dx + dy * dy
+            if seg_len2 > 0:
+                frac = ((px - xa[seg]) * dx + (py - ya[seg]) * dy) / seg_len2
+                frac = np.clip(frac, 0.0, 1.0)
+            else:
+                frac = 0.0
+            param[k] = seg + frac
+
+        # Sort by parameter along boundary
+        sort_idx = np.argsort(param)
+        ipos = ipos[sort_idx]
+
+        # Create new polygon from these positions
+        self.pos = pos[ipos].copy()
+        return self

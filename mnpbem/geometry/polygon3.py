@@ -62,7 +62,6 @@ class Polygon3(object):
             options: Optional[dict] = None,
             refun: Optional[Any] = None) -> Tuple[Particle, 'Polygon3']:
         # MATLAB: @polygon3/plate.m
-        # Simplified plate: triangulate polygon and create flat plate at z-level
         if edge is not None:
             self.edge = edge
 
@@ -81,7 +80,6 @@ class Polygon3(object):
         verts_2d, faces_2d = mesh_poly.polymesh2d(hdata = hdata, options = options)
 
         # create 3D vertices at the plate z-level
-        z_col = np.full((verts_2d.shape[0], 1), self.z)
         verts_3d = np.empty((verts_2d.shape[0], 3))
         verts_3d[:, :2] = verts_2d
         verts_3d[:, 2] = self.z
@@ -91,6 +89,11 @@ class Polygon3(object):
 
         # add midpoints (flat)
         p = _add_midpoints_flat(p)
+
+        # MATLAB: obj(i).poly = interp1(obj(i).poly, verts)
+        # Enrich polygon with mesh boundary vertices
+        result_poly3 = self.copy()
+        result_poly3.poly = result_poly3.poly.interp1(verts_2d)
 
         # apply edge profile vertical shift to boundary vertices
         if self.edge is not None and self.edge.pos is not None:
@@ -106,9 +109,6 @@ class Polygon3(object):
         nvec_sum = np.sum(p.nvec[:, 2])
         if np.sign(nvec_sum) != dir:
             p = p.flipfaces()
-
-        # update polygon z-value
-        result_poly3 = self.copy()
 
         return p, result_poly3
 
