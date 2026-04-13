@@ -114,14 +114,16 @@ def trisphere(n, diameter=1.0, **kwargs):
     norms = np.linalg.norm(p.verts2, axis=1, keepdims=True)
     verts2 = 0.5 * diameter * (p.verts2 / norms)
 
-    # Create final particle with curved boundaries
-    # MATLAB: trisphere.m line 61
+    # Create final particle with verts2/faces2 but flat interpolation
+    # MATLAB: trisphere.m line 61 — p = particle(verts2, p.faces2, varargin{:})
+    # MATLAB default is interp='flat'.  Area and centroids are computed from
+    # the flat corner-vertex triangles; verts2/faces2 are only used during
+    # Green-function refinement (polar & boundary-element integration).
     p = Particle(verts2, p.faces2, **kwargs)
 
-    # Set curved interpolation mode
-    # MATLAB: trisphere.m uses 'curv' option in particle init
-    p.interp = 'curv'
-    p._norm()  # Recompute normals for curved boundaries
+    # interp defaults to 'flat' in the Particle constructor when not
+    # explicitly overridden via kwargs, which matches MATLAB.
+    # _norm() is already called by the Particle constructor.
 
     return p
 

@@ -180,7 +180,50 @@ def triangle_unit_set(rule: int = 18) -> Tuple[np.ndarray, np.ndarray, np.ndarra
                       (155 + np.sqrt(15))/1200])
 
     elif rule == 18:
-        # 37 points, order 13 (default, high accuracy)
+        # 28 points, precision 11
+        # MATLAB: triangle_unit_set.m, rule == 18
+        a = 1.0 / 3.0
+        b = 0.9480217181434233
+        c = 0.02598914092828833
+        d = 0.8114249947041546
+        e = 0.09428750264792270
+        f = 0.01072644996557060
+        g = 0.4946367750172147
+        p_ = 0.5853132347709715
+        q = 0.2073433826145142
+        r = 0.1221843885990187
+        s = 0.4389078057004907
+        t = 0.6779376548825902
+        u = 0.04484167758913055
+        v = 0.27722066752827925
+        ww = 0.8588702812826364
+        xx = 0.0
+        yy = 0.1411297187173636
+
+        w1 = 0.08797730116222190
+        w2 = 0.008744311553736190
+        w3 = 0.03808157199393533
+        w4 = 0.01885544805613125
+        w5 = 0.07215969754474100
+        w6 = 0.06932913870553720
+        w7 = 0.04105631542928860
+        w8 = 0.007362383783300573
+
+        x = np.array([a,  b,  c,  c,  d,  e,  e,  f,  g,  g,
+                       p_, q,  q,  r,  s,  s,  t,  t,  u,  u,
+                       v,  v,  ww, ww, xx, xx, yy, yy])
+        y = np.array([a,  c,  b,  c,  e,  d,  e,  g,  f,  g,
+                       q,  p_, q,  s,  r,  s,  u,  v,  t,  v,
+                       t,  u,  xx, yy, ww, yy, ww, xx])
+        w = np.array([w1, w2, w2, w2, w3, w3, w3, w4, w4, w4,
+                       w5, w5, w5, w6, w6, w6, w7, w7, w7, w7,
+                       w7, w7, w8, w8, w8, w8, w8, w8])
+
+        # Normalize to MATLAB convention: sum(w) = 1.0
+        w = w / np.sum(w)
+
+    elif rule == 19:
+        # 37 points, precision 13
         # Coefficients from Burkardt's triangle_unit_set.m
         x = np.array([
             0.33333333333333333333, 0.25574500541856626403, 0.48851249729071686797,
@@ -235,7 +278,7 @@ def triangle_unit_set(rule: int = 18) -> Tuple[np.ndarray, np.ndarray, np.ndarra
 
     else:
         raise ValueError("Quadrature rule {} not implemented. "
-                        "Available rules: 1, 2, 3, 4, 7, 18".format(rule))
+                        "Available rules: 1, 2, 3, 4, 7, 18, 19".format(rule))
 
     return x, y, w
 

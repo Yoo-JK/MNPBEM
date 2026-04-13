@@ -249,7 +249,7 @@ class TestBEMStatEigVsBEMStat(object):
         """BEMStatEig should approximate BEMStat result when enough
         eigenmodes are used."""
         p = _make_sphere_particle(n_verts = 32, diameter = 10.0)
-        nev = min(p.nfaces - 2, 20)
+        nev = min(p.nfaces - 2, 30)
 
         bem_direct = BEMStat(p)
         bem_eig = BEMStatEig(p, nev = nev)
@@ -293,7 +293,7 @@ class TestBEMStatEigVsBEMStat(object):
     def test_solve_multiple_wavelengths(self):
         """BEMStatEig and BEMStat should agree at multiple wavelengths."""
         p = _make_sphere_particle(n_verts = 32, diameter = 10.0)
-        nev = min(p.nfaces - 2, 20)
+        nev = min(p.nfaces - 2, 30)
 
         bem_direct = BEMStat(p)
         bem_eig = BEMStatEig(p, nev = nev)

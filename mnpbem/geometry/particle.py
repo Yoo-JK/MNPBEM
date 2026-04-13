@@ -361,7 +361,7 @@ class Particle(object):
             self.faces2 = None
 
         # Quadrature rules
-        rule = kwargs.get('rule', 18)  # Use rule=18 (37 points) for high accuracy
+        rule = kwargs.get('rule', 18)  # Use rule=18 (28 points) matching MATLAB default
         npol = kwargs.get('npol', (7, 5))  # (n_radial, n_angular)
         self.quad = QuadFaceNew(rule=rule, npol=npol)
 
