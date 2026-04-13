@@ -147,6 +147,11 @@ class DipoleStatLayer(object):
         nvec = p.nvec if hasattr(p, 'nvec') else p.pc.nvec
         phip = -np.einsum('ij,ij...->i...', nvec, e)
 
+        # Reshape from (nfaces, npt, ndip) to (nfaces, npol)
+        n = p.n if hasattr(p, 'n') else phip.shape[0]
+        if phip.ndim > 2:
+            phip = phip.reshape(n, -1)
+
         return CompStruct(p, enei, phip = phip)
 
     def decayrate(self,
@@ -177,6 +182,12 @@ class DipoleStatLayer(object):
         rad = np.zeros((npt, ndip))
         rad0 = np.zeros((npt, ndip))
 
+        # Reshape e from (npt, 3, npol) to (npt, 3, npt, ndip) if needed
+        if e.ndim == 3:
+            e = e.reshape(npt, 3, npt, ndip)
+        elif e.ndim == 2:
+            e = e.reshape(npt, 3, npt, ndip)
+
         for ipos in range(npt):
             for idip in range(ndip):
                 nb = np.sqrt(self.pt.eps1(sig.enei)[ipos])
@@ -190,10 +201,10 @@ class DipoleStatLayer(object):
 
                 rad[ipos, idip] = np.linalg.norm(nb ** 2 * indip_i + dip) ** 2
 
-                e_i = e[ipos, :, ipos, idip] if e.ndim == 4 else e[ipos, :]
-                tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma)
+                e_i = e[ipos, :, ipos, idip]
+                tot[ipos, idip] = np.real(1 + np.imag(e_i @ dip) / (0.5 * nb * gamma))
 
-                rad0[ipos, idip] = nb * gamma
+                rad0[ipos, idip] = np.real(nb * gamma)
 
         return tot, rad, rad0
 

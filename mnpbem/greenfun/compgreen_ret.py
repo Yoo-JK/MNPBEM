@@ -1394,10 +1394,11 @@ class GreenRetBlock(object):
             return H2
 
         elif key == 'Gp':
-            # Gp = -r / d³ * exp(ikd) * (ik - 1/d) * area
-            # But for retarded: Gp includes phase
-            Gp_factor = -phase * (1j * k - 1.0 / d) / (d ** 2)
-            Gp = r * Gp_factor[:, :, np.newaxis] * area2[np.newaxis, :, np.newaxis]
+            # MATLAB: f = (ik - 1/d) / d^2; Gp = f .* [x,y,z] * area * exp(ikd)
+            phase = np.exp(1j * k * d)
+            r_vec = np.stack([x, y, z], axis = 2)  # (n1, n2, 3)
+            Gp_factor = phase * (1j * k - 1.0 / d) / (d ** 2)
+            Gp = r_vec * Gp_factor[:, :, np.newaxis] * area2[np.newaxis, :, np.newaxis]
             return np.transpose(Gp, (0, 2, 1))
 
         elif key == 'H1p':

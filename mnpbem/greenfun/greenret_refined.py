@@ -372,7 +372,8 @@ class GreenRetRefined(object):
             x, y, z = c['x'], c['y'], c['z']
             r_vec = np.stack([x, y, z], axis=2)  # (n1, n2, 3)
             phase = np.exp(1j * k * d)
-            Gp_factor = -phase * (1j * k - inv_d) * inv_d2
+            # MATLAB: f = (ik - 1/d) / d^2; Gp = f .* [x,y,z] * area * phase
+            Gp_factor = phase * (1j * k - inv_d) * inv_d2
             Gp = r_vec * Gp_factor[:, :, np.newaxis] * area2[np.newaxis, :, np.newaxis]
             return np.transpose(Gp, (0, 2, 1))  # (n1, 3, n2)
 

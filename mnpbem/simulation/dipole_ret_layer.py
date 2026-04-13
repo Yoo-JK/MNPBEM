@@ -350,17 +350,23 @@ class DipoleRetLayer(object):
         k_med = k_vals[self._medium - 1]
 
         exc = CompStruct(p, enei)
-        # Initialize with direct potentials (outside boundary = inout 2)
+        # Initialize with zeros
+        exc.phi1 = np.zeros((n1, n2, ndip), dtype = complex)
+        exc.phi1p = np.zeros((n1, n2, ndip), dtype = complex)
+        exc.phi2 = np.zeros((n1, n2, ndip), dtype = complex)
+        exc.phi2p = np.zeros((n1, n2, ndip), dtype = complex)
+        exc.a1 = np.zeros((n1, 3, n2, ndip), dtype = complex)
+        exc.a1p = np.zeros((n1, 3, n2, ndip), dtype = complex)
+        exc.a2 = np.zeros((n1, 3, n2, ndip), dtype = complex)
+        exc.a2p = np.zeros((n1, 3, n2, ndip), dtype = complex)
+
+        # Direct potentials assigned to outside boundary (dipole in medium 1)
         phi_d, phip_d, a_d, ap_d = self._pot(
             pos1, pt.pos, nvec, self.dip, eps_med, k_med)
         exc.phi2 = phi_d
         exc.phi2p = phip_d
         exc.a2 = a_d
         exc.a2p = ap_d
-        exc.phi1 = phi_d.copy()
-        exc.phi1p = phip_d.copy()
-        exc.a1 = a_d.copy()
-        exc.a1p = ap_d.copy()
 
         # Reflected contribution using Green function derivatives
         k0 = 2 * np.pi / enei
@@ -437,6 +443,18 @@ class DipoleRetLayer(object):
         exc.a2p[:, 1, :, :] += a2p
         exc.a2p[:, 2, :, :] += a3p
         exc.phi2p += phip_r
+
+        # Reshape from (nfaces, n_pts, ndip) to (nfaces, n_pts*ndip) for BEM solver
+        n = n1
+        npol = n2 * ndip
+        exc.phi1 = exc.phi1.reshape(n, npol)
+        exc.phi1p = exc.phi1p.reshape(n, npol)
+        exc.phi2 = exc.phi2.reshape(n, npol)
+        exc.phi2p = exc.phi2p.reshape(n, npol)
+        exc.a1 = exc.a1.reshape(n, 3, npol)
+        exc.a1p = exc.a1p.reshape(n, 3, npol)
+        exc.a2 = exc.a2.reshape(n, 3, npol)
+        exc.a2p = exc.a2p.reshape(n, 3, npol)
 
         return exc
 
@@ -516,18 +534,21 @@ class DipoleRetLayer(object):
         rad = np.zeros((npt, ndip))
         rad0 = np.zeros((npt, ndip))
 
+        # Reshape e from (npt, 3, npol) to (npt, 3, npt, ndip) if needed
+        if e.ndim == 3:
+            e = e.reshape(npt, 3, npt, ndip)
+        elif e.ndim == 2:
+            e = e.reshape(npt, 3, npt, ndip)
+
         for ipos in range(npt):
             for idip in range(ndip):
                 dip = self.dip[ipos, :, idip]
                 nb = np.sqrt(self.pt.eps1(sig.enei)[ipos])
 
-                if e.ndim == 4:
-                    e_i = e[ipos, :, ipos, idip]
-                else:
-                    e_i = e[ipos, :]
+                e_i = e[ipos, :, ipos, idip]
 
-                tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma)
-                rad0[ipos, idip] = nb * gamma
+                tot[ipos, idip] = np.real(1 + np.imag(e_i @ dip) / (0.5 * nb * gamma))
+                rad0[ipos, idip] = np.real(nb * gamma)
 
         return tot, rad, rad0
 

@@ -139,6 +139,20 @@ class CompGreenStat(object):
                 self._handle_closed_surfaces(p1, p2, full1, **options)
 
     @staticmethod
+    def _needs_sync(p):
+        """Check whether verts2 needs synchronization with verts."""
+        if not hasattr(p, 'verts2') or not hasattr(p, 'verts'):
+            return False
+        if p.verts2 is None or p.verts is None:
+            return False
+        if len(p.verts) == 0 or len(p.verts2) == 0:
+            return False
+        verts_center = 0.5 * (p.verts.min(axis = 0) + p.verts.max(axis = 0))
+        verts2_center = 0.5 * (p.verts2.min(axis = 0) + p.verts2.max(axis = 0))
+        offset = verts_center - verts2_center
+        return np.linalg.norm(offset) > 1e-6
+
+    @staticmethod
     def _sync_verts2(p):
         """Sync verts2 with verts if they are out of sync.
 
@@ -171,11 +185,19 @@ class CompGreenStat(object):
         With refinement: diagonal and nearby elements use polar integration
         Without refinement: F_diagonal = -2π (analytical value)
         """
+        import copy
         from .utils import refinematrix
 
-        # Sync verts2 with verts if they have drifted apart
-        self._sync_verts2(p1)
-        if p2 is not p1:
+        # Sync verts2 with verts if they have drifted apart.
+        # Work on deep copies so that the original particle objects are
+        # never mutated -- shared particle references (e.g. mirror
+        # symmetry particles reused across multiple Green function
+        # constructions) must remain unchanged.
+        if self._needs_sync(p1):
+            p1 = copy.deepcopy(p1)
+            self._sync_verts2(p1)
+        if p2 is not p1 and self._needs_sync(p2):
+            p2 = copy.deepcopy(p2)
             self._sync_verts2(p2)
 
         pos1 = p1.pos

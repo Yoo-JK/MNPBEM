@@ -221,14 +221,15 @@ class DipoleRet(object):
                 ind = con[inout - 1][ip, ipt]
                 if ind != 0:
                     # Index to positions of particle and dipoles
-                    ind1 = p.index[ip]
+                    ind1 = self._get_index(p, ip)
                     pos1 = p.pos[ind1, :]
-                    ind2 = pt.index[ipt]
+                    ind2 = self._get_index(pt, ipt)
                     pos2 = pt.pos[ind2, :]
                     # Dipole orientations
                     dip = self.dip[ind2, :, :]
                     # Compute potentials and surface derivatives
-                    e, h = self._dipolefield(pos1, pos2, dip, eps_vals[ind], k_vals[ind])
+                    # ind is 1-based medium index
+                    e, h = self._dipolefield(pos1, pos2, dip, eps_vals[ind - 1], k_vals[ind - 1])
                     exc.e[ind1, :, ind2, :] = e
                     exc.h[ind1, :, ind2, :] = h
 
@@ -375,18 +376,18 @@ class DipoleRet(object):
                     ind = con[inout][ip, ipt]
                     if ind != 0:
                         # Index to positions
-                        ind1 = p.index[ip]
+                        ind1 = self._get_index(p, ip)
                         pos1 = p.pos[ind1, :]
-                        ind2 = pt.index[ipt]
+                        ind2 = self._get_index(pt, ipt)
                         pos2 = pt.pos[ind2, :]
                         # Normal vectors and dipole orientations
                         nvec = p.nvec[ind1, :]
                         dip = self.dip[ind2, :, :]
-                        # Compute potentials
+                        # Compute potentials (ind is 1-based medium index)
                         phi, phip, a, ap = self._pot(
-                            pos1, pos2, nvec, dip, eps_vals[ind], k_vals[ind]
+                            pos1, pos2, nvec, dip, eps_vals[ind - 1], k_vals[ind - 1]
                         )
-                        # Set output - use np.ix_ for proper broadcasting
+                        # Set output
                         ind1_a = np.atleast_1d(ind1)
                         ind2_a = np.atleast_1d(ind2)
                         if inout == 0:  # Inside
@@ -554,6 +555,14 @@ class DipoleRet(object):
         tot = np.zeros((npt, ndip))
         rad0 = np.zeros((npt, ndip))
 
+        # Reshape e from (npt, 3, npol) to (npt, 3, npt, ndip)
+        # Python BEM solver flattens the last two dims of the potential,
+        # so field returns (npt, 3, npt*ndip) instead of (npt, 3, npt, ndip)
+        if e.ndim == 3:
+            e = e.reshape(npt, 3, npt, ndip)
+        elif e.ndim == 2:
+            e = e.reshape(npt, 3, npt, ndip)
+
         # MATLAB: decayrate.m lines 36-38
         sca, _ = self.scattering(sig)
         sca = np.asarray(sca)
@@ -571,13 +580,13 @@ class DipoleRet(object):
 
                 # Total decay rate
                 e_i = e[ipos, :, ipos, idip]
-                tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma)
+                tot[ipos, idip] = np.real(1 + np.imag(e_i @ dip) / (0.5 * nb * gamma))
 
                 # Radiative decay rate
-                rad[ipos, idip] = rad[ipos, idip] / (0.5 * nb * gamma)
+                rad[ipos, idip] = np.real(rad[ipos, idip] / (0.5 * nb * gamma))
 
                 # Free-space decay rate
-                rad0[ipos, idip] = nb * gamma
+                rad0[ipos, idip] = np.real(nb * gamma)
 
         return tot, rad, rad0
 
@@ -695,18 +704,35 @@ class DipoleRet(object):
         field_dipole = self.farfield(self.spec, sig.enei)
 
         # Add the two far-fields element-wise.
-        # The particle field has shape (ndir, 3) or (ndir, 3, npol),
+        # The particle field has shape (ndir, 3, npol) where npol = npt*ndip,
         # while the dipole field has shape (ndir, 3, npt, ndip).
-        # We need to broadcast the particle field to match.
+        # Reshape particle field to (ndir, 3, npt, ndip) before adding.
         e_p = field_particle.e
         h_p = field_particle.h
         e_d = field_dipole.e
         h_d = field_dipole.h
 
-        # Expand particle field dimensions to match dipole field
-        while e_p.ndim < e_d.ndim:
-            e_p = e_p[:, :, np.newaxis]
-            h_p = h_p[:, :, np.newaxis]
+        npt = self.pt.n
+        ndip = self.dip.shape[2]
+
+        # Match particle field shape to dipole field shape (ndir, 3, npt, ndip)
+        if e_d.ndim == 4:
+            npol_expected = npt * ndip
+            if e_p.ndim == 2:
+                # (ndir, 3) -> (ndir, 3, 1, 1) for broadcasting
+                e_p = e_p[:, :, np.newaxis, np.newaxis]
+                h_p = h_p[:, :, np.newaxis, np.newaxis]
+            elif e_p.ndim == 3:
+                npol_actual = e_p.shape[2]
+                if npol_actual == npol_expected:
+                    # (ndir, 3, npol) -> (ndir, 3, npt, ndip)
+                    ndir_p = e_p.shape[0]
+                    e_p = e_p.reshape(ndir_p, 3, npt, ndip)
+                    h_p = h_p.reshape(ndir_p, 3, npt, ndip)
+                else:
+                    # npol doesn't match: broadcast (e.g. npol=1)
+                    e_p = e_p[:, :, :, np.newaxis]
+                    h_p = h_p[:, :, :, np.newaxis]
 
         e = e_p + e_d
         h = h_p + h_d
@@ -754,34 +780,80 @@ class DipoleRet(object):
 
         return sca, dsca
 
+    @staticmethod
+    def _get_index(obj, ip):
+        if hasattr(obj, 'index_func'):
+            # ComParticle: use index_func with 1-based particle index
+            return obj.index_func(ip + 1)
+        elif hasattr(obj, 'index') and isinstance(obj.index, list):
+            # ComPoint: index is a list of arrays
+            return np.atleast_1d(obj.index[ip])
+        else:
+            # Fallback
+            return np.atleast_1d(obj.index[ip])
+
     def _connect(self, p, pt):
         """
         Compute connectivity matrix between particle and dipole points.
 
-        Helper function to determine which materials are connected.
+        MATLAB: Particles/@compound/connect.m
+
+        Determines which particle boundaries and dipole points share the
+        same dielectric medium, so that electromagnetic coupling is
+        computed only through the correct medium.
 
         Parameters
         ----------
         p : ComParticle
-            Particle
+            Particle with inout array of shape (n_particles, 2)
         pt : ComPoint
-            Dipole points
+            Dipole points with inout array of shape (n_groups,)
 
         Returns
         -------
         con : list of ndarray
-            Connectivity matrices for inside and outside
+            con[i] has shape (n_particles, n_pt_groups) where
+            con[i][k, l] = medium index if connected, 0 otherwise.
+            i indexes the boundary sides of p (0=inside, 1=outside).
         """
-        # Simplified version - assumes all connections
-        # Full implementation would check material indices
-        np_particles = len(p.index) if hasattr(p, 'index') else 1
-        npt_points = len(pt.index) if hasattr(pt, 'index') else 1
+        # p.inout: (n_particles, 2) — each row [inside_medium, outside_medium]
+        # pt.inout: (n_groups,) — medium index for each group
+        p_inout = np.atleast_2d(p.inout)  # (n_particles, 2)
+        pt_inout = np.atleast_1d(pt.inout)  # (n_groups,)
 
-        # Create connectivity matrices (inside and outside)
-        con = [
-            np.ones((np_particles, npt_points), dtype=int),
-            np.ones((np_particles, npt_points), dtype=int)
-        ]
+        # Number of boundary sides for p (=2: inside/outside)
+        n1 = p_inout.shape[1]
+        # Number of "boundary sides" for pt (=1 for ComPoint)
+        n2 = 1 if pt_inout.ndim == 1 else pt_inout.shape[1]
+
+        # Use only the active (masked) particles and points
+        if hasattr(p, '_mask'):
+            p_mask = p._mask
+        else:
+            p_mask = list(range(p_inout.shape[0]))
+
+        if hasattr(pt, '_mask'):
+            pt_mask = pt._mask
+        else:
+            pt_mask = list(range(len(pt_inout)))
+
+        con = []
+        for i in range(n1):
+            # Medium indices on boundary side i for each particle
+            io1 = p_inout[p_mask, i]
+            # Medium indices for each point group
+            if pt_inout.ndim == 1:
+                io2 = pt_inout[pt_mask]
+            else:
+                io2 = pt_inout[pt_mask, 0]
+
+            c = np.zeros((len(io1), len(io2)), dtype = int)
+            for k in range(len(io1)):
+                for l in range(len(io2)):
+                    if io1[k] == io2[l]:
+                        c[k, l] = int(io1[k])
+            con.append(c)
+
         return con
 
     def __call__(self, p, enei):
