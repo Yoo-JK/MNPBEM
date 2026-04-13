@@ -192,13 +192,10 @@ class EELSRet(EELSBase):
 
         # ---- excitation of embedding medium ----
         # MATLAB: potential.m lines 37-43
-        ind = np.where(np.any(p_obj.inout == 1, axis = 1))[0]
-        ind_faces = []
-        for idx in ind:
-            ind_faces.extend(getattr(p_obj, "index_func", p_obj.index)(idx + 1))
-        ind_faces = np.array(ind_faces, dtype = int) if len(ind_faces) > 0 else np.array([], dtype = int)
+        # MATLAB: ind = find(any(p.inout == 1, 2)') — particle indices (1-indexed)
+        ind = np.where(np.any(p_obj.inout == 1, axis = 1))[0] + 1  # 1-indexed
 
-        phi, phip = self.potinfty(q, gamma[0], ind_faces)
+        phi, phip = self.potinfty(q, gamma[0], ind)
 
         exc = self._add_potential(exc, p_obj, phi, phip, 1, eps_arr[0], self.vel)
 
@@ -211,13 +208,10 @@ class EELSRet(EELSBase):
 
             # MATLAB 1-indexed material
             mat_int = int(mat)
-            ind = np.where(np.any(p_obj.inout == mat_int, axis = 1))[0]
-            ind_faces = []
-            for idx in ind:
-                ind_faces.extend(getattr(p_obj, "index_func", p_obj.index)(idx + 1))
-            ind_faces = np.array(ind_faces, dtype = int) if len(ind_faces) > 0 else np.array([], dtype = int)
+            # MATLAB: ind = find(any(p.inout == mat, 2)') — particle indices (1-indexed)
+            ind = np.where(np.any(p_obj.inout == mat_int, axis = 1))[0] + 1
 
-            phi, phip = self.potinfty(q, gamma[mat_int - 1], ind_faces, mat_int)
+            phi, phip = self.potinfty(q, gamma[mat_int - 1], ind, mat_int)
 
             if not np.all(phi == 0):
                 exc = self._add_potential(exc, p_obj, phi, phip, mat_int, eps_arr[mat_int - 1], self.vel)
@@ -319,7 +313,8 @@ class EELSRet(EELSBase):
         p = self.p
         eps_vals = np.array([eps_func(sig.enei) for eps_func in p.eps], dtype = object)
         eps_arr = np.array([e[0] if hasattr(e, '__len__') else e for e in eps_vals], dtype = complex)
-        k_arr = np.array([e[1] if hasattr(e, '__len__') else 0 for e in eps_vals], dtype = complex)
+        # MATLAB: k = 2*pi/sig.enei * sqrt(eps)
+        k_arr = 2 * np.pi / sig.enei * np.sqrt(eps_arr)
 
         gamma = 1.0 / np.sqrt(1 - eps_arr * self.vel ** 2)
         q = 2 * np.pi / (sig.enei * self.vel)
@@ -328,24 +323,30 @@ class EELSRet(EELSBase):
         n_imp = self.impact.shape[0]
         psurf = np.zeros(n_imp)
 
+        # ---- ensure sig arrays are 2D/3D for uniform indexing ----
+        # BEMRet.solve() squeezes single-polarization: sig1=(n,), h1=(n,3)
+        # MATLAB always has sig1=(n,npol), h1=(n,3,npol).
+        sig1 = sig.sig1
+        sig2 = sig.sig2
+        h1 = sig.h1
+        h2 = sig.h2
+        if sig1.ndim == 1:
+            sig1 = sig1[:, np.newaxis]
+        if sig2.ndim == 1:
+            sig2 = sig2[:, np.newaxis]
+        if h1.ndim == 2:
+            h1 = h1[:, :, np.newaxis]
+        if h2.ndim == 2:
+            h2 = h2[:, :, np.newaxis]
+
         # MATLAB: loss.m lines 29-30
         # Auxiliary functions for energy loss
+        # MATLAB: fun1 = @(ind)(sig.sig1(ind,:) - vel * squeeze(sig.h1(ind,3,:)))
         def fun1(ind: np.ndarray) -> np.ndarray:
-            # MATLAB: sig.sig1(ind,:) - vel * squeeze(sig.h1(ind,3,:))
-            # Python indexing h1[ind, 2, :] already removes the middle dim,
-            # so np.squeeze is unnecessary (and harmful for nimp > 1).
-            if sig.h1.ndim == 3:
-                h1_z = sig.h1[ind, 2, :]
-            else:
-                h1_z = sig.h1[ind, 2:3]
-            return sig.sig1[ind, :] - self.vel * h1_z
+            return sig1[ind, :] - self.vel * np.squeeze(h1[np.ix_(ind, [2], np.arange(h1.shape[2]))], axis = 1)
 
         def fun2(ind: np.ndarray) -> np.ndarray:
-            if sig.h2.ndim == 3:
-                h2_z = sig.h2[ind, 2, :]
-            else:
-                h2_z = sig.h2[ind, 2:3]
-            return sig.sig2[ind, :] - self.vel * h2_z
+            return sig2[ind, :] - self.vel * np.squeeze(h2[np.ix_(ind, [2], np.arange(h2.shape[2]))], axis = 1)
 
         # MATLAB: loss.m lines 33-34
         # Potential for beam in embedding medium
@@ -355,6 +356,7 @@ class EELSRet(EELSBase):
 
         # MATLAB: loss.m lines 36-44
         # Faces with embedding medium at inside or outside
+        # MATLAB: ind1 = p.index(find(p.inout(:,1)==1)')
         ind1 = []
         ind2 = []
         for ip in range(p.np):
@@ -379,6 +381,7 @@ class EELSRet(EELSBase):
                 continue
             mat_int = int(mat)
 
+            # MATLAB: ind1 = p.index(find(p.inout(:,1)==mat)')
             ind1_mat = []
             ind2_mat = []
             for ip in range(p.np):
@@ -390,15 +393,13 @@ class EELSRet(EELSBase):
             ind1_mat = np.array(ind1_mat, dtype = int) if len(ind1_mat) > 0 else np.array([], dtype = int)
             ind2_mat = np.array(ind2_mat, dtype = int) if len(ind2_mat) > 0 else np.array([], dtype = int)
 
-            # Faces with given medium at in- or outside
-            mask_faces = np.where(np.any(p.inout == mat_int, axis = 1))[0]
-            mask_faces_list = []
-            for idx in mask_faces:
-                mask_faces_list.extend(getattr(p, "index_func", p.index)(idx + 1))
+            # MATLAB: phi = vel*full(obj, potinside(obj,-q,k(mat),find(any(p.inout==mat,2))',mat))
+            # Pass particle indices (1-indexed) as mask, not face indices
+            mask_particles = np.where(np.any(p.inout == mat_int, axis = 1))[0] + 1  # 1-indexed
 
             phi_inside_mat, _ = self.potinside(
                 -q, k_arr[mat_int - 1],
-                np.array(mask_faces_list, dtype = int) if len(mask_faces_list) > 0 else None,
+                mask_particles,
                 mat_int)
             phi_mat = self.vel * self.full(phi_inside_mat)
 
