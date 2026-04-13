@@ -140,7 +140,13 @@ class CompGreenStat(object):
 
     @staticmethod
     def _needs_sync(p):
-        """Check whether verts2 needs synchronization with verts."""
+        """Check whether verts2 needs synchronization with verts.
+
+        Uses a relative threshold (1% of particle extent) to distinguish
+        genuine user-introduced drift (e.g. manually shifting verts without
+        verts2) from small natural offsets due to curved-element
+        representation.
+        """
         if not hasattr(p, 'verts2') or not hasattr(p, 'verts'):
             return False
         if p.verts2 is None or p.verts is None:
@@ -150,7 +156,9 @@ class CompGreenStat(object):
         verts_center = 0.5 * (p.verts.min(axis = 0) + p.verts.max(axis = 0))
         verts2_center = 0.5 * (p.verts2.min(axis = 0) + p.verts2.max(axis = 0))
         offset = verts_center - verts2_center
-        return np.linalg.norm(offset) > 1e-6
+        extent = np.linalg.norm(p.verts.max(axis = 0) - p.verts.min(axis = 0))
+        threshold = max(0.01 * extent, 1e-6)
+        return np.linalg.norm(offset) > threshold
 
     @staticmethod
     def _sync_verts2(p):
@@ -170,7 +178,9 @@ class CompGreenStat(object):
         verts_center = 0.5 * (p.verts.min(axis = 0) + p.verts.max(axis = 0))
         verts2_center = 0.5 * (p.verts2.min(axis = 0) + p.verts2.max(axis = 0))
         offset = verts_center - verts2_center
-        if np.linalg.norm(offset) > 1e-6:
+        extent = np.linalg.norm(p.verts.max(axis = 0) - p.verts.min(axis = 0))
+        threshold = max(0.01 * extent, 1e-6)
+        if np.linalg.norm(offset) > threshold:
             p.verts2 += offset
 
     def _compute_greenstat(self, p1, p2, **options):
