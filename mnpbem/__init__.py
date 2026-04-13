@@ -42,6 +42,7 @@ from .geometry import (
 
 # Green's functions: static, retarded, mirror, layer, ACA
 from .greenfun import (
+    GreenStat,
     CompGreenStat,
     CompGreenRet,
     CompStruct,
@@ -194,6 +195,7 @@ __all__ = [
     "fvgrid",
     "connect",
     # Green's functions
+    "GreenStat",
     "CompGreenStat",
     "CompGreenRet",
     "CompStruct",

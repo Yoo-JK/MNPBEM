@@ -395,8 +395,9 @@ class CompGreenStat(object):
                     f_vals = -(n_dot_vec / (r ** 3)) @ w  # (len(nb),)
                     self.F[nb, face2] = f_vals
                 else:  # 'cart'
-                    # -vec / r³
-                    f_vals = -(vec / r[:, :, np.newaxis] ** 3) @ w  # (len(nb), 3)
+                    # -vec / r³: einsum to contract over quadrature points
+                    # (nb, nq, 3) x (nq,) -> (nb, 3)
+                    f_vals = -np.einsum('ijk,j->ik', vec / r[:, :, np.newaxis] ** 3, w)
                     self.F[nb, face2, :] = f_vals
 
     def _handle_closed_surfaces(self, p1, p2, full1, **options):
@@ -1124,6 +1125,44 @@ class CompStruct(object):
                 result.val[key] = val_other
         return result
 
+    def __sub__(self, other):
+        """
+        Element-wise subtraction of CompStruct fields.
+
+        MATLAB: @compstruct/minus.m
+        """
+        return self.__add__(-other)
+
+    def __neg__(self):
+        """
+        Negate all fields of CompStruct.
+
+        MATLAB: @compstruct/uminus.m
+        """
+        result = CompStruct(self.p, self.enei)
+        for key, value in self.val.items():
+            result.val[key] = -value
+        return result
+
+    def __mul__(self, other):
+        """
+        Multiply all fields by a scalar.
+
+        MATLAB: @compstruct/mtimes.m
+        """
+        result = CompStruct(self.p, self.enei)
+        for key, value in self.val.items():
+            result.val[key] = other * value
+        return result
+
+    def __rmul__(self, other):
+        """
+        Right multiplication (scalar * CompStruct).
+
+        MATLAB: @compstruct/mtimes.m
+        """
+        return self.__mul__(other)
+
     def __radd__(self, other):
         """
         Right addition for CompStruct.
@@ -1142,6 +1181,50 @@ class CompStruct(object):
         if other == 0:
             return self
         return self.__add__(other)
+
+    def fieldnames(self):
+        """
+        Get field names of CompStruct.
+
+        MATLAB: @compstruct/fieldnames.m
+
+        Returns
+        -------
+        names : list of str
+        """
+        return list(self.val.keys())
+
+    def isfield(self, name):
+        """
+        Check whether CompStruct has a field with the given name.
+
+        MATLAB: @compstruct/isfield.m
+        """
+        return name in self.val
+
+    def iselement(self, name):
+        """
+        Check whether CompStruct has a field with the given name.
+
+        MATLAB: @compstruct/iselement.m (alias for isfield)
+        """
+        return name in self.val
+
+    def getfield(self, name):
+        """
+        Get the value of a CompStruct field.
+
+        MATLAB: @compstruct/getfield.m
+        """
+        return self.val[name]
+
+    def to_struct(self):
+        """
+        Convert CompStruct to a plain dict.
+
+        MATLAB: @compstruct/struct.m
+        """
+        return dict(self.val)
 
     def __repr__(self):
         """String representation."""

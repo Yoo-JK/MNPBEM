@@ -2,6 +2,7 @@
 Green's functions for electromagnetic boundary element method.
 
 Classes:
+- GreenStat: Standalone quasistatic Green function G=1/r
 - CompGreenStat: Composite Green function (quasistatic)
 - CompGreenRet: Composite Green function (retarded)
 - CompStruct: Structure for compound of points or particles
@@ -19,6 +20,7 @@ Classes:
 - ACACompGreenRetLayer: ACA-accelerated composite Green function (retarded + layer)
 """
 
+from .greenstat import GreenStat
 from .compgreen_stat import CompGreenStat, CompStruct
 from .compgreen_ret import CompGreenRet
 from .compgreen_stat_mirror import CompGreenStatMirror
@@ -35,6 +37,7 @@ from .aca_compgreen_ret import ACACompGreenRet
 from .aca_compgreen_ret_layer import ACACompGreenRetLayer
 
 __all__ = [
+    "GreenStat",
     "CompGreenStat",
     "CompGreenRet",
     "CompStruct",

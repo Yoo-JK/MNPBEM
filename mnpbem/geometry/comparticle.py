@@ -724,6 +724,249 @@ class ComParticle(object):
         r_list = [part.bradius() for part in self.p]
         return np.hstack(r_list)
 
+    # ==================== MATLAB @compound compatibility ====================
+
+    def __eq__(self, other):
+        """
+        Test for equality between two compound objects (compare positions).
+
+        MATLAB: @compound/eq.m
+        """
+        if not hasattr(other, 'pc') or not hasattr(other.pc, 'pos'):
+            return NotImplemented
+        if self.pc.pos.size != other.pc.pos.size:
+            return False
+        return np.all(self.pc.pos.ravel() == other.pc.pos.ravel())
+
+    def __ne__(self, other):
+        """
+        Test for inequality between two compound objects.
+
+        MATLAB: @compound/ne.m
+        """
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
+
+    def __hash__(self):
+        return id(self)
+
+    @staticmethod
+    def connect(*args):
+        """
+        Connectivity between compound points or particles.
+
+        MATLAB: @compound/connect.m
+
+        Usage
+        -----
+        con = ComParticle.connect(p1)
+        con = ComParticle.connect(p1, p2)
+        con = ComParticle.connect(p1, ind)
+        con = ComParticle.connect(p1, p2, ind)
+
+        Parameters
+        ----------
+        p1 : ComParticle
+            First compound object
+        p2 : ComParticle, optional
+            Second compound object
+        ind : ndarray, optional
+            Replace dielectric materials according to ind
+
+        Returns
+        -------
+        con : list of list of ndarray
+            Cell array (n1 x n2) of arrays indicating whether compound
+            points/particles can see each other. Non-zero entries indicate
+            the shared medium index.
+        """
+        # Parse arguments
+        if len(args) == 1:
+            # Single particle
+            p1 = args[0]
+            inout1 = p1.inout[p1._mask, :]
+            inout_list = [inout1]
+        elif len(args) == 2:
+            if isinstance(args[1], np.ndarray) and args[1].ndim == 1:
+                # Single particle + index replacement
+                p1 = args[0]
+                ind = args[1]
+                inout1 = ind[p1.inout[p1._mask, :] - 1]  # MATLAB is 1-indexed
+                inout_list = [inout1]
+            else:
+                # Two particles
+                p1, p2 = args[0], args[1]
+                inout1 = p1.inout[p1._mask, :]
+                inout2 = p2.inout[p2._mask, :]
+                inout_list = [inout1, inout2]
+        elif len(args) == 3:
+            # Two particles + index replacement
+            p1, p2, ind = args[0], args[1], args[2]
+            inout1 = ind[p1.inout[p1._mask, :] - 1]
+            inout2 = ind[p2.inout[p2._mask, :] - 1]
+            inout_list = [inout1, inout2]
+        else:
+            raise ValueError('[error] Invalid number of arguments for connect()')
+
+        # Compute connectivity matrix
+        n1_cols = inout_list[0].shape[1]
+        n2_cols = inout_list[-1].shape[1]
+        con = [[None for _ in range(n2_cols)] for _ in range(n1_cols)]
+
+        for i in range(n1_cols):
+            for j in range(n2_cols):
+                io1 = inout_list[0][:, i]
+                io2 = inout_list[-1][:, j]
+                c1 = np.tile(io1[:, np.newaxis], (1, len(io2)))
+                c2 = np.tile(io2[np.newaxis, :], (len(io1), 1))
+                result = np.zeros_like(c1)
+                match = c1 == c2
+                result[match] = c1[match]
+                con[i][j] = result
+
+        return con
+
+    def dielectric(self, enei, inout):
+        """
+        Dielectric function at in- or outside.
+
+        MATLAB: @compound/dielectric.m
+
+        Parameters
+        ----------
+        enei : float
+            Wavelength of light in vacuum
+        inout : int
+            Inside (1) or outside (2). Uses 1-indexed column.
+
+        Returns
+        -------
+        eps_vals : list
+            Dielectric function values for each masked particle
+        """
+        eps_table = [eps_fn(enei) for eps_fn in self.eps]
+
+        if self.inout.size != len(self.p):
+            # inout has 2 columns: pick the relevant column
+            col = inout - 1  # Convert to 0-indexed column
+            indices = self.inout[self._mask, col]
+            return [eps_table[idx - 1] for idx in indices]  # 1-indexed to 0-indexed
+        else:
+            return eps_table
+
+    def expand(self, val):
+        """
+        Expand cell array for all point or particle positions.
+
+        MATLAB: @compound/expand.m (private)
+
+        Parameters
+        ----------
+        val : scalar, ndarray, or list
+            Value(s) to expand. If list, one entry per masked particle.
+
+        Returns
+        -------
+        full : ndarray
+            Expanded values, one per face of all masked particles
+        """
+        sizes = [self.p[i].nfaces for i in self._mask]
+
+        if not isinstance(val, (list, tuple)):
+            # Scalar or array: replicate for all faces
+            total = sum(sizes)
+            if np.isscalar(val):
+                return np.full(total, val)
+            else:
+                return np.tile(np.asarray(val), (total, 1)) if np.ndim(val) > 0 else np.full(total, val)
+        else:
+            # List: replicate each value for the corresponding particle's faces
+            parts = []
+            for i, s in enumerate(sizes):
+                v = np.asarray(val[i])
+                if v.ndim == 0:
+                    parts.append(np.full(s, v.item()))
+                else:
+                    parts.append(np.tile(v, (s, 1)) if v.ndim > 0 else np.full(s, v))
+
+            # Pre-allocate and fill (avoid np.concatenate per CONVENTIONS)
+            if len(parts) > 0 and parts[0].ndim > 1:
+                total = sum(p.shape[0] for p in parts)
+                result = np.empty((total, parts[0].shape[1]), dtype = parts[0].dtype)
+                offset = 0
+                for p in parts:
+                    result[offset:offset + p.shape[0]] = p
+                    offset += p.shape[0]
+                return result
+            else:
+                total = sum(len(p) for p in parts)
+                result = np.empty(total, dtype = parts[0].dtype if len(parts) > 0 else float)
+                offset = 0
+                for p in parts:
+                    result[offset:offset + len(p)] = p
+                    offset += len(p)
+                return result
+
+    def ipart(self, ind):
+        """
+        Find particle number and corresponding index for given global face index.
+
+        MATLAB: @compound/ipart.m
+
+        Parameters
+        ----------
+        ind : int or array_like
+            Global face index (0-indexed)
+
+        Returns
+        -------
+        particle_idx : ndarray
+            Particle index (0-indexed) for each input index
+        local_ind : ndarray
+            Local face index within the particle
+        """
+        ind = np.atleast_1d(ind)
+        sizes = np.array([self.p[i].nfaces for i in self._mask])
+        cumulative = np.zeros(len(sizes) + 1, dtype = int)
+        cumulative[1:] = np.cumsum(sizes)
+
+        particle_idx = np.empty(len(ind), dtype = int)
+        local_ind = np.empty(len(ind), dtype = int)
+
+        for k, idx in enumerate(ind):
+            # Find which particle this index belongs to
+            p_idx = np.searchsorted(cumulative[1:], idx, side = 'right')
+            particle_idx[k] = p_idx
+            local_ind[k] = idx - cumulative[p_idx]
+
+        return particle_idx, local_ind
+
+    def set(self, **kwargs):
+        """
+        Set properties of the compound particle (on pc).
+
+        MATLAB: @compound/set.m
+
+        Parameters
+        ----------
+        **kwargs : dict
+            Property name-value pairs to set on the concatenated particle
+        """
+        for key, value in kwargs.items():
+            setattr(self.pc, key, value)
+        return self
+
+    @property
+    def size(self):
+        """
+        Number of faces for each masked particle.
+
+        MATLAB: compound.size property
+        """
+        return np.array([self.p[i].nfaces for i in self._mask])
+
     def __repr__(self):
         return (
             "ComParticle(nparticles = {}, "
