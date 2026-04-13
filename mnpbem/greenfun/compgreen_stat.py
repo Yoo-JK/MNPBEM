@@ -138,6 +138,27 @@ class CompGreenStat(object):
             if full1.closed is not None and any(c is not None for c in full1.closed):
                 self._handle_closed_surfaces(p1, p2, full1, **options)
 
+    @staticmethod
+    def _sync_verts2(p):
+        """Sync verts2 with verts if they are out of sync.
+
+        When users manually shift verts and pos without also shifting verts2,
+        the midpoint vertices become inconsistent. This method detects and
+        corrects the offset so that curved-element quadrature (quadpol,
+        quad_integration) uses the correct positions.
+        """
+        if not hasattr(p, 'verts2') or not hasattr(p, 'verts'):
+            return
+        if p.verts2 is None or p.verts is None:
+            return
+        if len(p.verts) == 0 or len(p.verts2) == 0:
+            return
+        verts_center = 0.5 * (p.verts.min(axis = 0) + p.verts.max(axis = 0))
+        verts2_center = 0.5 * (p.verts2.min(axis = 0) + p.verts2.max(axis = 0))
+        offset = verts_center - verts2_center
+        if np.linalg.norm(offset) > 1e-6:
+            p.verts2 += offset
+
     def _compute_greenstat(self, p1, p2, **options):
         """
         Compute quasistatic Green function matrices G and F.
@@ -151,6 +172,11 @@ class CompGreenStat(object):
         Without refinement: F_diagonal = -2π (analytical value)
         """
         from .utils import refinematrix
+
+        # Sync verts2 with verts if they have drifted apart
+        self._sync_verts2(p1)
+        if p2 is not p1:
+            self._sync_verts2(p2)
 
         pos1 = p1.pos
         pos2 = p2.pos
@@ -272,20 +298,20 @@ class CompGreenStat(object):
             r = np.linalg.norm(vec, axis=1)
             r = np.maximum(r, np.finfo(float).eps)
 
-            # Accumulate values for each unique diagonal element
+            # Accumulate values for each unique diagonal element (vectorized)
             # MATLAB: g( iface ) = accumarray( row, w ./ r );
-            for i, (face, face2) in enumerate(zip(diag_rows, diag_cols)):
-                mask = row_quad == i
-                g_val = np.sum(w_quad[mask] / r[mask])
-                self.G[face, face2] = g_val
+            n_diag = len(diag_rows)
+            g_vals = np.bincount(row_quad, weights=w_quad / r, minlength=n_diag)[:n_diag]
+            self.G[diag_rows, diag_cols] = g_vals
 
-                if self.deriv == 'norm':
-                    n_dot_vec = np.sum(vec[mask] * nvec1_expanded[mask], axis=1)
-                    f_val = -np.sum(w_quad[mask] * n_dot_vec / (r[mask] ** 3))
-                    self.F[face, face2] = f_val
-                else:  # 'cart'
-                    f_val = -np.sum(w_quad[mask, np.newaxis] * vec[mask] / (r[mask, np.newaxis] ** 3), axis=0)
-                    self.F[face, face2, :] = f_val
+            if self.deriv == 'norm':
+                n_dot_vec = np.sum(vec * nvec1_expanded, axis=1)
+                f_vals = -np.bincount(row_quad, weights=w_quad * n_dot_vec / (r ** 3), minlength=n_diag)[:n_diag]
+                self.F[diag_rows, diag_cols] = f_vals
+            else:  # 'cart'
+                for d in range(3):
+                    f_d = -np.bincount(row_quad, weights=w_quad * vec[:, d] / (r ** 3), minlength=n_diag)[:n_diag]
+                    self.F[diag_rows, diag_cols, d] = f_d
 
         # ===== Off-diagonal refinement elements (ir == 1) =====
         offdiag_mask = ir_dense == 1

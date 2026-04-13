@@ -14,7 +14,7 @@ class SpectrumStatLayer(object):
     def __init__(self,
             pinfty: Optional[Any] = None,
             layer: Optional[Any] = None,
-            medium: int = 1) -> None:
+            medium: Optional[int] = None) -> None:
 
         self.medium = medium
         self.layer = layer
@@ -59,126 +59,180 @@ class SpectrumStatLayer(object):
         self.area_down = self.area[self.ind_down]
 
     def efarfield(self,
-            sig: Any,
-            enei: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
+            dip_or_sig: Any,
+            enei: Optional[float] = None,
+            dir: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
 
         # MATLAB: spectrumstatlayer/efarfield.m
         # Compute electric far-fields using Novotny & Hecht Eqs. 10.31-38
         # with Fresnel coefficients for upper and lower hemispheres
 
-        if enei is None:
-            enei = sig.enei if hasattr(sig, 'enei') else sig['enei']
+        # Determine if first arg is a CompStruct (sig) or a dipole array
+        if hasattr(dip_or_sig, 'sig') or (isinstance(dip_or_sig, dict) and 'sig' in dip_or_sig):
+            # Called with sig (CompStruct)
+            sig = dip_or_sig
+            if enei is None:
+                enei = sig.enei if hasattr(sig, 'enei') else sig['enei']
 
-        p = sig.p if hasattr(sig, 'p') else sig['p']
-        surface_charge = sig.sig if hasattr(sig, 'sig') else sig['sig']
+            p = sig.p if hasattr(sig, 'p') else sig['p']
+            surface_charge = sig.sig if hasattr(sig, 'sig') else sig['sig']
 
-        if surface_charge.ndim == 1:
-            surface_charge = surface_charge[:, np.newaxis]
-        npol = surface_charge.shape[1]
+            if surface_charge.ndim == 1:
+                surface_charge = surface_charge[:, np.newaxis]
 
-        pos = p.pos
-        area = p.area
+            pos = p.pos
+            area = p.area
 
-        # Induced dipole moment
-        weighted_pos = area[:, np.newaxis] * pos  # (nfaces, 3)
-        dip = weighted_pos.T @ surface_charge  # (3, npol)
+            # Induced dipole moment
+            weighted_pos = area[:, np.newaxis] * pos  # (nfaces, 3)
+            dip = weighted_pos.T @ surface_charge  # (3, npol)
+        else:
+            # Called with dip array directly (like MATLAB)
+            dip = np.asarray(dip_or_sig, dtype = complex)
+            if dip.ndim == 1:
+                dip = dip.reshape(3, 1)
+            elif dip.shape[0] != 3:
+                # dip is (npol, 3) -> transpose to (3, npol)
+                dip = dip.T
+
+        npol = dip.shape[1]
+
+        # Directions to evaluate far-field
+        if dir is None:
+            directions = self.nvec
+            ndir = self.ndir
+        else:
+            directions = np.atleast_2d(dir)
+            ndir = directions.shape[0]
 
         layer = self.layer
         if layer is None:
-            # No layer: use standard far-field
             return self._farfield_free(dip, enei, npol)
 
-        # Get dielectric functions
+        # Get dielectric functions and wavenumbers
         eps1, k1 = layer.eps[0](enei)
         eps2, k2 = layer.eps[1](enei)
-        n1 = np.sqrt(eps1)
-        n2 = np.sqrt(eps2)
 
         k0 = 2 * np.pi / enei
 
-        # Electric far-field for each direction
-        e_total = np.zeros((self.ndir, 3, npol), dtype = complex)
+        # Allocate field array
+        field = np.zeros((ndir, 3, npol), dtype = complex)
+        # Wavenumber array for each direction
+        k_arr = np.zeros(ndir, dtype = complex)
 
-        # Upper hemisphere: use Fresnel transmission/reflection coefficients
-        for idx_dir, idir in enumerate(self.ind_up):
-            dir_vec = self.nvec[idir]
-            cos_theta = np.abs(dir_vec[2])
-            sin_theta = np.sqrt(1 - cos_theta ** 2)
+        # Dipole components (each is shape (npol,))
+        dip1 = dip[0, :]  # x-component
+        dip2 = dip[1, :]  # y-component
+        dip3 = dip[2, :]  # z-component
 
-            # Fresnel coefficients for upper medium
-            cos_theta_t = np.sqrt(1 - (n1 / n2 * sin_theta) ** 2 + 0j)
+        # --- Upper hemisphere (z >= 0) ---
+        ind_up = np.where(
+            (directions[:, 2] >= 0)
+            & ~np.any(np.abs(np.imag(directions)) > 1e-10, axis = 1)
+        )[0]
 
-            rs = (n1 * cos_theta - n2 * cos_theta_t) / (n1 * cos_theta + n2 * cos_theta_t)
-            rp = (n2 * cos_theta - n1 * cos_theta_t) / (n2 * cos_theta + n1 * cos_theta_t)
+        if np.abs(np.imag(k1)) < 1e-10 and len(ind_up) > 0:
+            d_up = directions[ind_up]  # (n_up, 3)
+            k_arr[ind_up] = k1
 
+            # Spherical coordinates (MATLAB cart2sph convention + correction)
+            phi_s = np.arctan2(d_up[:, 1], d_up[:, 0])
+            theta_s = np.pi / 2 - np.arctan2(d_up[:, 2],
+                np.sqrt(d_up[:, 0] ** 2 + d_up[:, 1] ** 2))
+
+            sinp = np.sin(phi_s)
+            cosp = np.cos(phi_s)
+            sint = np.sin(theta_s)
+            cost = np.cos(theta_s)
+
+            # z-components of wavevectors
+            k1z = k1 * d_up[:, 2]  # (n_up,)
+            k2z = np.sqrt(k2 ** 2 - k1 ** 2 + k1z ** 2 + 0j)
+
+            # Fresnel reflection coefficients, Novotny & Hecht Eq. (2.49)
+            rte = (k1z - k2z) / (k1z + k2z)
+            rtm = (eps2 * k1z - eps1 * k2z) / (eps2 * k1z + eps1 * k2z)
+
+            # Quasistatic coefficients, Eqs. (10.33-35)
+            c_phi1 = 1 + rtm  # for dip_z
+            c_phi2 = 1 - rtm  # for dip_xy theta
+            c_phi3 = 1 + rte  # for TE (phi) component
+
+            # Electric field components for each polarization
             for ipol in range(npol):
-                dip_i = dip[:, ipol]
+                # etheta and ephi (vectorized over directions)
+                etheta = ((cosp * dip1[ipol] + sinp * dip2[ipol]) * cost * c_phi2
+                          - sint * c_phi1 * dip3[ipol])
+                ephi = -(sinp * dip1[ipol] - cosp * dip2[ipol]) * c_phi3
 
-                # Far-field: E ~ k^2 * dir x (dir x dip)
-                cross1 = np.cross(dir_vec, dip_i)
-                e_ff = k1 ** 2 * np.cross(cross1, dir_vec) / eps1
+                # Convert to Cartesian
+                field[ind_up, 0, ipol] = etheta * cost * cosp - ephi * sinp
+                field[ind_up, 1, ipol] = etheta * cost * sinp + ephi * cosp
+                field[ind_up, 2, ipol] = -etheta * sint
+        else:
+            k_arr[ind_up] = k1
 
-                # Add reflected contribution
-                dir_refl = dir_vec.copy()
-                dir_refl[2] = -dir_refl[2]
+        # --- Lower hemisphere (z < 0) ---
+        ind_down = np.where(
+            (directions[:, 2] < 0)
+            & ~np.any(np.abs(np.imag(directions)) > 1e-10, axis = 1)
+        )[0]
 
-                # Decompose dipole into TE/TM
-                dip_te = np.array([0.0, 0.0, 0.0], dtype = complex)
-                dip_tm = dip_i.copy()
+        if np.abs(np.imag(k2)) < 1e-10 and len(ind_down) > 0:
+            d_down = directions[ind_down]  # (n_down, 3)
+            k_arr[ind_down] = k2
 
-                if sin_theta > 1e-10:
-                    # TE direction perpendicular to plane of incidence
-                    te_dir = np.cross(dir_vec, np.array([0, 0, 1]))
-                    te_dir = te_dir / np.linalg.norm(te_dir)
-                    dip_te = np.dot(dip_i, te_dir) * te_dir
-                    dip_tm = dip_i - dip_te
+            # Spherical coordinates
+            phi_s = np.arctan2(d_down[:, 1], d_down[:, 0])
+            theta_s = np.pi / 2 - np.arctan2(d_down[:, 2],
+                np.sqrt(d_down[:, 0] ** 2 + d_down[:, 1] ** 2))
 
-                # Reflected far-field
-                dip_refl = rs * dip_te + rp * dip_tm
-                dip_refl[2] = -dip_refl[2]
+            sinp = np.sin(phi_s)
+            cosp = np.cos(phi_s)
+            sint = np.sin(theta_s)
+            cost = np.cos(theta_s)
 
-                cross_refl = np.cross(dir_vec, dip_refl)
-                e_refl = k1 ** 2 * np.cross(cross_refl, dir_vec) / eps1
+            # z-components of wavevectors (Novotny & Hecht convention)
+            k2z = -k2 * d_down[:, 2]  # positive (since dir_z < 0)
+            k1z = np.sqrt(k1 ** 2 - k2 ** 2 + k2z ** 2 + 0j) + 1e-10j
+            k1z = k1z * np.sign(np.imag(k1z))
 
-                e_total[idir, :, ipol] = e_ff + e_refl
+            # Novotny & Hecht Eq. (10.31)
+            stilde = k1z / k2
 
-        # Lower hemisphere
-        for idx_dir, idir in enumerate(self.ind_down):
-            dir_vec = self.nvec[idir]
-            cos_theta = np.abs(dir_vec[2])
-            sin_theta = np.sqrt(1 - cos_theta ** 2)
+            # Fresnel transmission coefficients, Eq. (2.50)
+            tte = 2 * k1z / (k1z + k2z)
+            ttm = (2 * eps2 * k1z / (eps2 * k1z + eps1 * k2z)
+                   * np.sqrt(eps1 / eps2))
 
-            cos_theta_i = np.sqrt(1 - (n2 / n1 * sin_theta) ** 2 + 0j)
+            # Quasistatic coefficients, Eqs. (10.36-38)
+            c_phi1 = np.sqrt(eps2 / eps1) * cost / stilde * ttm
+            c_phi2 = -np.sqrt(eps2 / eps1) * ttm
+            c_phi3 = cost / stilde * tte
 
-            # Transmission coefficients
-            ts = 2 * n1 * cos_theta_i / (n1 * cos_theta_i + n2 * cos_theta)
-            tp = 2 * n1 * cos_theta_i / (n2 * cos_theta_i + n1 * cos_theta)
+            # Sign correction (see MATLAB comment about sign error)
+            c_phi1 = -c_phi1
+            c_phi2 = -c_phi2
+            c_phi3 = -c_phi3
 
+            # Electric field components
             for ipol in range(npol):
-                dip_i = dip[:, ipol]
+                etheta = ((cosp * dip1[ipol] + sinp * dip2[ipol]) * cost * c_phi2
+                          - sint * c_phi1 * dip3[ipol])
+                ephi = -(sinp * dip1[ipol] - cosp * dip2[ipol]) * c_phi3
 
-                # Transmitted far-field
-                cross1 = np.cross(dir_vec, dip_i)
-                e_ff = k2 ** 2 * np.cross(cross1, dir_vec) / eps2
+                # Convert to Cartesian
+                field[ind_down, 0, ipol] = etheta * cost * cosp - ephi * sinp
+                field[ind_down, 1, ipol] = etheta * cost * sinp + ephi * cosp
+                field[ind_down, 2, ipol] = -etheta * sint
+        else:
+            k_arr[ind_down] = k2
 
-                # Apply transmission coefficients
-                if sin_theta > 1e-10:
-                    te_dir = np.cross(dir_vec, np.array([0, 0, 1]))
-                    te_dir = te_dir / np.linalg.norm(te_dir)
-                    dip_te = np.dot(dip_i, te_dir) * te_dir
-                    dip_tm = dip_i - dip_te
-                else:
-                    dip_te = dip_i
-                    dip_tm = np.zeros(3, dtype = complex)
+        # Prefactor for electric field, Eq. (10.32)
+        # Note: MATLAB neglects 1/eps1 factor intentionally
+        field = k1 ** 2 * field
 
-                dip_trans = ts * dip_te + tp * dip_tm
-
-                cross_trans = np.cross(dir_vec, dip_trans)
-                e_trans = k2 ** 2 * np.cross(cross_trans, dir_vec) / eps2
-
-                e_total[idir, :, ipol] = e_trans
-
-        return e_total, dip
+        return field, k_arr
 
     def _farfield_free(self,
             dip: np.ndarray,
@@ -191,7 +245,6 @@ class SpectrumStatLayer(object):
         else:
             k = 2 * np.pi / enei
             eps_val = 1.0
-        nb = np.sqrt(eps_val)
 
         e = np.zeros((self.ndir, 3, npol), dtype = complex)
 
@@ -203,13 +256,14 @@ class SpectrumStatLayer(object):
             cross1 = np.cross(dir_expanded, dip_expanded)
             e[:, :, ipol] = k ** 2 * np.cross(cross1, dir_expanded) / eps_val
 
-        return e, dip
+        k_arr = np.full(self.ndir, k, dtype = complex)
+        return e, k_arr
 
     def farfield(self,
             sig: Any,
             direction: Optional[np.ndarray] = None) -> CompStruct:
 
-        e_total, dip = self.efarfield(sig)
+        e_total, k_arr = self.efarfield(sig)
         enei = sig.enei if hasattr(sig, 'enei') else sig['enei']
 
         npol = e_total.shape[2]
@@ -237,37 +291,55 @@ class SpectrumStatLayer(object):
         return field
 
     def scattering(self,
-            sig: Any) -> Tuple[np.ndarray, np.ndarray]:
+            dip_or_sig: Any,
+            enei: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
 
         # MATLAB: spectrumstatlayer/scattering.m
         # Integrate |E|^2 weighted by 0.5*k/k0 over the sphere
 
-        enei = sig.enei if hasattr(sig, 'enei') else sig['enei']
-        e_total, _ = self.efarfield(sig)
+        # Determine if called with sig or dip
+        if hasattr(dip_or_sig, 'sig') or (isinstance(dip_or_sig, dict) and 'sig' in dip_or_sig):
+            sig = dip_or_sig
+            if enei is None:
+                enei = sig.enei if hasattr(sig, 'enei') else sig['enei']
+            field, k_arr = self.efarfield(sig, enei)
+        else:
+            # Called with dip directly
+            dip = dip_or_sig
+            field, k_arr = self.efarfield(dip, enei)
 
         k0 = 2 * np.pi / enei
+        npol = field.shape[2]
 
-        npol = e_total.shape[2]
+        # Differential radiated power, Jackson Eq. (9.22)
+        dsca = np.sum(np.abs(field) ** 2, axis = 1)  # (ndir, npol)
 
-        dsca = np.zeros((self.ndir, npol))
+        # Multiply by 0.5 * k/k0 (MATLAB: 0.5 * k(:) / k0)
+        k_real = np.real(k_arr)
+        weight = 0.5 * k_real / k0  # (ndir,)
+        dsca = dsca * weight[:, np.newaxis]
 
-        for ipol in range(npol):
-            e_pol = e_total[:, :, ipol]  # (ndir, 3)
+        # Damp fields in media with complex dielectric functions
+        dsca[np.imag(dsca) != 0] = 0
+        dsca = np.real(dsca)
 
-            # Differential scattering: |E|^2
-            dsca[:, ipol] = 0.5 * np.real(np.sum(e_pol * np.conj(e_pol), axis = 1))
-
-            # Weight by k/k0 for the appropriate medium
+        # Select indices for integration based on medium
+        if self.medium is None or not hasattr(self, 'medium') or self.medium is None:
+            # Use all directions
+            ind = np.arange(self.ndir)
+        else:
             if self.layer is not None:
-                for idir in range(self.ndir):
-                    if self.nvec[idir, 2] >= 0:
-                        _, k = self.layer.eps[0](enei)
-                    else:
-                        _, k = self.layer.eps[1](enei)
-                    dsca[idir, ipol] *= np.real(k) / k0
+                if self.medium == self.layer.ind[0]:
+                    ind = np.where(self.nvec[:, 2] > 0)[0]
+                elif self.medium == self.layer.ind[-1]:
+                    ind = np.where(self.nvec[:, 2] < 0)[0]
+                else:
+                    ind = np.arange(self.ndir)
+            else:
+                ind = np.arange(self.ndir)
 
-        # Total scattering: integrate over sphere
-        sca = np.dot(self.area, dsca)
+        # Total cross section: integrate area * dsca over selected indices
+        sca = np.dot(self.area[ind], dsca[ind])
 
         if npol == 1:
             sca = sca[0]

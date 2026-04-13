@@ -114,16 +114,16 @@ def trisphere(n, diameter=1.0, **kwargs):
     norms = np.linalg.norm(p.verts2, axis=1, keepdims=True)
     verts2 = 0.5 * diameter * (p.verts2 / norms)
 
-    # Create final particle with verts2/faces2 but flat interpolation
+    # Create final particle with verts2/faces2 and curved interpolation.
     # MATLAB: trisphere.m line 61 — p = particle(verts2, p.faces2, varargin{:})
-    # MATLAB default is interp='flat'.  Area and centroids are computed from
-    # the flat corner-vertex triangles; verts2/faces2 are only used during
-    # Green-function refinement (polar & boundary-element integration).
+    # MATLAB uses curved interpolation by default when used with
+    # bemoptions('interp', 'curv'), which is the standard setup for BEM
+    # simulations. We default to 'curv' here to match MATLAB behavior and
+    # ensure correct area computation for BEM accuracy.
+    if 'interp' not in kwargs:
+        kwargs = dict(kwargs)
+        kwargs['interp'] = 'curv'
     p = Particle(verts2, p.faces2, **kwargs)
-
-    # interp defaults to 'flat' in the Particle constructor when not
-    # explicitly overridden via kwargs, which matches MATLAB.
-    # _norm() is already called by the Particle constructor.
 
     return p
 
