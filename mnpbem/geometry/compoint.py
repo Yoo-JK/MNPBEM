@@ -438,10 +438,11 @@ class ComPoint(object):
             valpt: np.ndarray,
             valdef: float = float('nan')) -> np.ndarray:
         siz = valpt.shape
+        dtype = valpt.dtype if hasattr(valpt, 'dtype') else np.float64
         if np.isnan(valdef):
-            val = np.full((self._npos,) + siz[1:], np.nan)
+            val = np.full((self._npos,) + siz[1:], np.nan, dtype=dtype)
         else:
-            val = np.full((self._npos,) + siz[1:], valdef)
+            val = np.full((self._npos,) + siz[1:], valdef, dtype=dtype)
 
         offset = 0
         for i in self._mask:

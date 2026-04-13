@@ -36,6 +36,7 @@ from .planewave_stat_layer import PlaneWaveStatLayer
 from .planewave_ret_layer import PlaneWaveRetLayer
 from .dipole_stat_layer import DipoleStatLayer
 from .dipole_ret_layer import DipoleRetLayer
+from .meshfield import MeshField
 
 __all__ = [
     "PlaneWaveStat",
@@ -53,4 +54,5 @@ __all__ = [
     "PlaneWaveRetLayer",
     "DipoleStatLayer",
     "DipoleRetLayer",
+    "MeshField",
 ]

@@ -94,6 +94,7 @@ from .simulation import (
     PlaneWaveRetLayer,
     DipoleStatLayer,
     DipoleRetLayer,
+    MeshField,
 )
 
 # Spectrum: far-field and cross section calculations
@@ -239,6 +240,7 @@ __all__ = [
     "PlaneWaveRetLayer",
     "DipoleStatLayer",
     "DipoleRetLayer",
+    "MeshField",
     # Spectrum
     "SpectrumRet",
     "SpectrumStat",
