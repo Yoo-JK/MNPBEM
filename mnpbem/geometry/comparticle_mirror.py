@@ -133,9 +133,16 @@ class ComParticleMirror(object):
             eps: List,
             particles: List[Particle],
             inout: Any,
-            sym: str = 'x',
+            sym: Any = 'x',
             closed_args: Optional[Tuple] = None,
             **kwargs: Any) -> None:
+
+        # Handle MATLAB-style calling: closed_args as 4th positional arg
+        if not isinstance(sym, str):
+            if closed_args is not None:
+                raise ValueError('[error] Cannot pass both numeric sym and closed_args')
+            closed_args = tuple(sym) if hasattr(sym, '__iter__') else (sym,)
+            sym = kwargs.pop('sym', 'x')
 
         self.eps = eps
         self.p = list(particles)

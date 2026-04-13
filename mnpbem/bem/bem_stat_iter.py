@@ -51,9 +51,13 @@ class BEMStatIter(BEMIter):
 
         # MATLAB: bemstatiter/private/init.m
         # In the iterative version, Green function uses H-matrix (ACA) approximation
-        # For now, compute full Green function -- H-matrix support can be added later
-        from ..greenfun import CompGreenStat
-        self._g = CompGreenStat(p, p, **options)
+        hmode = options.pop('hmode', None)
+        if hmode is not None:
+            from ..greenfun import ACACompGreenStat
+            self._g = ACACompGreenStat(p, p, hmode=hmode, **options)
+        else:
+            from ..greenfun import CompGreenStat
+            self._g = CompGreenStat(p, p, **options)
 
         # Surface derivative of Green function
         # MATLAB: obj.F = eval(obj.g, 'F')
@@ -139,7 +143,7 @@ class BEMStatIter(BEMIter):
         self._init_matrices(exc.enei)
 
         # Excitation and size of excitation array
-        b = exc.phip.ravel()
+        b = exc.phip.ravel().astype(complex)
         siz = exc.phip.shape
 
         # Function for matrix multiplication

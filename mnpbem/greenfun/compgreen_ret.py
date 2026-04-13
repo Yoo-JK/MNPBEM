@@ -115,6 +115,11 @@ class CompGreenRet(object):
         # MATLAB: obj.g = mat2cell(g, p1.p, p2.p)
         self.g = self._mat2cell(g, p1.p, p2.p)
 
+        # Apply closed-surface corrections to diagonal blocks
+        # MATLAB: @greenret/diag.m modifies f(ind, 1) coefficients
+        if hasattr(g, 'diag_corrections') and g.diag_corrections:
+            self._apply_diag_corrections(g.diag_corrections, p1)
+
         # Connectivity matrix
         # MATLAB: obj.con = connect(p1, p2)
         self.con = self._connect(p1, p2)
@@ -130,9 +135,12 @@ class CompGreenRet(object):
 
         # Hierarchical matrices?
         if self.hmode is not None:
-            # Set up cluster trees and initialize hierarchical matrix
-            # For now, we don't implement H-matrices (TODO)
-            self.hmat = None
+            from .clustertree import ClusterTree
+            from .hmatrix import HMatrix
+            pos = p1.pos if hasattr(p1, 'pos') else p1.pc.pos
+            tree = ClusterTree(pos, cleaf=options.get('cleaf', 32))
+            self.hmat = HMatrix(tree, htol=options.get('htol', 1e-6),
+                                kmax=options.get('kmax', 100))
         else:
             self.hmat = None
 
@@ -219,8 +227,8 @@ class CompGreenRet(object):
                         else:
                             ind_array = np.array([ind])
 
-                        # Update diagonal (implementation depends on greenret structure)
-                        # For now, store the correction for later use
+                        # Store the correction for application after _mat2cell
+                        # MATLAB: g = diag(g, ind, -2*pi*dir - f.')
                         if not hasattr(g, 'diag_corrections'):
                             g.diag_corrections = {}
                         g.diag_corrections[i] = (-2 * np.pi * dir_val - f, part.nvec)
@@ -328,6 +336,28 @@ class CompGreenRet(object):
         f = np.sum(F_weighted, axis=0)
 
         return f
+
+    def _apply_diag_corrections(self, diag_corrections, p1):
+        """Apply closed-surface F diagonal corrections to refined Green functions.
+
+        MATLAB: @greenret/diag.m -- modifies f(ind, 1) += correction
+        The correction ensures integral of -F gives 2*pi for closed surfaces.
+        """
+        for i, (correction, nvec_corr) in diag_corrections.items():
+            # Diagonal block g[i][i]
+            if i < len(self.g) and i < len(self.g[i]):
+                block = self.g[i][i]
+                if block is not None and block.refined is not None:
+                    refined = block.refined
+                    # Find diagonal elements in the refinement arrays
+                    # refined.row, refined.col are indices into the block's particle
+                    # Diagonal elements are where row == col
+                    for idx in range(len(refined.row)):
+                        if refined.row[idx] == refined.col[idx]:
+                            face_idx = refined.row[idx]
+                            if face_idx < len(correction):
+                                # MATLAB: obj.f(ind, 1) += correction
+                                refined.f[idx, 0] += correction[face_idx]
 
     def _mat2cell(self, g, p1_list, p2_list):
         """
@@ -1392,16 +1422,85 @@ class GreenRetBlock(object):
             raise ValueError("Unknown key: {}".format(key))
 
     def eval_ind(self, k, key, ind):
-        """Evaluate selected elements."""
-        # For now, evaluate full and index
-        g_full = self.eval(k, key)
+        """Evaluate selected elements efficiently.
+
+        Instead of computing the full Green function matrix and indexing,
+        only compute elements at the requested linear indices.
+
+        Parameters
+        ----------
+        k : float
+            Wavenumber
+        key : str
+            'G', 'F', 'H1', 'H2', etc.
+        ind : array-like
+            Linear indices into the flattened matrix
+
+        Returns
+        -------
+        values : ndarray
+            Green function values at requested indices
+        """
+        ind = np.asarray(ind)
+
+        # For derivative keys that produce 3D arrays, fall back to full eval
         if key in ['Gp', 'H1p', 'H2p']:
-            # 3D array
+            g_full = self.eval(k, key)
             g_flat = g_full.reshape(-1, 3)
             return g_flat[ind]
+
+        # Convert linear indices to (row, col)
+        n1 = self.p1.pos.shape[0]
+        n2 = self.p2.pos.shape[0]
+        rows, cols = np.unravel_index(ind, (n1, n2))
+
+        # Compute distances only for selected pairs
+        pos1 = self.p1.pos[rows]   # (n_ind, 3)
+        pos2 = self.p2.pos[cols]   # (n_ind, 3)
+        diff = pos1 - pos2         # (n_ind, 3)
+        d = np.sqrt(np.sum(diff ** 2, axis=1))
+        d = np.maximum(d, np.finfo(float).eps)
+        area2 = self.p2.area[cols]
+
+        phase = np.exp(1j * k * d)
+
+        if key == 'G':
+            values = (1.0 / d) * area2 * phase
+        elif key == 'F' or key == 'H1' or key == 'H2':
+            nvec1 = self.p1.nvec[rows]
+            n_dot_r = np.sum(nvec1 * diff, axis=1)
+            values = n_dot_r * (1j * k - 1.0 / d) / (d ** 2) * area2 * phase
+
+            if key == 'H1' and self.p1 is self.p2:
+                diag_mask = (rows == cols)
+                values[diag_mask] += 2.0 * np.pi
+            elif key == 'H2' and self.p1 is self.p2:
+                diag_mask = (rows == cols)
+                values[diag_mask] -= 2.0 * np.pi
         else:
-            # 2D array
-            return g_full.ravel()[ind]
+            raise ValueError("Unknown key: {}".format(key))
+
+        # Apply refinement corrections if available
+        if self.refined is not None and len(self.refined.ind) > 0:
+            ik_powers = np.array([(1j * k) ** n for n in range(self.refined.order + 1)])
+            ref_map = {}
+            for idx_ref, (r, c) in enumerate(zip(self.refined.row, self.refined.col)):
+                ref_map[(r, c)] = idx_ref
+            for i_out, (r, c) in enumerate(zip(rows, cols)):
+                rc = (r, c)
+                if rc in ref_map:
+                    idx_ref = ref_map[rc]
+                    if key == 'G':
+                        values[i_out] = (self.refined.g[idx_ref] @ ik_powers) * phase[i_out]
+                    elif key in ('F', 'H1', 'H2'):
+                        f_val = (self.refined.f[idx_ref] @ ik_powers) * phase[i_out]
+                        if key == 'H1' and self.p1 is self.p2 and r == c:
+                            f_val += 2.0 * np.pi
+                        elif key == 'H2' and self.p1 is self.p2 and r == c:
+                            f_val -= 2.0 * np.pi
+                        values[i_out] = f_val
+
+        return values
 
 
 class GreenRetAccessor(object):

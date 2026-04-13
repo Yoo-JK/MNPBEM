@@ -386,17 +386,36 @@ class DipoleRet(object):
                         phi, phip, a, ap = self._pot(
                             pos1, pos2, nvec, dip, eps_vals[ind], k_vals[ind]
                         )
-                        # Set output
+                        # Set output - use np.ix_ for proper broadcasting
+                        ind1_a = np.atleast_1d(ind1)
+                        ind2_a = np.atleast_1d(ind2)
                         if inout == 0:  # Inside
-                            exc.phi1[ind1, ind2, :] = phi
-                            exc.phi1p[ind1, ind2, :] = phip
-                            exc.a1[ind1, :, ind2, :] = a
-                            exc.a1p[ind1, :, ind2, :] = ap
+                            exc.phi1[np.ix_(ind1_a, ind2_a)] = phi.reshape(len(ind1_a), len(ind2_a), -1)
+                            exc.phi1p[np.ix_(ind1_a, ind2_a)] = phip.reshape(len(ind1_a), len(ind2_a), -1)
+                            for d in range(3):
+                                exc.a1[np.ix_(ind1_a, [d], ind2_a)] = a[:, d:d+1, :, :].reshape(len(ind1_a), 1, len(ind2_a), -1)
+                                exc.a1p[np.ix_(ind1_a, [d], ind2_a)] = ap[:, d:d+1, :, :].reshape(len(ind1_a), 1, len(ind2_a), -1)
                         else:  # Outside
-                            exc.phi2[ind1, ind2, :] = phi
-                            exc.phi2p[ind1, ind2, :] = phip
-                            exc.a2[ind1, :, ind2, :] = a
-                            exc.a2p[ind1, :, ind2, :] = ap
+                            exc.phi2[np.ix_(ind1_a, ind2_a)] = phi.reshape(len(ind1_a), len(ind2_a), -1)
+                            exc.phi2p[np.ix_(ind1_a, ind2_a)] = phip.reshape(len(ind1_a), len(ind2_a), -1)
+                            for d in range(3):
+                                exc.a2[np.ix_(ind1_a, [d], ind2_a)] = a[:, d:d+1, :, :].reshape(len(ind1_a), 1, len(ind2_a), -1)
+                                exc.a2p[np.ix_(ind1_a, [d], ind2_a)] = ap[:, d:d+1, :, :].reshape(len(ind1_a), 1, len(ind2_a), -1)
+
+        # Reshape from (nfaces, n_pts, ndip) to (nfaces, n_pts*ndip) for BEM solver
+        # MATLAB stores dipole excitations as (nfaces, npol) where npol = n_pts * ndip
+        n = p.n
+        n_pts = pt.n
+        ndip = self.dip.shape[2]
+        npol = n_pts * ndip
+        exc.phi1 = exc.phi1.reshape(n, npol)
+        exc.phi1p = exc.phi1p.reshape(n, npol)
+        exc.phi2 = exc.phi2.reshape(n, npol)
+        exc.phi2p = exc.phi2p.reshape(n, npol)
+        exc.a1 = exc.a1.reshape(n, 3, npol)
+        exc.a1p = exc.a1p.reshape(n, 3, npol)
+        exc.a2 = exc.a2.reshape(n, 3, npol)
+        exc.a2p = exc.a2p.reshape(n, 3, npol)
 
         return exc
 
@@ -436,6 +455,9 @@ class DipoleRet(object):
         k0 = k / np.sqrt(eps)
 
         # MATLAB: potential.m lines 71-80
+        pos1 = np.atleast_2d(pos1)
+        pos2 = np.atleast_2d(pos2)
+        nvec = np.atleast_2d(nvec)
         n1 = pos1.shape[0]
         n2 = pos2.shape[0]
         x = pos1[:, 0:1] - pos2[:, 0].T
@@ -604,7 +626,8 @@ class DipoleRet(object):
         e = np.zeros((n1, 3, n2, n3), dtype=complex)
         h = np.zeros((n1, 3, n2, n3), dtype=complex)
 
-        ind = pt.index[pt.inout == spec.medium]
+        mask = np.where(pt.inout == spec.medium)[0]
+        ind = np.concatenate([np.atleast_1d(pt.index[i]) for i in mask]) if len(mask) > 0 else np.array([], dtype=int)
 
         # MATLAB: farfield.m lines 45-58
         if len(ind) > 0:

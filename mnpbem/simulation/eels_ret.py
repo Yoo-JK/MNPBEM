@@ -195,7 +195,7 @@ class EELSRet(EELSBase):
         ind = np.where(np.any(p_obj.inout == 1, axis = 1))[0]
         ind_faces = []
         for idx in ind:
-            ind_faces.extend(p_obj.index(idx + 1))
+            ind_faces.extend(getattr(p_obj, "index_func", p_obj.index)(idx + 1))
         ind_faces = np.array(ind_faces, dtype = int) if len(ind_faces) > 0 else np.array([], dtype = int)
 
         phi, phip = self.potinfty(q, gamma[0], ind_faces)
@@ -214,7 +214,7 @@ class EELSRet(EELSBase):
             ind = np.where(np.any(p_obj.inout == mat_int, axis = 1))[0]
             ind_faces = []
             for idx in ind:
-                ind_faces.extend(p_obj.index(idx + 1))
+                ind_faces.extend(getattr(p_obj, "index_func", p_obj.index)(idx + 1))
             ind_faces = np.array(ind_faces, dtype = int) if len(ind_faces) > 0 else np.array([], dtype = int)
 
             phi, phip = self.potinfty(q, gamma[mat_int - 1], ind_faces, mat_int)
@@ -274,7 +274,7 @@ class EELSRet(EELSBase):
         ind1 = []
         ind2 = []
         for ip in range(p.np):
-            face_indices = p.index(ip + 1)
+            face_indices = getattr(p, "index_func", p.index)(ip + 1)
             if p.inout[ip, 0] == mat:
                 ind1.extend(face_indices)
             if p.inout[ip, 1] == mat:
@@ -358,7 +358,7 @@ class EELSRet(EELSBase):
         ind1 = []
         ind2 = []
         for ip in range(p.np):
-            face_indices = p.index(ip + 1)
+            face_indices = getattr(p, "index_func", p.index)(ip + 1)
             if p.inout[ip, 0] == 1:
                 ind1.extend(face_indices)
             if p.inout[ip, 1] == 1:
@@ -382,7 +382,7 @@ class EELSRet(EELSBase):
             ind1_mat = []
             ind2_mat = []
             for ip in range(p.np):
-                face_indices = p.index(ip + 1)
+                face_indices = getattr(p, "index_func", p.index)(ip + 1)
                 if p.inout[ip, 0] == mat_int:
                     ind1_mat.extend(face_indices)
                 if p.inout[ip, 1] == mat_int:
@@ -394,7 +394,7 @@ class EELSRet(EELSBase):
             mask_faces = np.where(np.any(p.inout == mat_int, axis = 1))[0]
             mask_faces_list = []
             for idx in mask_faces:
-                mask_faces_list.extend(p.index(idx + 1))
+                mask_faces_list.extend(getattr(p, "index_func", p.index)(idx + 1))
 
             phi_inside_mat, _ = self.potinside(
                 -q, k_arr[mat_int - 1],
@@ -540,7 +540,7 @@ class EELSRet(EELSBase):
 
         for ip in range(p.np):
             imat = p.inout[ip, inout - 1] - 1  # 0-indexed
-            ind1 = np.array(p.index(ip + 1))
+            ind1 = np.array(getattr(p, "index_func", p.index)(ip + 1))
             ind2 = np.where(ind[:, imat] != 0)[0]
 
             if len(ind1) > 0 and len(ind2) > 0:

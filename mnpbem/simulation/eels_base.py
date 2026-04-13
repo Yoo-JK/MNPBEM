@@ -151,8 +151,9 @@ class EELSBase(object):
         # ---- electron beam trajectories inside particles ----
         # MATLAB: init.m lines 74-81
         inout = np.zeros((p.n, 2), dtype = int)
+        _index = p.index_func if callable(getattr(p, 'index_func', None)) else p.index
         for i in range(p.np):
-            ind = p.index(i + 1)
+            ind = _index(i + 1) if callable(_index) else list(range(p.n))
             inout[ind, :] = np.tile(p.inout[i, :], (len(ind), 1))
 
         # MATLAB: init.m lines 83-88
@@ -316,7 +317,7 @@ class EELSBase(object):
         if mask is None:
             ind1 = np.arange(p.n)
         else:
-            ind1 = p.index(mask)
+            ind1 = getattr(p, "index_func", lambda x: p.index(x))(mask)
 
         if medium is None:
             ind2 = np.arange(self.impact.shape[0])
@@ -419,7 +420,7 @@ class EELSBase(object):
         if mask is None:
             ind1 = np.arange(p.n)
         else:
-            ind1 = p.index(mask)
+            ind1 = getattr(p, "index_func", lambda x: p.index(x))(mask)
 
         if medium is None:
             ind2 = np.arange(self._z.shape[0])

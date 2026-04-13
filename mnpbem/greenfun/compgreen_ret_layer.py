@@ -45,6 +45,31 @@ def _safe_matmul(A, x):
     return A @ x
 
 
+def _matmul_structured(G, x, nvec, mode='sig'):
+    """Structured Green function multiplication.
+
+    Parameters
+    ----------
+    G : _StructuredGreen
+        Structured Green function with ss, hh, p, sh, hs components.
+    x : ndarray
+        Surface charge (n,) for 'sig', surface current (n,3) for 'h'.
+    nvec : ndarray (n,3)
+        Normal vectors (unused in simple mode, kept for API consistency).
+    mode : str
+        'sig' for scalar-scalar, 'h' for vector-vector multiplication.
+    """
+    if mode == 'sig':
+        return _safe_matmul(G.ss, x)
+    elif mode == 'h':
+        result = np.zeros_like(x, dtype=complex)
+        for d in range(x.shape[1]):
+            result[:, d] = _safe_matmul(G.hh, x[:, d])
+        return result
+    else:
+        raise ValueError("mode must be 'sig' or 'h'")
+
+
 def _matmul2_refl(G_comp, sig, h, mode):
     """Structured matmul2 for reflected Green function (2D components).
 
@@ -498,8 +523,14 @@ class CompGreenRetLayer(object):
 
         # Reflected Green function
         tab = options.get('tab', None)
-        self.gr = GreenRetLayer(p1, p2, layer, tab=tab,
-            deriv=self.deriv, **options)
+        greentab_obj = options.pop('greentab_obj', None)
+        if greentab_obj is not None:
+            # Use pre-tabulated GreenTabLayer directly
+            self.gr = GreenRetLayer(p1, p2, layer, tab=tab, deriv=self.deriv, **options)
+            self.gr.tab = greentab_obj  # Replace with pre-computed table
+        else:
+            self.gr = GreenRetLayer(p1, p2, layer, tab=tab,
+                deriv=self.deriv, **options)
 
         # Indices of faces connected to layer
         self._init_layer_indices()

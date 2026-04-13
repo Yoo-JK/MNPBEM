@@ -91,11 +91,16 @@ class MieGans(object):
         k = 2 * np.pi / enei * nb
         return a1, a2, a3, k
 
-    def extinction(self, enei, pol):
+    def extinction(self, enei, pol=None):
         """Extinction cross section.
 
         MATLAB: @miegans/extinction.m
+        If pol is None, returns orientation-averaged extinction.
         """
+        if pol is None:
+            return (self.extinction(enei, np.array([1., 0., 0.]))
+                  + self.extinction(enei, np.array([0., 1., 0.]))
+                  + self.extinction(enei, np.array([0., 0., 1.]))) / 3.0
         return self.scattering(enei, pol) + self.absorption(enei, pol)
 
     def scattering(self, enei, pol):

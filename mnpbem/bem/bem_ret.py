@@ -338,38 +338,45 @@ class BEMRet(object):
             return a - b
 
     def _outer_eps(self, nvec, phi, eps):
-        """Compute outer(nvec, phi) * eps. Returns (nfaces, 3) or (nfaces, 3, npol)."""
+        """Compute outer(nvec, phi) * eps. Returns (nfaces, 3, ...) matching phi trailing dims."""
         if isinstance(phi, np.ndarray):
             if phi.ndim == 1:
-                # phi is (nfaces,), eps is (nfaces,)
                 return nvec * (phi * eps)[:, np.newaxis]  # (nfaces, 3)
             else:
-                # phi is (nfaces, npol)
-                npol = phi.shape[1]
-                result = np.zeros((len(nvec), 3, npol), dtype=complex)
-                for ipol in range(npol):
-                    result[:, :, ipol] = nvec * (phi[:, ipol] * eps)[:, np.newaxis]
-                return result
+                # phi is (nfaces, ...) with arbitrary trailing dims
+                orig_shape = phi.shape
+                nfaces = orig_shape[0]
+                # Flatten trailing dims: (nfaces, n_trailing)
+                phi_flat = phi.reshape(nfaces, -1)
+                n_trailing = phi_flat.shape[1]
+                result = np.zeros((nfaces, 3, n_trailing), dtype=complex)
+                for ipol in range(n_trailing):
+                    result[:, :, ipol] = nvec * (phi_flat[:, ipol] * eps)[:, np.newaxis]
+                # Reshape to (nfaces, 3, *trailing_dims)
+                return result.reshape(nfaces, 3, *orig_shape[1:])
         elif phi == 0:
             return 0
         else:
             return nvec * (phi * eps)
 
     def _inner_eps(self, nvec, a, eps):
-        """Compute inner(nvec, a) * eps. Returns (nfaces,) or (nfaces, npol)."""
+        """Compute inner(nvec, a) * eps. Returns (nfaces, ...) matching a trailing dims after axis=1."""
         if isinstance(a, np.ndarray) and a.ndim >= 2:
             if a.ndim == 2:
-                # a is (nfaces, 3), nvec is (nfaces, 3)
                 dot = np.sum(nvec * a, axis=1)  # (nfaces,)
                 return dot * eps
             else:
-                # a is (nfaces, 3, npol)
-                npol = a.shape[2]
-                result = np.zeros((len(nvec), npol), dtype=complex)
-                for ipol in range(npol):
-                    dot = np.sum(nvec * a[:, :, ipol], axis=1)
+                # a is (nfaces, 3, *trailing) — dot over axis=1
+                orig_shape = a.shape
+                nfaces = orig_shape[0]
+                trailing = orig_shape[2:]
+                a_flat = a.reshape(nfaces, 3, -1)
+                n_trailing = a_flat.shape[2]
+                result = np.zeros((nfaces, n_trailing), dtype=complex)
+                for ipol in range(n_trailing):
+                    dot = np.sum(nvec * a_flat[:, :, ipol], axis=1)
                     result[:, ipol] = dot * eps
-                return result
+                return result.reshape(nfaces, *trailing)
         elif isinstance(a, np.ndarray) and a.size == 0:
             return 0
         elif not isinstance(a, np.ndarray) and a == 0:

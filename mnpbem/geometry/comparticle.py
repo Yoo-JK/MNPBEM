@@ -126,11 +126,8 @@ class ComParticle(object):
         self.nverts = sum(part.nverts for part in self.p)
         self.nfaces = sum(part.nfaces for part in self.p)
 
-        # Number of unique material boundaries
-        unique_pairs = set()
-        for pair in self.inout:
-            unique_pairs.add(tuple(pair))
-        self.np = len(unique_pairs)
+        # Number of particles
+        self.np = len(self.p)
 
         # Create index mapping for boundary elements
         self._create_index()
@@ -600,6 +597,11 @@ class ComParticle(object):
     def verts(self):
         """All vertices (concatenated)."""
         return self.pc.verts if hasattr(self, 'pc') else np.vstack([part.verts for part in self.p])
+
+    @property
+    def faces(self):
+        """All faces (concatenated with vertex offset)."""
+        return self.pc.faces if hasattr(self, 'pc') else self._concat_faces()
 
     @property
     def inout_faces(self):

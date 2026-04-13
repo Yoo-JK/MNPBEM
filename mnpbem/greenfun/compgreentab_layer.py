@@ -38,6 +38,14 @@ class CompGreenTabLayer(object):
 
         self.g = CompGreenRetLayer(p1, p2, layer, **options_with_tab)
 
+    def set(self, enei_arr, **options):
+        """Pre-compute Green function table at multiple wavelengths.
+
+        MATLAB: greentab = set(greentab, enei, op)
+        """
+        self.tab.set(enei_arr, **options)
+        return self
+
     def eval(self,
             i: int,
             j: int,

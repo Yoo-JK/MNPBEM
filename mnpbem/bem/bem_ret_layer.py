@@ -72,10 +72,12 @@ class BEMRetLayer(object):
             p: Any,
             layer: Any,
             enei: Optional[float] = None,
+            greentab: Optional[Any] = None,
             **options: Any) -> None:
 
         self.p = p
         self.layer = layer
+        self.greentab = greentab
 
         self.enei = None
         self.k = None
@@ -148,7 +150,17 @@ class BEMRetLayer(object):
 
         # Create Green function with layer
         if self.g is None:
-            self.g = CompGreenRetLayer(self.p, self.p, self.layer, **self.options)
+            opts = dict(self.options)
+            if self.greentab is not None:
+                # Pass the tabulated Green function's GreenTabLayer
+                gt = self.greentab
+                if hasattr(gt, 'tab'):
+                    # CompGreenTabLayer object - extract its GreenTabLayer
+                    opts['greentab_obj'] = gt.tab
+                elif hasattr(gt, 'r'):
+                    # Direct GreenTabLayer object
+                    opts['greentab_obj'] = gt
+            self.g = CompGreenRetLayer(self.p, self.p, self.layer, **opts)
 
         # ---- Green functions for inner surfaces (plain scalar matrices) ----
         # MATLAB: G11 = obj.g{1,1}.G(enei);  G21 = obj.g{2,1}.G(enei);

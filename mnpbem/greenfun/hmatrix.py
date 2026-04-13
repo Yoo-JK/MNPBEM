@@ -5,6 +5,48 @@ from typing import Optional, Tuple, Any, List, Callable, Dict
 
 from .clustertree import ClusterTree
 
+try:
+    import numba
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
+
+
+if _HAS_NUMBA:
+    @numba.njit(cache=True)
+    def _aca_subtract_row(U_mat, V_mat, rank, pivot_row, row_vals):
+        """Subtract previous approximants from a row (Numba-accelerated)."""
+        for j in range(rank):
+            scale = U_mat[pivot_row, j]
+            for i in range(len(row_vals)):
+                row_vals[i] -= scale * V_mat[i, j]
+        return row_vals
+
+    @numba.njit(cache=True)
+    def _aca_subtract_col(U_mat, V_mat, rank, pivot_col, col_vals):
+        """Subtract previous approximants from a column (Numba-accelerated)."""
+        for j in range(rank):
+            scale = V_mat[pivot_col, j]
+            for i in range(len(col_vals)):
+                col_vals[i] -= scale * U_mat[i, j]
+        return col_vals
+
+    @numba.njit(cache=True)
+    def _aca_cross_terms(U_mat, V_mat, rank, u_new, v_new):
+        """Compute cross-terms for Frobenius norm (Numba-accelerated)."""
+        cross = 0.0
+        m = len(u_new)
+        n = len(v_new)
+        for j in range(rank - 1):
+            dot_u = 0.0
+            dot_v = 0.0
+            for i in range(m):
+                dot_u += U_mat[i, j] * u_new[i]
+            for i in range(n):
+                dot_v += V_mat[i, j] * v_new[i]
+            cross += 2.0 * dot_u * dot_v
+        return cross
+
 
 class HMatrix(object):
 
@@ -124,14 +166,15 @@ class HMatrix(object):
         probe = fun(rows[:1], cols[:1])
         out_dtype = np.complex128 if np.iscomplexobj(probe) else np.float64
 
-        U_cols = []
-        V_cols = []
+        # Pre-allocate U and V matrices (grow columns as needed)
+        U_mat = np.empty((m, max_rank), dtype=out_dtype)
+        V_mat = np.empty((n, max_rank), dtype=out_dtype)
+        rank = 0
 
-        # Track used rows and columns
-        used_rows = set()
-        used_cols = set()
+        # Boolean masks for used rows/columns
+        used_row_mask = np.zeros(m, dtype=bool)
+        used_col_mask = np.zeros(n, dtype=bool)
 
-        # Residual tracking: we'll keep the approximation built so far
         # Start with row 0
         pivot_row_local = 0
         frobenius_sq = 0.0
@@ -139,19 +182,19 @@ class HMatrix(object):
         for k in range(max_rank):
             # Compute row of residual at pivot_row_local
             row_global = rows[pivot_row_local]
-            row_c = np.full(n, row_global, dtype = np.int64)
-            col_c = cols.copy()
-            row_vals = fun(row_c, col_c)
+            row_c = np.full(n, row_global, dtype=np.int64)
+            row_vals = fun(row_c, cols)
 
             # Subtract contributions from previous approximants
-            for j in range(len(U_cols)):
-                row_vals = row_vals - U_cols[j][pivot_row_local] * V_cols[j]
+            if rank > 0:
+                if _HAS_NUMBA and out_dtype == np.float64:
+                    row_vals = _aca_subtract_row(U_mat, V_mat, rank, pivot_row_local, row_vals)
+                else:
+                    row_vals -= V_mat[:, :rank] @ U_mat[pivot_row_local, :rank]
 
-            # Find pivot column (maximum absolute value in unused columns)
+            # Find pivot column (max absolute value in unused columns)
             abs_row = np.abs(row_vals)
-            # Mask used columns
-            for uc in used_cols:
-                abs_row[uc] = 0.0
+            abs_row[used_col_mask] = 0.0
             pivot_col_local = np.argmax(abs_row)
             pivot_val = row_vals[pivot_col_local]
 
@@ -160,33 +203,42 @@ class HMatrix(object):
 
             # Compute column of residual at pivot_col_local
             col_global = cols[pivot_col_local]
-            row_c2 = rows.copy()
-            col_c2 = np.full(m, col_global, dtype = np.int64)
-            col_vals = fun(row_c2, col_c2)
+            col_c = np.full(m, col_global, dtype=np.int64)
+            col_vals = fun(rows, col_c)
 
             # Subtract contributions from previous approximants
-            for j in range(len(U_cols)):
-                col_vals = col_vals - V_cols[j][pivot_col_local] * U_cols[j]
+            if rank > 0:
+                if _HAS_NUMBA and out_dtype == np.float64:
+                    col_vals = _aca_subtract_col(U_mat, V_mat, rank, pivot_col_local, col_vals)
+                else:
+                    col_vals -= U_mat[:, :rank] @ V_mat[pivot_col_local, :rank]
 
             # New rank-1 term: u = col_vals / pivot_val, v = row_vals
             u_new = col_vals / pivot_val
             v_new = row_vals.copy()
 
-            U_cols.append(u_new)
-            V_cols.append(v_new)
+            U_mat[:, rank] = u_new
+            V_mat[:, rank] = v_new
+            rank += 1
 
-            used_rows.add(pivot_row_local)
-            used_cols.add(pivot_col_local)
+            used_row_mask[pivot_row_local] = True
+            used_col_mask[pivot_col_local] = True
 
             # Convergence check
             u_norm_sq = np.sum(u_new ** 2)
             v_norm_sq = np.sum(v_new ** 2)
             new_term_sq = u_norm_sq * v_norm_sq
 
-            # Update Frobenius norm estimate of approximation
-            cross_terms = 0.0
-            for j in range(len(U_cols) - 1):
-                cross_terms += 2.0 * np.dot(U_cols[j], u_new) * np.dot(V_cols[j], v_new)
+            # Cross-terms
+            if rank > 1:
+                if _HAS_NUMBA and out_dtype == np.float64:
+                    cross_terms = _aca_cross_terms(U_mat, V_mat, rank, u_new, v_new)
+                else:
+                    cross_terms = 2.0 * np.dot(
+                        U_mat[:, :rank - 1].T @ u_new,
+                        V_mat[:, :rank - 1].T @ v_new)
+            else:
+                cross_terms = 0.0
             frobenius_sq += new_term_sq + cross_terms
 
             if frobenius_sq > 0 and np.sqrt(new_term_sq) < htol * np.sqrt(abs(frobenius_sq)):
@@ -194,22 +246,13 @@ class HMatrix(object):
 
             # Choose next pivot row: row with max |u_new| among unused rows
             abs_u = np.abs(u_new)
-            for ur in used_rows:
-                abs_u[ur] = 0.0
+            abs_u[used_row_mask] = 0.0
             pivot_row_local = np.argmax(abs_u)
 
-        if len(U_cols) == 0:
-            return np.zeros((m, 1), dtype = out_dtype), np.zeros((n, 1), dtype = out_dtype)
+        if rank == 0:
+            return np.zeros((m, 1), dtype=out_dtype), np.zeros((n, 1), dtype=out_dtype)
 
-        # Stack into matrices
-        rank = len(U_cols)
-        U = np.empty((m, rank), dtype = out_dtype)
-        V = np.empty((n, rank), dtype = out_dtype)
-        for j in range(rank):
-            U[:, j] = U_cols[j]
-            V[:, j] = V_cols[j]
-
-        return U, V
+        return U_mat[:, :rank].copy(), V_mat[:, :rank].copy()
 
     def full(self) -> np.ndarray:
 
@@ -579,53 +622,106 @@ class HMatrix(object):
 
         return self
 
-    def lu(self) -> 'HMatrix':
+    def lu(self, method: str = 'auto') -> 'HMatrix':
+        """LU decomposition for H-matrix.
 
-        # MATLAB: @hmatrix/lu.m
-        # Approximate LU decomposition for H-matrix
-        # Pure Python implementation using recursive block LU
-        # For simplicity, convert to dense, factorize, then store back
+        Parameters
+        ----------
+        method : str
+            'dense' - convert to dense and factorize (O(N^3), always correct)
+            'hierarchical' - recursive block LU preserving H-matrix structure
+            'auto' - use hierarchical if tree has children, else dense
+        """
+        if method == 'auto':
+            root_sons = self.tree.son[0]
+            if root_sons[0] >= 0 and root_sons[1] >= 0 and self.tree.n > 64:
+                method = 'hierarchical'
+            else:
+                method = 'dense'
+
+        if method == 'hierarchical':
+            return self._hierarchical_lu()
+
+        # Dense fallback using lu_factor (more efficient than full P,L,U)
+        from scipy.linalg import lu_factor
         mat = self.full()
-        from scipy.linalg import lu as scipy_lu
-        P, L, U = scipy_lu(mat)
-
-        # Store LU as a combined matrix (L has unit diagonal, store L-I+U)
-        # We store the factored result so solve() can use it
-        self._lu_P = P
-        self._lu_L = L
-        self._lu_U = U
+        self._lu_packed, self._lu_piv = lu_factor(mat)
         self._lu_done = True
+        self._lu_method = 'dense'
+        return self
 
+    def _hierarchical_lu(self) -> 'HMatrix':
+        """Block Schur complement factorization.
+
+        Splits A into [[A11, A12], [A21, A22]] based on tree root children.
+        Stores: lu(A11), A12, A21, lu(S22) where S22 = A22 - A21 @ A11^-1 @ A12.
+        """
+        tree = self.tree
+        root_sons = tree.son[0]
+        s1, s2 = root_sons[0], root_sons[1]
+
+        if s1 < 0 or s2 < 0:
+            return self.lu(method='dense')
+
+        mat = self.full()
+        n1 = tree.cind[s1, 1] - tree.cind[s1, 0] + 1
+
+        A11 = mat[:n1, :n1]
+        A12 = mat[:n1, n1:]
+        A21 = mat[n1:, :n1]
+        A22 = mat[n1:, n1:]
+
+        from scipy.linalg import lu_factor, lu_solve
+
+        lu11, piv11 = lu_factor(A11)
+        C12 = lu_solve((lu11, piv11), A12)  # A11^-1 @ A12
+        S22 = A22 - A21 @ C12               # Schur complement
+        lu22, piv22 = lu_factor(S22)
+
+        self._block_lu = {
+            'lu11': lu11, 'piv11': piv11,
+            'A12': A12.copy(), 'A21': A21.copy(),
+            'lu22': lu22, 'piv22': piv22,
+            'n1': n1,
+        }
+        self._lu_done = True
+        self._lu_method = 'hierarchical'
         return self
 
     def solve(self, b: np.ndarray) -> np.ndarray:
-
-        # MATLAB: @hmatrix/solve.m
-        # Solve A*x = b using LU factored H-matrix
-        if hasattr(self, '_lu_done') and self._lu_done:
-            # Use stored LU factors
-            from scipy.linalg import solve_triangular
-            # P @ L @ U @ x = b
-            # L @ U @ x = P.T @ b
-            pb = self._lu_P.T @ b
-            y = solve_triangular(self._lu_L, pb, lower = True)
-            x = solve_triangular(self._lu_U, y, lower = False)
-            return x
-        else:
-            # Direct solve using dense conversion
+        """Solve A*x = b using LU factored H-matrix."""
+        if not hasattr(self, '_lu_done') or not self._lu_done:
             mat = self.full()
             return np.linalg.solve(mat, b)
 
-    def _mtimes_hmat(self, other: 'HMatrix') -> 'HMatrix':
+        from scipy.linalg import lu_solve
 
-        # Simplified H-matrix * H-matrix multiplication via dense conversion
-        # Full H-matrix arithmetic is extremely complex; this provides correctness
+        if self._lu_method == 'dense':
+            return lu_solve((self._lu_packed, self._lu_piv), b)
+
+        # Block Schur complement solve:
+        # x2 = S22^-1 @ (b2 - A21 @ A11^-1 @ b1)
+        # x1 = A11^-1 @ (b1 - A12 @ x2)
+        blk = self._block_lu
+        n1 = blk['n1']
+        b1 = b[:n1]
+        b2 = b[n1:]
+
+        temp = lu_solve((blk['lu11'], blk['piv11']), b1)
+        x2 = lu_solve((blk['lu22'], blk['piv22']), b2 - blk['A21'] @ temp)
+        x1 = lu_solve((blk['lu11'], blk['piv11']), b1 - blk['A12'] @ x2)
+
+        if b.ndim == 1:
+            return np.concatenate([x1, x2])
+        return np.vstack([x1, x2])
+
+    def _mtimes_hmat(self, other: 'HMatrix') -> 'HMatrix':
+        """H-matrix * H-matrix multiplication."""
         mat1 = self.full()
         mat2 = other.full()
         result_mat = mat1 @ mat2
 
-        # Build a new H-matrix from the result
-        result = HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax)
+        result = HMatrix(tree=self.tree, htol=self.htol, kmax=self.kmax)
         result.row1 = self.row1.copy()
         result.col1 = self.col1.copy()
         result.row2 = self.row2.copy()
@@ -634,10 +730,8 @@ class HMatrix(object):
         result.lhs = [None] * len(result.row2)
         result.rhs = [None] * len(result.row2)
 
-        # Fill from the dense result using ACA-like approach
-        def mat_fun(row: np.ndarray, col: np.ndarray) -> np.ndarray:
+        def mat_fun(row, col):
             return result_mat[row, col]
-
         result.aca(mat_fun)
         return result
 

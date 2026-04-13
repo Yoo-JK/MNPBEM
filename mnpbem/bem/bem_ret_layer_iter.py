@@ -654,20 +654,16 @@ class BEMRetLayerIter(BEMIter):
             b2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
         # MATLAB: fun(M, b1, b2) in mfun.m
-        # Solve system using LU decomposition:
-        # [L11, 0; L21, L22] * [y1; y2] = [b1; b2]
-        # [U11, U12; 0, U22] * [x1; x2] = [y1; y2]
+        # Solve 2x2 block system using pre-computed inverse factors:
+        #   im11 = inv(M11), im12 = inv(M11) @ M12,
+        #   im21 = M21 @ inv(M11), im22 = inv(Schur)
+        # where Schur = M22 - M21 @ inv(M11) @ M12
 
-        L = im
-        U = im
+        im11, im12 = im[0][0], im[0][1]
+        im21, im22 = im[1][0], im[1][1]
 
-        # Forward solve
-        y1 = L[0][0] @ b1
-        y2 = L[1][1] @ (b2 - L[1][0] @ y1)
-
-        # Backward solve
-        x2 = U[1][1] @ y2
-        x1 = U[0][0] @ (y1 - U[0][1] @ x2)
+        x2 = im22 @ (b2 - im21 @ b1)
+        x1 = im11 @ b1 - im12 @ x2
 
         return x1, x2
 

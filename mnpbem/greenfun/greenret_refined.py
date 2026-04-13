@@ -70,6 +70,7 @@ class GreenRetRefined(object):
         self.p2 = p2
         self.deriv = deriv
         self.order = order
+        self._d_cache = None
 
         # Initialize refinement
         self._init_refinement(**options)
@@ -279,6 +280,28 @@ class GreenRetRefined(object):
                 integrand = n_dot_r * (term1 + term2)
                 self.f[iface, n] = integrand @ w_face
 
+    def _ensure_cache(self):
+        """Build and cache wavelength-independent distance quantities."""
+        if self._d_cache is not None:
+            return
+        pos1 = self.p1.pos
+        pos2 = self.p2.pos
+        x = pos1[:, 0:1] - pos2[:, 0]  # (n1, n2)
+        y = pos1[:, 1:2] - pos2[:, 1]
+        z = pos1[:, 2:3] - pos2[:, 2]
+        d = np.sqrt(x**2 + y**2 + z**2)
+        d = np.maximum(d, np.finfo(float).eps)
+        inv_d = 1.0 / d
+        inv_d2 = inv_d * inv_d
+        area2 = self.p2.area
+        nvec1 = self.p1.nvec
+        n_dot_r = (nvec1[:, 0:1] * x + nvec1[:, 1:2] * y + nvec1[:, 2:3] * z)
+        self._d_cache = {
+            'x': x, 'y': y, 'z': z, 'd': d,
+            'inv_d': inv_d, 'inv_d2': inv_d2,
+            'area2': area2, 'n_dot_r': n_dot_r,
+        }
+
     def eval(self, k, key):
         """
         Evaluate Green function with proper refinement.
@@ -300,68 +323,40 @@ class GreenRetRefined(object):
         g : ndarray, shape (n1, n2)
             Green function matrix
         """
-        # Positions and areas
-        pos1 = self.p1.pos
-        pos2 = self.p2.pos
-        n1, n2 = pos1.shape[0], pos2.shape[0]
-        area2 = self.p2.area
-
-        # Compute distances (MATLAB lines 25-29)
-        x = pos1[:, 0:1] - pos2[:, 0]  # (n1, n2)
-        y = pos1[:, 1:2] - pos2[:, 1]
-        z = pos1[:, 2:3] - pos2[:, 2]
-        d = np.sqrt(x**2 + y**2 + z**2)
-        d = np.maximum(d, np.finfo(float).eps)
+        self._ensure_cache()
+        c = self._d_cache
+        d = c['d']
+        inv_d = c['inv_d']
+        inv_d2 = c['inv_d2']
+        area2 = c['area2']
 
         # Evaluate based on key
         if key == 'G':
-            # Step 1: Green function G = 1/d * area (MATLAB line 34)
-            # Initialize as complex to avoid casting warnings
-            G = (1.0 / d) * area2[np.newaxis, :] + 0j
+            G = inv_d * area2[np.newaxis, :] + 0j
 
-            # Step 2: Refine elements (MATLAB lines 36-38)
             if len(self.ind) > 0:
-                # Multi-order expansion: Σ g_n × (ik)^n
                 ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
-                G_refined = self.g @ ik_powers  # (n_refined,)
-
-                # Replace refined elements
+                G_refined = self.g @ ik_powers
                 G[self.row, self.col] = G_refined
 
-            # Step 3: Apply phase factor (MATLAB line 39)
             G = G * np.exp(1j * k * d)
             return G
 
         elif key == 'F':
-            # Surface derivative (MATLAB lines 47-56)
-            nvec1 = self.p1.nvec
+            n_dot_r = c['n_dot_r']
+            F = n_dot_r * (1j * k - inv_d) * inv_d2 * area2[np.newaxis, :]
 
-            # Inner product n·r (MATLAB lines 48-49)
-            n_dot_r = (nvec1[:, 0:1] * x +
-                      nvec1[:, 1:2] * y +
-                      nvec1[:, 2:3] * z)
-
-            # F = (n·r) × (ik - 1/d) / d² × area (MATLAB line 51-52)
-            # Already complex due to 1j term
-            F = n_dot_r * (1j * k - 1.0 / d) / (d**2) * area2[np.newaxis, :]
-
-            # Refine elements (MATLAB lines 53-55)
             if len(self.ind) > 0:
-                # Multi-order expansion
                 ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
                 F_refined = self.f @ ik_powers
-
-                # Replace refined elements
                 F[self.row, self.col] = F_refined
 
-            # Apply phase factor (MATLAB line 56)
             F = F * np.exp(1j * k * d)
             return F
 
         elif key == 'H1':
             F = self.eval(k, 'F')
             H1 = F.copy()
-            # Add 2π to diagonal (MATLAB line 73)
             if self.p1 is self.p2:
                 np.fill_diagonal(H1, np.diag(F) + 2.0 * np.pi)
             return H1
@@ -369,18 +364,16 @@ class GreenRetRefined(object):
         elif key == 'H2':
             F = self.eval(k, 'F')
             H2 = F.copy()
-            # Subtract 2π from diagonal (MATLAB line 75)
             if self.p1 is self.p2:
                 np.fill_diagonal(H2, np.diag(F) - 2.0 * np.pi)
             return H2
 
         elif key == 'Gp':
-            # Gradient of Green function: Gp = -r/d^2 * (ik - 1/d) * exp(ikd) * area
-            # Shape: (n1, 3, n2)
-            r = np.stack([x, y, z], axis = 2)  # (n1, n2, 3)
+            x, y, z = c['x'], c['y'], c['z']
+            r_vec = np.stack([x, y, z], axis=2)  # (n1, n2, 3)
             phase = np.exp(1j * k * d)
-            Gp_factor = -phase * (1j * k - 1.0 / d) / (d ** 2)
-            Gp = r * Gp_factor[:, :, np.newaxis] * area2[np.newaxis, :, np.newaxis]
+            Gp_factor = -phase * (1j * k - inv_d) * inv_d2
+            Gp = r_vec * Gp_factor[:, :, np.newaxis] * area2[np.newaxis, :, np.newaxis]
             return np.transpose(Gp, (0, 2, 1))  # (n1, 3, n2)
 
         elif key == 'H1p':
@@ -388,8 +381,8 @@ class GreenRetRefined(object):
             H1p = Gp.copy()
             if self.p1 is self.p2:
                 nvec = self.p1.nvec
-                for i in range(len(nvec)):
-                    H1p[i, :, i] += 2 * np.pi * nvec[i]
+                idx = np.arange(len(nvec))
+                H1p[idx, :, idx] += 2.0 * np.pi * nvec.T
             return H1p
 
         elif key == 'H2p':
@@ -397,8 +390,8 @@ class GreenRetRefined(object):
             H2p = Gp.copy()
             if self.p1 is self.p2:
                 nvec = self.p1.nvec
-                for i in range(len(nvec)):
-                    H2p[i, :, i] -= 2 * np.pi * nvec[i]
+                idx = np.arange(len(nvec))
+                H2p[idx, :, idx] -= 2.0 * np.pi * nvec.T
             return H2p
 
         else:

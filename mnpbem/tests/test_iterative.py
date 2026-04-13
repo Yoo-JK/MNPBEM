@@ -883,22 +883,22 @@ class TestBEMRetIter(object):
         bem = _make_ret_iter(particle, solver='gmres', precond='full')
         bem._init_matrices(500.0)
         assert bem._sav is not None
-        assert 'G1i' in bem._sav
-        assert 'G2i' in bem._sav
+        assert 'G1_lu' in bem._sav
+        assert 'G2_lu' in bem._sav
         assert 'Sigma1' in bem._sav
-        assert 'Deltai' in bem._sav
-        assert 'Sigmai' in bem._sav
+        assert 'Delta_lu' in bem._sav
+        assert 'Sigma_lu' in bem._sav
         assert 'k' in bem._sav
         assert 'nvec' in bem._sav
         assert 'eps1' in bem._sav
         assert 'eps2' in bem._sav
 
-    def test_init_precond_sigmai_shape(self, particle):
-        """Sigmai has correct shape (n, n)."""
+    def test_init_precond_sigma1_shape(self, particle):
+        """Sigma1 has correct shape (n, n)."""
         bem = _make_ret_iter(particle, solver='gmres', precond='full')
         bem._init_matrices(500.0)
         n = particle.n
-        assert bem._sav['Sigmai'].shape == (n, n)
+        assert bem._sav['Sigma1'].shape == (n, n)
 
     def test_decorate_deltai(self):
         """

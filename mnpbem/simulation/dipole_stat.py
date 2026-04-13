@@ -337,15 +337,19 @@ class DipoleStat(object):
 
         # MATLAB: decayrate.m lines 30-31
         # Induced dipole moment
-        # sig.p.pos: (nfaces, 3), sig.p.area: (nfaces,), sig.sig: (nfaces,) or (nfaces, npol)
+        # sig.p.pos: (nfaces, 3), sig.p.area: (nfaces,), sig.sig: (nfaces,) or (nfaces, npt, ndip)
         area_pos = sig.p.pos * sig.p.area[:, np.newaxis]  # (nfaces, 3)
 
-        if sig.sig.ndim == 1:
-            indip = area_pos.T @ sig.sig  # (3,)
-            indip = indip.reshape(3, 1, 1)
+        npt = self.pt.n
+        ndip = self.dip.shape[2]
+        sig_arr = sig.sig
+        # Reshape sig to (nfaces, npt*ndip) for matrix multiply
+        if sig_arr.ndim == 1:
+            sig_flat = sig_arr.reshape(-1, 1)
         else:
-            indip = area_pos.T @ sig.sig  # (3, npol)
-            indip = indip.reshape(3, sig.sig.shape[0], -1)  # (3, npt, ndip)
+            sig_flat = sig_arr.reshape(sig_arr.shape[0], -1)
+        indip = area_pos.T @ sig_flat  # (3, npt*ndip)
+        indip = indip.reshape(3, npt, ndip)
 
         # MATLAB: decayrate.m lines 33-35
         # Decay rates for oscillating dipole
