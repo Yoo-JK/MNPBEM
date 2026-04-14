@@ -1069,24 +1069,113 @@ def quadtree(node: np.ndarray,
         if max_change < tol_grad:
             break
 
-    # triangulate quadtree
+    # triangulate quadtree (MATLAB quadtree.m lines 326-527)
     if len(b_arr) == 1:
         t_arr = np.array([[b_arr[0, 0], b_arr[0, 1], b_arr[0, 2]],
                            [b_arr[0, 0], b_arr[0, 2], b_arr[0, 3]]])
     else:
-        # check for regular boxes (all corners have <= 4 connections)
-        n2n_count = np.zeros(len(p_arr), dtype = int)
+        # build n2n connectivity (max 8 neighbors per node)
+        np_nodes = len(p_arr)
+        n2n = np.zeros((np_nodes, 9), dtype = int)
         for k in range(len(edges)):
-            n2n_count[edges[k, 0]] += 1
-            n2n_count[edges[k, 1]] += 1
+            n1e, n2e = edges[k, 0], edges[k, 1]
+            n2n[n1e, 0] += 1
+            n2n[n1e, n2n[n1e, 0]] = n2e
+            n2n[n2e, 0] += 1
+            n2n[n2e, n2n[n2e, 0]] = n1e
+
+        # regular boxes: all corners have <= 4 connections
+        num_conn = n2n[:, 0] <= 4
+        reg = np.all(num_conn[b_arr], axis = 1)
 
         t_list = []
-        for box in b_arr:
-            # simple triangulation: split box into 2 triangles
-            t_list.append([box[0], box[1], box[2]])
-            t_list.append([box[0], box[2], box[3]])
+        reg_idx = np.where(reg)[0]
+        for i in reg_idx:
+            t_list.append([b_arr[i, 0], b_arr[i, 1], b_arr[i, 2]])
+            t_list.append([b_arr[i, 0], b_arr[i, 2], b_arr[i, 3]])
 
-        t_arr = np.array(t_list, dtype = int)
+        irreg_idx = np.where(~reg)[0]
+        nlist = np.zeros(512, dtype = int)
+
+        for ki in range(len(irreg_idx)):
+            k = irreg_idx[ki]
+            bn1, bn2, bn3, bn4 = b_arr[k]
+
+            nlist[0] = bn1
+            count = 1
+            nxt = 1
+
+            while True:
+                cn = nlist[nxt - 1]
+                old = np.inf
+                tmp = -1
+                for j in range(n2n[cn, 0]):
+                    nn = n2n[cn, j + 1]
+                    dx = p_arr[nn, 0] - p_arr[cn, 0]
+                    dy = p_arr[nn, 1] - p_arr[cn, 1]
+                    if count == 1:
+                        if dx > 0 and dx < old:
+                            old = dx; tmp = nn
+                    elif count == 2:
+                        if dy > 0 and dy < old:
+                            old = dy; tmp = nn
+                    elif count == 3:
+                        if dx < 0 and abs(dx) < old:
+                            old = abs(dx); tmp = nn
+                    else:
+                        if dy < 0 and abs(dy) < old:
+                            old = abs(dy); tmp = nn
+
+                if tmp == bn1:
+                    break
+                if count < 4 and tmp == b_arr[k, count]:
+                    count += 1
+                nlist[nxt] = tmp
+                nxt += 1
+
+            nnode = nxt
+
+            if nnode == 4:
+                t_list.append([bn1, bn2, bn3])
+                t_list.append([bn1, bn3, bn4])
+            elif nnode == 5:
+                jj = 1
+                while jj <= 3:
+                    if nlist[jj] != b_arr[k, jj]:
+                        break
+                    jj += 1
+                if jj == 2:
+                    cn1, cn2, cn3, cn4 = bn1, bn2, bn3, bn4
+                elif jj == 3:
+                    cn1, cn2, cn3, cn4 = bn2, bn3, bn4, bn1
+                elif jj == 4:
+                    cn1, cn2, cn3, cn4 = bn3, bn4, bn1, bn2
+                else:
+                    cn1, cn2, cn3, cn4 = bn4, bn1, bn2, bn3
+                mid = nlist[jj]
+                t_list.append([cn1, mid, cn4])
+                t_list.append([mid, cn2, cn3])
+                t_list.append([cn4, mid, cn3])
+            else:
+                new_idx = len(p_arr)
+                xave, yave, have = 0.0, 0.0, 0.0
+                for j in range(nnode - 1):
+                    jjn = nlist[j]
+                    t_list.append([jjn, new_idx, nlist[j + 1]])
+                    xave += p_arr[jjn, 0]
+                    yave += p_arr[jjn, 1]
+                    have += h_arr_np[jjn]
+                jjn = nlist[nnode - 1]
+                t_list.append([jjn, new_idx, nlist[0]])
+                xave += p_arr[jjn, 0]
+                yave += p_arr[jjn, 1]
+                have += h_arr_np[jjn]
+
+                centroid = np.array([[xave / nnode, yave / nnode]])
+                p_arr = np.vstack([p_arr, centroid])
+                h_arr_np = np.append(h_arr_np, have / nnode)
+
+        t_arr = np.array(t_list, dtype = int) if len(t_list) > 0 else np.empty((0, 3), dtype = int)
 
     # remove bad nodes
     good = h_arr_np > 0
