@@ -62,38 +62,30 @@ class PlaneWaveStatMirror(object):
 
         nvec = p.nvec
 
-        # polarization basis: x, y, z
+        # MATLAB: only x, y polarization basis (no z-basis)
         phip_x = -nvec @ np.array([1, 0, 0])
         phip_y = -nvec @ np.array([0, 1, 0])
-        phip_z = -nvec @ np.array([0, 0, 1])
 
         if p.sym == 'x':
             val1 = CompStruct(p, enei, phip = phip_x)
             val1.symval = p.symvalue(['+', '-', '-'])
             val2 = CompStruct(p, enei, phip = phip_y)
             val2.symval = p.symvalue(['-', '+', '-'])
-            val3 = CompStruct(p, enei, phip = phip_z)
-            val3.symval = p.symvalue(['-', '-', '+'])
         elif p.sym == 'y':
             val1 = CompStruct(p, enei, phip = phip_x)
             val1.symval = p.symvalue(['+', '-', '+'])
             val2 = CompStruct(p, enei, phip = phip_y)
             val2.symval = p.symvalue(['-', '+', '-'])
-            val3 = CompStruct(p, enei, phip = phip_z)
-            val3.symval = p.symvalue(['+', '-', '+'])
         elif p.sym == 'xy':
             val1 = CompStruct(p, enei, phip = phip_x)
             val1.symval = p.symvalue(['++', '--', '-+'])
             val2 = CompStruct(p, enei, phip = phip_y)
             val2.symval = p.symvalue(['--', '++', '+-'])
-            val3 = CompStruct(p, enei, phip = phip_z)
-            val3.symval = p.symvalue(['-+', '+-', '++'])
         else:
             raise ValueError('[error] Unknown symmetry: {}'.format(p.sym))
 
         exc.val.append(val1)
         exc.val.append(val2)
-        exc.val.append(val3)
 
         return exc
 
