@@ -58,7 +58,11 @@ from .greenfun import (
     ACACompGreenStat,
     ACACompGreenRet,
     ACACompGreenRetLayer,
+    greenfunction,
 )
+
+# BEM: abstract base class
+from .bem import BemBase
 
 # BEM solvers: static, retarded, mirror, layer, iterative
 from .bem import (
@@ -96,6 +100,9 @@ from .simulation import (
     DipoleStatLayer,
     DipoleRetLayer,
     MeshField,
+    dipole,
+    planewave,
+    electronbeam,
 )
 
 # Spectrum: far-field and cross section calculations
@@ -104,6 +111,7 @@ from .spectrum import (
     SpectrumStat,
     SpectrumRetLayer,
     SpectrumStatLayer,
+    spectrum,
 )
 
 # Mie theory: spherical harmonics, Mie solvers
@@ -211,6 +219,9 @@ __all__ = [
     "ACACompGreenStat",
     "ACACompGreenRet",
     "ACACompGreenRetLayer",
+    "greenfunction",
+    # BEM base
+    "BemBase",
     # BEM solvers
     "BEMStat",
     "BEMRet",
@@ -243,11 +254,15 @@ __all__ = [
     "DipoleStatLayer",
     "DipoleRetLayer",
     "MeshField",
+    "dipole",
+    "planewave",
+    "electronbeam",
     # Spectrum
     "SpectrumRet",
     "SpectrumStat",
     "SpectrumRetLayer",
     "SpectrumStatLayer",
+    "spectrum",
     # Mie theory
     "spharm",
     "sphtable",

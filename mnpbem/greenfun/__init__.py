@@ -35,6 +35,7 @@ from .hmatrix import HMatrix
 from .aca_compgreen_stat import ACACompGreenStat
 from .aca_compgreen_ret import ACACompGreenRet
 from .aca_compgreen_ret_layer import ACACompGreenRetLayer
+from .greenfunction import greenfunction
 
 __all__ = [
     "GreenStat",
@@ -53,4 +54,5 @@ __all__ = [
     "ACACompGreenStat",
     "ACACompGreenRet",
     "ACACompGreenRetLayer",
+    "greenfunction",
 ]

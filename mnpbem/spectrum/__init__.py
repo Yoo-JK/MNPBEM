@@ -12,10 +12,12 @@ from .spectrum_ret import SpectrumRet
 from .spectrum_stat import SpectrumStat
 from .spectrum_ret_layer import SpectrumRetLayer
 from .spectrum_stat_layer import SpectrumStatLayer
+from .spectrum_factory import spectrum
 
 __all__ = [
     'SpectrumRet',
     'SpectrumStat',
     'SpectrumRetLayer',
     'SpectrumStatLayer',
+    'spectrum',
 ]
