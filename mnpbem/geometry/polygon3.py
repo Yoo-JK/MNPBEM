@@ -60,7 +60,8 @@ class Polygon3(object):
             edge: Optional[EdgeProfile] = None,
             hdata: Optional[dict] = None,
             options: Optional[dict] = None,
-            refun: Optional[Any] = None) -> Tuple[Particle, 'Polygon3']:
+            refun: Optional[Any] = None,
+            sym: Optional[str] = None) -> Tuple[Particle, 'Polygon3']:
         # MATLAB: @polygon3/plate.m
         if edge is not None:
             self.edge = edge
@@ -72,6 +73,11 @@ class Polygon3(object):
 
         # triangulate the 2D polygon
         poly_for_mesh = self.poly.copy()
+
+        # Apply symmetry reduction (MATLAB: poly1 = close(symmetry(poly, op.sym)))
+        if sym is not None:
+            poly_for_mesh._apply_symmetry(sym)
+            poly_for_mesh = poly_for_mesh.close()
 
         # get full polygon for meshing
         full_pos = poly_for_mesh.get_full_polygon()
@@ -93,7 +99,12 @@ class Polygon3(object):
         # MATLAB: obj(i).poly = interp1(obj(i).poly, verts)
         # Enrich polygon with mesh boundary vertices
         result_poly3 = self.copy()
-        result_poly3.poly = result_poly3.poly.interp1(verts_2d)
+        enriched_poly = result_poly3.poly.interp1(verts_2d)
+        # Apply symmetry to enriched polygon if needed
+        if sym is not None:
+            enriched_poly._apply_symmetry(sym)
+            enriched_poly = enriched_poly.close()
+        result_poly3.poly = enriched_poly
 
         # apply edge profile vertical shift to boundary vertices
         if self.edge is not None and self.edge.pos is not None:

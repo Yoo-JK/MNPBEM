@@ -828,14 +828,14 @@ def _tripolygon_both_rounded(polys, edge, **kwargs):
     # lower plate (dir = -1)
     plates1 = []
     for p3 in polys1:
-        plate, _ = p3.plate(dir = -1, edge = edge, **kwargs)
+        plate, _ = p3.plate(dir = -1, edge = edge, sym = sym, **kwargs)
         plates1.append(plate)
 
     # upper plate (dir = +1)
     polys_out = []
     plates2 = []
     for p3 in polys2:
-        plate, p3_out = p3.plate(dir = 1, edge = edge, **kwargs)
+        plate, p3_out = p3.plate(dir = 1, edge = edge, sym = sym, **kwargs)
         plates2.append(plate)
         polys_out.append(p3_out)
 
