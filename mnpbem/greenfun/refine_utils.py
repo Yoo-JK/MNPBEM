@@ -140,6 +140,87 @@ def refinematrix(p1, p2, AbsCutoff=0, RelCutoff=3, memsize=2e7):
     return ir.tocsr()
 
 
+def refinematrixlayer(p1, p2, layer, AbsCutoff=0, RelCutoff=0, memsize=2e7):
+
+    # MATLAB: /Greenfun/+green/refinematrixlayer.m
+    # Refinement matrix for layer structures.
+    # Uses in-plane radial distance + minimum z-distance to layer boundaries
+    # instead of direct Euclidean distance.
+    #
+    # Returns sparse matrix:
+    #   2 - diagonal elements (same particle, same position)
+    #   1 - off-diagonal elements needing refinement
+    #   0 - far field (no refinement)
+
+    pos1 = p1.pos  # (n1, 3)
+    pos2 = p2.pos  # (n2, 3)
+    n1, n2 = p1.n, p2.n
+
+    # Boundary element radius
+    rad2 = p2.bradius()  # (n2,)
+    try:
+        rad1 = p1.bradius()  # (n1,)
+    except (AttributeError, NotImplementedError):
+        rad1 = rad2
+
+    # Check if p1 and p2 are the same particle (for diagonal detection)
+    same_particle = (pos1.shape == pos2.shape and np.all(pos1 == pos2))
+
+    # Initialize sparse refinement matrix
+    ir = lil_matrix((n1, n2), dtype = int)
+
+    # Process in chunks
+    chunk_size = max(1, int(memsize / n1))
+    n_chunks = int(np.ceil(n2 / chunk_size))
+
+    for chunk_idx in range(n_chunks):
+        i_start = chunk_idx * chunk_size
+        i_end = min(i_start + chunk_size, n2)
+        chunk = slice(i_start, i_end)
+        n_chunk = i_end - i_start
+
+        # In-plane radial distance (xy only)
+        r_xy = distance.cdist(pos1[:, :2], pos2[chunk, :2])  # (n1, n_chunk)
+
+        # Minimum z-distance to layer boundaries for each point
+        zmin1, _ = layer.mindist(pos1[:, 2])   # (n1,)
+        zmin2, _ = layer.mindist(pos2[chunk, 2])  # (n_chunk,)
+
+        # Combined z-distance: sum of minimum distances to layers
+        z_dist = zmin1[:, np.newaxis] + zmin2[np.newaxis, :]  # (n1, n_chunk)
+
+        # Total distance: sqrt(r_xy^2 + z^2)
+        d = np.sqrt(r_xy ** 2 + z_dist ** 2)
+
+        # Subtract boundary element radius
+        d2 = d - rad2[chunk][np.newaxis, :]
+
+        # Distance in units of boundary element radius
+        if len(rad1) != 1:
+            id_rel = d2 / rad1[:, np.newaxis]
+        else:
+            id_rel = d2 / rad2[chunk][np.newaxis, :]
+
+        # Find elements needing refinement
+        near_mask = (d2 < AbsCutoff) | (id_rel < RelCutoff)
+        row_near, col_near = np.where(near_mask)
+
+        if len(row_near) > 0:
+            ir[row_near, col_near + i_start] = 1
+
+        # Diagonal elements (same particle): set to 2
+        if same_particle:
+            diag_mask = near_mask.copy()
+            # Find actual diagonal entries in this chunk
+            for local_col in range(n_chunk):
+                global_col = local_col + i_start
+                if global_col < n1:
+                    if near_mask[global_col, local_col]:
+                        ir[global_col, global_col] = 2
+
+    return ir.tocsr()
+
+
 # Test function
 if __name__ == "__main__":
     print("Testing refinematrix:")

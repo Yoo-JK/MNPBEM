@@ -750,6 +750,296 @@ class HMatrix(object):
         result.rhs = [r.copy() if r is not None else None for r in self.rhs]
         return result
 
+    def inv(self) -> 'HMatrix':
+
+        # MATLAB: @hmatrix/inv.m
+        # Inverse of hierarchical matrix.
+        # MATLAB version uses MEX (hmatinv); Python uses dense fallback via LU.
+        mat = self.full()
+        inv_mat = np.linalg.inv(mat)
+
+        result = self._copy()
+
+        def mat_fun(row: np.ndarray, col: np.ndarray) -> np.ndarray:
+            return inv_mat[row, col]
+
+        result.aca(mat_fun)
+        return result
+
+    def lsolve(self,
+            lu_hmat: 'HMatrix',
+            key: str = 'N') -> 'HMatrix':
+
+        # MATLAB: @hmatrix/lsolve.m
+        # Solve (L*U) * X = B  =>  X = (L*U)^{-1} * B
+        # self is B, lu_hmat is (L*U)
+        # key: 'L' for lower, 'U' for upper, 'N' for both (default)
+        from scipy.linalg import solve_triangular
+
+        B = self.full()
+        A = lu_hmat.full()
+
+        if key == 'L':
+            X = solve_triangular(np.tril(A), B, lower = True)
+        elif key == 'U':
+            X = solve_triangular(np.triu(A), B, lower = False)
+        else:
+            # key == 'N': solve full system A * X = B
+            X = np.linalg.solve(A, B)
+
+        result = self._copy()
+
+        def mat_fun(row: np.ndarray, col: np.ndarray) -> np.ndarray:
+            return X[row, col]
+
+        result.aca(mat_fun)
+        return result
+
+    def rsolve(self,
+            lu_hmat: 'HMatrix',
+            key: str = 'N') -> 'HMatrix':
+
+        # MATLAB: @hmatrix/rsolve.m
+        # Solve X * (L*U) = B  =>  X = B * (L*U)^{-1}
+        # self is B, lu_hmat is (L*U)
+        # key: 'L' for lower, 'U' for upper, 'N' for both (default)
+        from scipy.linalg import solve_triangular
+
+        B = self.full()
+        A = lu_hmat.full()
+
+        if key == 'L':
+            # X * L = B  =>  L^T * X^T = B^T
+            X = solve_triangular(np.tril(A), B.T, lower = True).T
+        elif key == 'U':
+            # X * U = B  =>  U^T * X^T = B^T
+            X = solve_triangular(np.triu(A), B.T, lower = False).T
+        else:
+            # key == 'N': X * A = B  =>  A^T * X^T = B^T
+            X = np.linalg.solve(A.T, B.T).T
+
+        result = self._copy()
+
+        def mat_fun(row: np.ndarray, col: np.ndarray) -> np.ndarray:
+            return X[row, col]
+
+        result.aca(mat_fun)
+        return result
+
+    def stat(self) -> Dict:
+
+        # MATLAB: @hmatrix/stat.m
+        # Compression statistics for the H-matrix
+        tree = self.tree
+        n = tree.n
+
+        n_dense = len(self.row1)
+        n_lowrank = len(self.row2)
+
+        # Count elements in dense blocks
+        n_dense_elem = 0
+        for v in self.val:
+            if v is not None:
+                n_dense_elem += v.size
+
+        # Count elements in low-rank blocks and collect ranks
+        n_lr_elem = 0
+        ranks = []
+        for i in range(n_lowrank):
+            if self.lhs[i] is not None:
+                n_lr_elem += self.lhs[i].size
+                ranks.append(self.lhs[i].shape[1])
+            if self.rhs[i] is not None:
+                n_lr_elem += self.rhs[i].size
+
+        total_full = n * n
+        total_hmat = n_dense_elem + n_lr_elem
+        ratio = total_hmat / total_full if total_full > 0 else 0.0
+
+        # Memory in bytes (float64 = 8 bytes)
+        mem_bytes = total_hmat * 8
+        mem_mb = mem_bytes / (1024.0 * 1024.0)
+
+        stats = {
+            'n': n,
+            'n_dense_blocks': n_dense,
+            'n_lowrank_blocks': n_lowrank,
+            'n_dense_elements': n_dense_elem,
+            'n_lowrank_elements': n_lr_elem,
+            'n_total_elements': total_hmat,
+            'n_full_elements': total_full,
+            'compression_ratio': ratio,
+            'memory_mb': mem_mb,
+            'ranks': ranks,
+            'mean_rank': float(np.mean(ranks)) if len(ranks) > 0 else 0.0,
+            'max_rank': int(np.max(ranks)) if len(ranks) > 0 else 0,
+        }
+
+        print('[info] H-matrix statistics:')
+        print('  Matrix size:       {} x {}'.format(n, n))
+        print('  Dense blocks:      {}'.format(n_dense))
+        print('  Low-rank blocks:   {}'.format(n_lowrank))
+        print('  Dense elements:    {}'.format(n_dense_elem))
+        print('  Low-rank elements: {}'.format(n_lr_elem))
+        print('  Total elements:    {} / {} (full)'.format(total_hmat, total_full))
+        print('  Compression ratio: {:.4f}'.format(ratio))
+        print('  Memory:            {:.2f} MB'.format(mem_mb))
+        if len(ranks) > 0:
+            print('  Rank (mean/max):   {:.1f} / {}'.format(stats['mean_rank'], stats['max_rank']))
+
+        return stats
+
+    def treemex(self) -> Dict:
+
+        # MATLAB: @hmatrix/treemex.m
+        # In MATLAB, this prepares tree data for MEX C++ functions (0-based indexing).
+        # In Python, no MEX is needed; this returns the tree structure as a dict
+        # for compatibility with code that expects the treemex interface.
+        tree = self.tree
+
+        result = {
+            'sons': tree.son.copy(),
+            'ind': tree.cind.copy(),
+            'ind1': np.column_stack([self.row1, self.col1]) if len(self.row1) > 0 else np.empty((0, 2), dtype = np.int64),
+            'ind2': np.column_stack([self.row2, self.col2]) if len(self.row2) > 0 else np.empty((0, 2), dtype = np.int64),
+            'ipart': tree.ipart.copy(),
+        }
+
+        return result
+
+    def plotfun(self,
+            mat: Optional[np.ndarray] = None,
+            fun: Optional[Callable] = None) -> Any:
+
+        # MATLAB: @hmatrix/plotfun.m
+        # Plot function applied to hierarchical matrix blocks
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+
+        tree = self.tree
+        n = tree.n
+        cind = tree.cind
+
+        # Default function: just return the block norm
+        if fun is None:
+            fun = lambda x, y: np.linalg.norm(x) if x is not None else 0.0
+
+        # Allocate output array
+        fmat = np.zeros((n, n))
+
+        # Loop over dense blocks
+        for i in range(len(self.row1)):
+            r_start = cind[self.row1[i], 0]
+            r_end = cind[self.row1[i], 1] + 1
+            c_start = cind[self.col1[i], 0]
+            c_end = cind[self.col1[i], 1] + 1
+
+            sub = None
+            if mat is not None:
+                ind_r = tree.ind[r_start:r_end, 0]
+                ind_c = tree.ind[c_start:c_end, 0]
+                sub = mat[np.ix_(ind_r, ind_c)]
+
+            val = fun(self.val[i], sub)
+            fmat[r_start:r_end, c_start:c_end] = val
+
+        # Loop over low-rank blocks
+        for i in range(len(self.row2)):
+            r_start = cind[self.row2[i], 0]
+            r_end = cind[self.row2[i], 1] + 1
+            c_start = cind[self.col2[i], 0]
+            c_end = cind[self.col2[i], 1] + 1
+
+            sub = None
+            if mat is not None:
+                ind_r = tree.ind[r_start:r_end, 0]
+                ind_c = tree.ind[c_start:c_end, 0]
+                sub = mat[np.ix_(ind_r, ind_c)]
+
+            # Reconstruct low-rank block
+            if self.lhs[i] is not None and self.rhs[i] is not None:
+                block = self.lhs[i] @ self.rhs[i].T
+            else:
+                block = np.zeros((r_end - r_start, c_end - c_start))
+
+            val = fun(block, sub)
+            fmat[r_start:r_end, c_start:c_end] = val
+
+        # Plot
+        fig, ax = plt.subplots(1, 1)
+        im = ax.imshow(fmat, origin = 'upper', aspect = 'equal')
+        plt.colorbar(im, ax = ax)
+
+        # Draw low-rank block boundaries
+        for i in range(len(self.row2)):
+            r_start = cind[self.row2[i], 0] - 0.5
+            r_end = cind[self.row2[i], 1] + 0.5
+            c_start = cind[self.col2[i], 0] - 0.5
+            c_end = cind[self.col2[i], 1] + 0.5
+
+            rect = patches.Rectangle(
+                (c_start, r_start),
+                c_end - c_start,
+                r_end - r_start,
+                linewidth = 0.5,
+                edgecolor = 'k',
+                facecolor = 'none')
+            ax.add_patch(rect)
+
+        ax.set_title('H-matrix block structure')
+        return fig, ax
+
+    def plotrank(self) -> Any:
+
+        # MATLAB: @hmatrix/plotrank.m
+        # Plot rank distribution of low-rank blocks
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+
+        tree = self.tree
+        n = tree.n
+        cind = tree.cind
+
+        # Allocate rank matrix
+        mat = np.zeros((n, n), dtype = np.int32)
+
+        # Fill low-rank block regions with their rank
+        for i in range(len(self.row2)):
+            r_start = cind[self.row2[i], 0]
+            r_end = cind[self.row2[i], 1] + 1
+            c_start = cind[self.col2[i], 0]
+            c_end = cind[self.col2[i], 1] + 1
+
+            if self.lhs[i] is not None:
+                rank = self.lhs[i].shape[1]
+            else:
+                rank = 0
+            mat[r_start:r_end, c_start:c_end] = rank
+
+        # Plot
+        fig, ax = plt.subplots(1, 1)
+        im = ax.imshow(mat, origin = 'upper', aspect = 'equal')
+        plt.colorbar(im, ax = ax, label = 'rank')
+
+        # Draw low-rank block boundaries
+        for i in range(len(self.row2)):
+            r_start = cind[self.row2[i], 0] - 0.5
+            r_end = cind[self.row2[i], 1] + 0.5
+            c_start = cind[self.col2[i], 0] - 0.5
+            c_end = cind[self.col2[i], 1] + 0.5
+
+            rect = patches.Rectangle(
+                (c_start, r_start),
+                c_end - c_start,
+                r_end - r_start,
+                linewidth = 0.5,
+                edgecolor = 'k',
+                facecolor = 'none')
+            ax.add_patch(rect)
+
+        ax.set_title('H-matrix rank distribution')
+        return fig, ax
+
     @staticmethod
     def from_func(tree: ClusterTree,
             fun: Callable,
