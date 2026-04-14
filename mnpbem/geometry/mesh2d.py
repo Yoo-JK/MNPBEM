@@ -634,20 +634,20 @@ def _minrectangle(p: np.ndarray) -> float:
 
     try:
         hull = ConvexHull(p)
-        vertices = hull.vertices
-        p_hull = p[vertices]
     except Exception:
         return 0.0
 
-    # edges of convex hull
-    n_hull = len(p_hull)
+    # MATLAB convhulln returns edges in CCW order
+    # Use hull.vertices (CCW) to build edges matching MATLAB ordering
+    verts_ccw = hull.vertices
+    n_hull = len(verts_ccw)
+    p_hull = p[verts_ccw]
+
     best_theta = 0.0
     best_area = np.inf
 
     for k in range(n_hull):
-        i1 = k
-        i2 = (k + 1) % n_hull
-        dxy = p_hull[i2] - p_hull[i1]
+        dxy = p_hull[(k + 1) % n_hull] - p_hull[k]
         ang = np.arctan2(dxy[1], dxy[0])
         theta = -ang
 
