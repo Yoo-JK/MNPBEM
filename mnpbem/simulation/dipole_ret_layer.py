@@ -519,19 +519,31 @@ class DipoleRetLayer(object):
 
         p, enei = sig.p, sig.enei
 
+        npt = self.pt.n
+        ndip = self.dip.shape[2]
+
         from ..greenfun import CompGreenRetLayer
-        g = CompGreenRetLayer(self.pt, sig.p, self.layer, **self.varargin)
+        # Convert greentab -> greentab_obj for CompGreenRetLayer
+        g_opts = dict(self.varargin)
+        if 'greentab' in g_opts:
+            gt_val = g_opts.pop('greentab')
+            if hasattr(gt_val, 'tab'):
+                g_opts['greentab_obj'] = gt_val.tab
+            elif hasattr(gt_val, 'r'):
+                g_opts['greentab_obj'] = gt_val
+        g = CompGreenRetLayer(self.pt, sig.p, self.layer, **g_opts)
 
         # MATLAB: e = field(g, sig) + field(obj, obj.dip.pt, sig.enei, 'refl')
         field_struct = g.field(sig)
+        e_field = field_struct.e  # (npt, 3, npt*ndip)
+        # Reshape to (npt, 3, npt, ndip) to match reflected field shape
+        if e_field.ndim == 3:
+            e_field = e_field.reshape(npt, 3, npt, ndip)
         refl_struct = self.field(self.pt, enei, key = 'refl')
-        e = field_struct.e + refl_struct.e
+        e = e_field + refl_struct.e
 
         k0 = 2 * np.pi / sig.enei
         gamma = 4 / 3 * k0 ** 3
-
-        npt = self.pt.n
-        ndip = self.dip.shape[2]
         tot = np.zeros((npt, ndip))
         rad0 = np.zeros((npt, ndip))
 
