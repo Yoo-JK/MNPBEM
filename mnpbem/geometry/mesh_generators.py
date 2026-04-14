@@ -5,7 +5,7 @@ Mesh generation functions for various particle shapes.
 import numpy as np
 import os
 from scipy.spatial import Delaunay, ConvexHull
-from scipy.io import loadmat
+# scipy.io.loadmat no longer needed — sphere data stored as .bin
 from .particle import Particle
 
 
@@ -53,49 +53,38 @@ def trisphere(n, diameter=1.0, **kwargs):
     if n != n_actual:
         print('trisphere: using {} vertices (closest to requested {})'.format(n_actual, n))
 
-    # Load data from MATLAB .mat file
-    # MATLAB: trisphere.m line 26-34
-    mat_file = os.path.join(os.path.dirname(__file__), '..', '..',
-                            'Particles', 'particleshapes', 'trisphere.mat')
-
-    if not os.path.exists(mat_file):
-        # Fallback to Fibonacci sphere if .mat file not found
-        print('Warning: trisphere.mat not found, using Fibonacci sphere instead')
-        return _trisphere_fibonacci(n, diameter, **kwargs)
-
-    # Try to load MATLAB-triangulated version first (for sphere144 only, as test)
-    mat_file_tri = os.path.join(os.path.dirname(__file__), '..', '..',
-                                'Particles', 'particleshapes', 'trisphere_triangulated.mat')
-
+    # Load sphere data from pre-computed binary files
+    # Original data: energy-minimized point distributions on sphere
+    # (http://www.maths.unsw.edu.au/school/articles/me100.html)
+    data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
     faces = None
-    if n_actual == 144 and os.path.exists(mat_file_tri):
-        try:
-            data_tri = loadmat(mat_file_tri, simplify_cells=True)
-            sphere_tri = data_tri['sphere144_tri']
-            verts = np.column_stack([sphere_tri['x'], sphere_tri['y'], sphere_tri['z']]).astype(float)
-            faces = sphere_tri['faces'].astype(int) - 1  # MATLAB 1-indexed to Python 0-indexed
-            print('trisphere: loaded MATLAB triangulation for sphere{}'.format(n_actual))
-        except Exception as e:
-            print('Warning: Could not load MATLAB triangulation: {}'.format(e))
 
-    # Load sphere data from original file if not loaded yet
+    # Try pre-triangulated sphere (sphere144 has pre-computed faces)
+    tri_file = os.path.join(data_dir, 'sphere{}_tri.bin'.format(n_actual))
+    if os.path.exists(tri_file):
+        with open(tri_file, 'rb') as f:
+            nv, nf = np.fromfile(f, dtype = np.int32, count = 2)
+            x = np.fromfile(f, dtype = np.float64, count = nv)
+            y = np.fromfile(f, dtype = np.float64, count = nv)
+            z = np.fromfile(f, dtype = np.float64, count = nv)
+            faces_raw = np.fromfile(f, dtype = np.int32, count = nf * 3).reshape(nf, 3)
+        verts = np.column_stack([x, y, z])
+        faces = faces_raw - 1  # 1-indexed → 0-indexed
+
+    # Load sphere vertices and triangulate
     if faces is None:
-        try:
-            data = loadmat(mat_file, simplify_cells=True)
-            sphere_key = 'sphere{}'.format(n_actual)
-            sphere = data[sphere_key]
-
-            # Extract vertices
-            # MATLAB: trisphere.m line 38
-            verts = np.column_stack([sphere['x'], sphere['y'], sphere['z']]).astype(float)
-        except (KeyError, ValueError) as e:
-            print('Warning: Could not load sphere{} from trisphere.mat: {}'.format(n_actual, e))
-            print('Falling back to Fibonacci sphere')
+        bin_file = os.path.join(data_dir, 'sphere{}.bin'.format(n_actual))
+        if os.path.exists(bin_file):
+            with open(bin_file, 'rb') as f:
+                nv = np.fromfile(f, dtype = np.int32, count = 1)[0]
+                x = np.fromfile(f, dtype = np.float64, count = nv)
+                y = np.fromfile(f, dtype = np.float64, count = nv)
+                z = np.fromfile(f, dtype = np.float64, count = nv)
+            verts = np.column_stack([x, y, z])
+            faces = _sphere_triangulate(verts)
+        else:
+            print('Warning: sphere{}.bin not found, using Fibonacci sphere'.format(n_actual))
             return _trisphere_fibonacci(n, diameter, **kwargs)
-
-        # Triangulate sphere using Python
-        # MATLAB: trisphere.m line 40
-        faces = _sphere_triangulate(verts)
 
     # Rescale to diameter
     # MATLAB: trisphere.m line 49
