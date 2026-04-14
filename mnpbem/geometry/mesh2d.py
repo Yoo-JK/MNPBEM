@@ -1249,31 +1249,35 @@ def _boundarynodes(ph: np.ndarray,
         h_combined[h.shape[0]:] = h_new
         h = h_combined
 
-    # spring-based boundary smoothing
+    # spring-based boundary smoothing (MATLAB meshfaces.m boundarynodes)
     ne = e.shape[0]
     nnode_orig = node.shape[0]
+    from scipy.sparse import csr_matrix as _csr
+    rows_s = np.empty(2 * ne, dtype = int)
+    cols_s = np.empty(2 * ne, dtype = int)
+    vals_s = np.empty(2 * ne)
+    rows_s[:ne] = e[:, 0]
+    cols_s[:ne] = np.arange(ne)
+    vals_s[:ne] = -1.0
+    rows_s[ne:] = e[:, 1]
+    cols_s[ne:] = np.arange(ne)
+    vals_s[ne:] = 1.0
+    S = _csr((vals_s, (rows_s, cols_s)), shape = (p.shape[0], ne))
+
     dxy = p[e[:, 1]] - p[e[:, 0]]
     L = np.sqrt(np.sum(dxy ** 2, axis = 1))
     he = 0.5 * (h[e[:, 0]] + h[e[:, 1]])
 
+    delta = 0.0
+    i_search = np.zeros(p.shape[0], dtype = int)
     for _iter in range(50):
-        F_x = np.zeros(p.shape[0])
-        F_y = np.zeros(p.shape[0])
-        factor = he / np.maximum(L, np.finfo(float).eps) - 1.0
+        delta_old = delta
 
-        fx = dxy[:, 0] * factor
-        fy = dxy[:, 1] * factor
-
-        np.add.at(F_x, e[:, 0], -fx)
-        np.add.at(F_x, e[:, 1], fx)
-        np.add.at(F_y, e[:, 0], -fy)
-        np.add.at(F_y, e[:, 1], fy)
-
-        F_x[:nnode_orig] = 0.0
-        F_y[:nnode_orig] = 0.0
-
-        p[:, 0] += 0.2 * F_x
-        p[:, 1] += 0.2 * F_y
+        F_factor = he / np.maximum(L, np.finfo(float).eps) - 1.0
+        Fxy = dxy * F_factor[:, np.newaxis]
+        Fp = S.dot(Fxy)
+        Fp[:nnode_orig] = 0.0
+        p = p + 0.2 * Fp
 
         dxy = p[e[:, 1]] - p[e[:, 0]]
         Lnew = np.sqrt(np.sum(dxy ** 2, axis = 1))
@@ -1281,6 +1285,12 @@ def _boundarynodes(ph: np.ndarray,
         if delta < 0.02:
             break
         L = Lnew
+
+        # MATLAB: re-interpolate size function if diverging
+        if delta > delta_old:
+            i_search = _mytsearch(ph[:, 0], ph[:, 1], th, p[:, 0], p[:, 1], i_search)
+            h = _tinterp(ph, th, hh, p, i_search)
+            he = 0.5 * (h[e[:, 0]] + h[e[:, 1]])
 
     return p
 
