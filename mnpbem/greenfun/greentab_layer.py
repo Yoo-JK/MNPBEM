@@ -174,20 +174,39 @@ class GreenTabLayer(object):
         if self._Gsav is None or (self.enei is not None and not np.isclose(self.enei, enei)):
             self._compute_tab(enei)
 
-        # Query points (clip to grid bounds)
-        r_q = np.clip(np.asarray(r, dtype = float).ravel(), self.r[0], self.r[-1])
-        z1_q = np.clip(np.asarray(z1, dtype = float).ravel(), self.z1[0], self.z1[-1])
-        z2_q = np.clip(np.asarray(z2, dtype = float).ravel(), self.z2[0], self.z2[-1])
-        points = np.column_stack([r_q, z1_q, z2_q])
+        # Query points
+        r_q = np.clip(np.asarray(r, dtype=float).ravel(), self.r[0], self.r[-1])
+        z1_q = np.asarray(z1, dtype=float).ravel()
+        z2_q = np.asarray(z2, dtype=float).ravel()
 
-        grid = (self.r, self.z1, self.z2)
+        if len(self.z2) == 1:
+            # Single-z2: fold z2 into z1 via mindist
+            z2_ref = self.z2[0]
+            mindist_z2, _ = self.layer.mindist(z2_q)
+            if z2_ref >= self.layer.z[0]:
+                z1_eff = np.clip(z1_q + mindist_z2, self.z1[0], self.z1[-1])
+            else:
+                z1_eff = np.clip(z1_q - mindist_z2, self.z1[0], self.z1[-1])
+            points = np.column_stack([r_q, z1_eff])
+            grid = (self.r, self.z1)
+            Gsav = self._Gsav[:, :, 0]
+            Frsav = self._Frsav[:, :, 0]
+            Fzsav = self._Fzsav[:, :, 0]
+        else:
+            z1_q = np.clip(z1_q, self.z1[0], self.z1[-1])
+            z2_q = np.clip(z2_q, self.z2[0], self.z2[-1])
+            points = np.column_stack([r_q, z1_q, z2_q])
+            grid = (self.r, self.z1, self.z2)
+            Gsav = self._Gsav
+            Frsav = self._Frsav
+            Fzsav = self._Fzsav
 
-        G = RegularGridInterpolator(grid, self._Gsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
-          + 1j * RegularGridInterpolator(grid, self._Gsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
-        Fr = RegularGridInterpolator(grid, self._Frsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
-           + 1j * RegularGridInterpolator(grid, self._Frsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
-        Fz = RegularGridInterpolator(grid, self._Fzsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
-           + 1j * RegularGridInterpolator(grid, self._Fzsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
+        G = RegularGridInterpolator(grid, Gsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
+          + 1j * RegularGridInterpolator(grid, Gsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
+        Fr = RegularGridInterpolator(grid, Frsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
+           + 1j * RegularGridInterpolator(grid, Frsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
+        Fz = RegularGridInterpolator(grid, Fzsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
+           + 1j * RegularGridInterpolator(grid, Fzsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
 
         G = G.reshape(shape)
         Fr = Fr.reshape(shape)
@@ -319,33 +338,71 @@ class GreenTabLayer(object):
                 self._enei_comp is not None and not np.isclose(self._enei_comp, enei)):
             self._compute_tab_components(enei)
 
-        # Query points (clip to grid bounds)
-        r_q = np.clip(np.asarray(r, dtype = float).ravel(), self.r[0], self.r[-1])
-        z1_q = np.clip(np.asarray(z1, dtype = float).ravel(), self.z1[0], self.z1[-1])
-        z2_q = np.clip(np.asarray(z2, dtype = float).ravel(), self.z2[0], self.z2[-1])
-        points = np.column_stack([r_q, z1_q, z2_q])
+        # Query points
+        r_q = np.clip(np.asarray(r, dtype=float).ravel(), self.r[0], self.r[-1])
+        z1_q = np.asarray(z1, dtype=float).ravel()
+        z2_q = np.asarray(z2, dtype=float).ravel()
 
-        grid = (self.r, self.z1, self.z2)
         names = list(self._Gsav_comp.keys())
         G_dict = {}
         Fr_dict = {}
         Fz_dict = {}
 
-        for name in names:
-            Gsav = self._Gsav_comp[name]
-            Frsav = self._Frsav_comp[name]
-            Fzsav = self._Fzsav_comp[name]
+        # Single-z2 case: MATLAB uses mindist to fold z2 into z1
+        # tabspace sets z2 = layer.z[0]+1e-10 for uppermost layer
+        if len(self.z2) == 1:
+            # Fold: z1_eff = z1 + mindist(z2) for uppermost layer
+            # or z1_eff = z1 - mindist(z2) for lowermost layer
+            z2_ref = self.z2[0]
+            mindist_z2, _ = self.layer.mindist(z2_q)
+            if z2_ref >= self.layer.z[0]:
+                # Uppermost layer: z1_eff = z1 + mindist(z2)
+                z1_eff = np.clip(z1_q + mindist_z2, self.z1[0], self.z1[-1])
+            else:
+                # Lowermost layer
+                z1_eff = np.clip(z1_q - mindist_z2, self.z1[0], self.z1[-1])
 
-            G_arr = RegularGridInterpolator(grid, Gsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
-                  + 1j * RegularGridInterpolator(grid, Gsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
-            Fr_arr = RegularGridInterpolator(grid, Frsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
-                   + 1j * RegularGridInterpolator(grid, Frsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
-            Fz_arr = RegularGridInterpolator(grid, Fzsav.real, method = 'linear', bounds_error = False, fill_value = None)(points) \
-                   + 1j * RegularGridInterpolator(grid, Fzsav.imag, method = 'linear', bounds_error = False, fill_value = None)(points)
+            # 2D interpolation (r, z1_eff) — squeeze out z2 dimension
+            points_2d = np.column_stack([r_q, z1_eff])
+            grid_2d = (self.r, self.z1)
 
-            G_dict[name] = G_arr.reshape(shape)
-            Fr_dict[name] = Fr_arr.reshape(shape)
-            Fz_dict[name] = Fz_arr.reshape(shape)
+            for name in names:
+                Gsav = self._Gsav_comp[name][:, :, 0]  # (nr, nz1)
+                Frsav = self._Frsav_comp[name][:, :, 0]
+                Fzsav = self._Fzsav_comp[name][:, :, 0]
+
+                G_arr = RegularGridInterpolator(grid_2d, Gsav.real, method='linear', bounds_error=False, fill_value=None)(points_2d) \
+                      + 1j * RegularGridInterpolator(grid_2d, Gsav.imag, method='linear', bounds_error=False, fill_value=None)(points_2d)
+                Fr_arr = RegularGridInterpolator(grid_2d, Frsav.real, method='linear', bounds_error=False, fill_value=None)(points_2d) \
+                       + 1j * RegularGridInterpolator(grid_2d, Frsav.imag, method='linear', bounds_error=False, fill_value=None)(points_2d)
+                Fz_arr = RegularGridInterpolator(grid_2d, Fzsav.real, method='linear', bounds_error=False, fill_value=None)(points_2d) \
+                       + 1j * RegularGridInterpolator(grid_2d, Fzsav.imag, method='linear', bounds_error=False, fill_value=None)(points_2d)
+
+                G_dict[name] = G_arr.reshape(shape)
+                Fr_dict[name] = Fr_arr.reshape(shape)
+                Fz_dict[name] = Fz_arr.reshape(shape)
+        else:
+            # Standard 3D interpolation
+            z1_q = np.clip(z1_q, self.z1[0], self.z1[-1])
+            z2_q = np.clip(z2_q, self.z2[0], self.z2[-1])
+            points = np.column_stack([r_q, z1_q, z2_q])
+            grid = (self.r, self.z1, self.z2)
+
+            for name in names:
+                Gsav = self._Gsav_comp[name]
+                Frsav = self._Frsav_comp[name]
+                Fzsav = self._Fzsav_comp[name]
+
+                G_arr = RegularGridInterpolator(grid, Gsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
+                      + 1j * RegularGridInterpolator(grid, Gsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
+                Fr_arr = RegularGridInterpolator(grid, Frsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
+                       + 1j * RegularGridInterpolator(grid, Frsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
+                Fz_arr = RegularGridInterpolator(grid, Fzsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
+                       + 1j * RegularGridInterpolator(grid, Fzsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
+
+                G_dict[name] = G_arr.reshape(shape)
+                Fr_dict[name] = Fr_arr.reshape(shape)
+                Fz_dict[name] = Fz_arr.reshape(shape)
 
         return G_dict, Fr_dict, Fz_dict
 
