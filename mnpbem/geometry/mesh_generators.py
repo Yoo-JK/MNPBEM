@@ -817,10 +817,6 @@ def _tripolygon_both_rounded(polys, edge, **kwargs):
     # Extract sym option (used for mirror symmetry, not passed to plate/ribbon)
     sym = kwargs.pop('sym', None)
 
-    # If sym is set, apply symmetry to polygons (keep only 1/n of polygon)
-    if sym is not None:
-        polys = [p.select_quadrant(sym) if hasattr(p, 'select_quadrant') else p for p in polys]
-
     # create polygon3 objects at zmin and zmax
     polys1 = [Polygon3(p, edge.zmin) for p in polys]
     polys2 = [Polygon3(p, edge.zmax) for p in polys]
@@ -842,7 +838,7 @@ def _tripolygon_both_rounded(polys, edge, **kwargs):
     # vertical ribbon (side walls)
     ribbons = []
     for p3_out in polys_out:
-        ribbon, _, _ = p3_out.vribbon(edge = edge)
+        ribbon, _, _ = p3_out.vribbon(edge = edge, sym = sym)
         ribbons.append(ribbon)
 
     # combine all particles

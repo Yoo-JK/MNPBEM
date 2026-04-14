@@ -98,13 +98,16 @@ class Polygon3(object):
         p = _add_midpoints_flat(p)
 
         # MATLAB: obj(i).poly = interp1(obj(i).poly, verts)
-        # Enrich polygon with mesh boundary vertices
+        #         [~, obj(i).poly] = symmetry(obj(i).poly, op.sym)
+        # Enrich polygon with mesh boundary vertices, return FULL polygon
         result_poly3 = self.copy()
         enriched_poly = result_poly3.poly.interp1(verts_2d)
-        # Apply symmetry to enriched polygon if needed
         if sym is not None:
+            # MATLAB returns the second output of symmetry() = full (expanded) polygon
             enriched_poly._apply_symmetry(sym)
-            enriched_poly = enriched_poly.close()
+            full_pos = enriched_poly.get_full_polygon()
+            enriched_poly.pos = full_pos
+            enriched_poly.sym = None
         result_poly3.poly = enriched_poly
 
         # apply edge profile vertical shift to boundary vertices
@@ -126,7 +129,8 @@ class Polygon3(object):
 
     def vribbon(self,
             z: Optional[np.ndarray] = None,
-            edge: Optional[EdgeProfile] = None) -> Tuple[Particle, 'Polygon3', 'Polygon3']:
+            edge: Optional[EdgeProfile] = None,
+            sym: Optional[str] = None) -> Tuple[Particle, 'Polygon3', 'Polygon3']:
         # MATLAB: @polygon3/vribbon.m
         if edge is not None:
             self.edge = edge
@@ -141,28 +145,46 @@ class Polygon3(object):
         def hshift_fun(z_vals: np.ndarray) -> np.ndarray:
             return self.edge.hshift(z_vals)
 
-        p, up, lo = self._ribbon_v(z, hshift_fun)
+        p, up, lo = self._ribbon_v(z, hshift_fun, sym = sym)
         return p, up, lo
 
     def _ribbon_v(self,
             z: np.ndarray,
-            hshift_fun: Any) -> Tuple[Particle, 'Polygon3', 'Polygon3']:
+            hshift_fun: Any,
+            sym: Optional[str] = None) -> Tuple[Particle, 'Polygon3', 'Polygon3']:
         # MATLAB: ribbon() subfunction in vribbon.m
 
         # smoothened polygon with midpoints
         poly_smooth = self.poly.copy().midpoints()
 
+        # MATLAB: handle symmetry -- reduce after midpoints
+        if sym is not None:
+            poly_smooth._apply_symmetry(sym)
+            # remove origin for xy-symmetry
+            if sym == 'xy' and len(poly_smooth.pos) > 0 and np.all(poly_smooth.pos[-1] == 0):
+                poly_smooth.pos = poly_smooth.pos[:-1]
+
         pos = poly_smooth.pos
         nvec = poly_smooth.compute_normals()
 
-        # close contour: append first point
-        pos_closed = np.empty((pos.shape[0] + 1, 2))
-        pos_closed[:pos.shape[0]] = pos
-        pos_closed[pos.shape[0]] = pos[0]
+        # MATLAB: close contour only if no symmetry or first/last not on axes
+        should_close = True
+        if sym is not None:
+            products = np.abs(np.prod(pos[[0, -1]], axis = 1))
+            if np.all(products < 1e-6):
+                should_close = False
 
-        nvec_closed = np.empty((nvec.shape[0] + 1, 2))
-        nvec_closed[:nvec.shape[0]] = nvec
-        nvec_closed[nvec.shape[0]] = nvec[0]
+        if should_close:
+            pos_closed = np.empty((pos.shape[0] + 1, 2))
+            pos_closed[:pos.shape[0]] = pos
+            pos_closed[pos.shape[0]] = pos[0]
+
+            nvec_closed = np.empty((nvec.shape[0] + 1, 2))
+            nvec_closed[:nvec.shape[0]] = nvec
+            nvec_closed[nvec.shape[0]] = nvec[0]
+        else:
+            pos_closed = pos
+            nvec_closed = nvec
 
         # extend z-values for midpoints (interleave with averages)
         n_z = len(z)
