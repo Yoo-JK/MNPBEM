@@ -210,6 +210,12 @@ class CompGreenStatLayer(object):
         elif key == 'H2':
             H2_direct = self.g.F - 2 * np.pi * np.eye(self.g.F.shape[0])
             return H2_direct + f2 * self._gr.F
+        elif key == 'Gp':
+            return self.g._eval_Gp() + f2 * self._gr.Gp
+        elif key == 'H1p':
+            return self.g._eval_H1p() + f2 * self._gr.Gp
+        elif key == 'H2p':
+            return self.g._eval_H2p() + f2 * self._gr.Gp
         else:
             raise ValueError('[error] Unknown Green function key: <{}>'.format(key))
 
@@ -244,28 +250,31 @@ class CompGreenStatLayer(object):
         else:
             return CompStruct(self.p1, enei, phi2 = phi, phi2p = phip)
 
+    @staticmethod
+    def _matmul(M, x):
+        """Multiply 3D Green function matrix M (n1,3,n2) with vector/matrix x.
+
+        Matches CompGreenStat._matmul logic.
+        """
+        if x.ndim == 1:
+            return np.einsum('ijk,k->ij', M, x)
+        elif x.ndim == 2:
+            return np.einsum('ijk,kl->ijl', M, x)
+        else:
+            return np.einsum('ijk,k...->ij...', M, x)
+
     def field(self,
             sig: Any,
             inout: int = 1) -> CompStruct:
 
         enei = sig.enei
-        H_key = 'H1' if inout == 1 else 'H2'
+        Hp_key = 'H1p' if inout == 1 else 'H2p'
 
-        # Use Cartesian derivative if available
-        if self.deriv == 'cart':
-            Hp = self.eval(enei, H_key)
-            e = -Hp @ sig.sig
-            return CompStruct(self.p1, enei, e = e)
-        else:
-            # Normal derivative: compute E from normal component
-            H = self.eval(enei, H_key)
-            nvec = self.p1.nvec if hasattr(self.p1, 'nvec') else self.p1.pc.nvec
-            H_sig = H @ sig.sig
-            if H_sig.ndim == 1:
-                e = -nvec * H_sig[:, np.newaxis]
-            else:
-                e = -nvec[:, :, np.newaxis] * H_sig[:, np.newaxis, :]
-            return CompStruct(self.p1, enei, e = e)
+        # Use Cartesian derivative (H1p/H2p) for correct 3D electric field
+        Hp = self.eval(enei, Hp_key)
+        e = -self._matmul(Hp, sig.sig)
+
+        return CompStruct(self.p1, enei, e = e)
 
     def __repr__(self) -> str:
         n1 = self.p1.pos.shape[0] if hasattr(self.p1, 'pos') else '?'
@@ -303,6 +312,11 @@ class _ReflectedGreenStat(object):
 
         # G matrix: G[i,j] = 1/d * area[j]
         self.G = (1.0 / d_safe) * area2[np.newaxis, :]
+
+        # Gp matrix (Cartesian derivative): Gp[i,:,j] = -r[i,j,:] / d^3 * area[j]
+        # Always compute for field() support (shape: n1, 3, n2)
+        Gp_raw = -r / (d_safe[:, :, np.newaxis] ** 3) * area2[np.newaxis, :, np.newaxis]
+        self.Gp = np.transpose(Gp_raw, (0, 2, 1))  # (n1, 3, n2)
 
         # F matrix: F[i,j] = - nvec1[i].r[i,j] / d^3 * area[j]
         n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis = 2)
@@ -392,6 +406,11 @@ class _ReflectedGreenStat(object):
 
             # G
             self.G[nb, face] = (1.0 / r_dist) @ w
+
+            # Gp (Cartesian derivative, always updated)
+            self.Gp[nb, 0, face] = -(x / r_dist ** 3) @ w
+            self.Gp[nb, 1, face] = -(y / r_dist ** 3) @ w
+            self.Gp[nb, 2, face] = -(z / r_dist ** 3) @ w
 
             # F (surface derivative)
             if self.deriv == 'norm':
