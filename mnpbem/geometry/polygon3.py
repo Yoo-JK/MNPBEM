@@ -79,9 +79,10 @@ class Polygon3(object):
             poly_for_mesh._apply_symmetry(sym)
             poly_for_mesh = poly_for_mesh.close()
 
-        # get full polygon for meshing
-        full_pos = poly_for_mesh.get_full_polygon()
-        mesh_poly = Polygon(full_pos)
+        # get polygon for meshing (use reduced polygon if sym applied)
+        mesh_pos = poly_for_mesh.pos.copy()
+        mesh_poly = Polygon(mesh_pos)
+        mesh_poly.sym = poly_for_mesh.sym
 
         verts_2d, faces_2d = mesh_poly.polymesh2d(hdata = hdata, options = options)
 
