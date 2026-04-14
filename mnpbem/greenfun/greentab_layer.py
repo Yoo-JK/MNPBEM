@@ -40,6 +40,7 @@ class GreenTabLayer(object):
         self.G = None
         self.Fr = None
         self.Fz = None
+        self._pos = None
 
         # Per-component caches
         self._enei_comp = None
@@ -153,6 +154,7 @@ class GreenTabLayer(object):
         self.G = G
         self.Fr = Fr
         self.Fz = Fz
+        self._pos = result[3]
         self.enei = enei
         return G, Fr, Fz
 
@@ -300,6 +302,7 @@ class GreenTabLayer(object):
         G_dict = {k: np.asarray(v, dtype=complex) for k, v in result[0].items()}
         Fr_dict = {k: np.asarray(v, dtype=complex) for k, v in result[1].items()}
         Fz_dict = {k: np.asarray(v, dtype=complex) for k, v in result[2].items()}
+        self._pos = result[3]
         return G_dict, Fr_dict, Fz_dict
 
     def _interp_components(self,
@@ -414,6 +417,158 @@ class GreenTabLayer(object):
                     total = total + np.array(v, dtype = complex)
             return total if total is not None else np.zeros(0, dtype = complex)
         return np.asarray(d, dtype = complex)
+
+    def norm(self) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        # MATLAB: @greentablayer/norm.m
+        # Multiply Green function with distance-dependent normalization factors.
+        assert self.G is not None
+
+        # Tabulated radii and minimal distances from pos
+        r = self._pos['r']
+        zmin = self._pos['zmin']
+        # Distance
+        d = np.sqrt(r ** 2 + zmin ** 2)
+
+        G_out = {}
+        Fr_out = {}
+        Fz_out = {}
+        for name in self.G.keys():
+            G_out[name] = self.G[name] * d
+            Fr_out[name] = self.Fr[name] * d ** 3 / r
+            Fz_out[name] = self.Fz[name] * d ** 3 / zmin
+
+        return G_out, Fr_out, Fz_out
+
+    def inside(self,
+            r: np.ndarray,
+            z1: np.ndarray,
+            z2: Optional[np.ndarray] = None) -> np.ndarray:
+        # MATLAB: @greentablayer/inside.m
+        layer = self.layer
+
+        r = np.asarray(r, dtype = float)
+        z1 = np.asarray(z1, dtype = float)
+
+        # Round radii and z-values
+        r = np.maximum(layer.rmin, r)
+        if z2 is not None:
+            z2 = np.asarray(z2, dtype = float)
+            z1, z2 = layer.round_z(z1, z2)
+        else:
+            z1, = layer.round_z(z1)
+
+        def fun(x: np.ndarray, limits: np.ndarray) -> np.ndarray:
+            return (x >= np.min(limits)) & (x <= np.max(limits))
+
+        # Uppermost or lowermost layer (single z2 value in table)
+        if np.atleast_1d(self.z2).size == 1:
+            ind1, _ = layer.indlayer(z1)
+            ind2, _ = layer.indlayer(z2)
+
+            # Find z-values in uppermost or lowermost layer
+            in1 = (ind1 == ind2) & (ind1 == 1)
+            in2 = (ind1 == ind2) & (ind1 == layer.n + 1)
+            result = in1 | in2
+
+            if np.any(in1):
+                mindist_z2, _ = layer.mindist(z2[in1])
+                result[in1] = fun(r[in1], self.r) & fun(z1[in1] + mindist_z2, self.z1)
+            if np.any(in2):
+                mindist_z2, _ = layer.mindist(z2[in2])
+                result[in2] = fun(r[in2], self.r) & fun(z1[in2] - mindist_z2, self.z1)
+        else:
+            result = fun(r, self.r) & fun(z1, self.z1) & fun(z2, self.z2)
+
+        return result
+
+    def ismember(self,
+            layer: Any,
+            enei: Optional[np.ndarray] = None) -> bool:
+        # MATLAB: @greentablayer/ismember.m
+        # Check if precomputed table is compatible with given layer and enei.
+
+        # enei not set
+        if self.enei is None:
+            return False
+
+        # Check wavelength range
+        enei_tab = np.atleast_1d(self.enei) if not hasattr(self, '_enei_tab') else np.atleast_1d(self._enei_tab)
+        if enei is not None:
+            enei = np.atleast_1d(enei)
+            if np.min(enei) < np.min(enei_tab) or np.max(enei) > np.max(enei_tab):
+                return False
+
+        # Check layer structure compatibility
+        if layer.n != self.layer.n:
+            return False
+        if not np.allclose(layer.z, self.layer.z):
+            return False
+
+        # Evaluate dielectric functions and compare
+        for eps_new, eps_old in zip(layer.eps, self.layer.eps):
+            for e in enei_tab:
+                val_new = eps_new(e)
+                val_old = eps_old(e)
+                # eps functions return (eps, k) tuples
+                if isinstance(val_new, tuple):
+                    val_new = val_new[0]
+                if isinstance(val_old, tuple):
+                    val_old = val_old[0]
+                if abs(val_new - val_old) > 1e-8:
+                    return False
+
+        return True
+
+    def parset(self,
+            enei_arr: np.ndarray,
+            **options: Any) -> 'GreenTabLayer':
+        # MATLAB: @greentablayer/parset.m
+        # Same as set() but with parallel computation.
+        # Python: sequential fallback (green() may not be thread-safe).
+        enei_arr = np.atleast_1d(np.asarray(enei_arr, dtype = float))
+        n_enei = len(enei_arr)
+        nr = len(self.r)
+        nz1 = len(self.z1)
+        nz2 = len(self.z2)
+
+        pos_saved = None
+
+        for ien in range(n_enei):
+            # Determine component names from a sample call on the first iteration
+            if ien == 0:
+                r_sample = self.r[:1]
+                z1_sample = np.full_like(r_sample, self.z1[0])
+                z2_sample = np.full_like(r_sample, self.z2[0])
+                result_sample = self.layer.green(enei_arr[0], r_sample, z1_sample, z2_sample)
+                names = list(result_sample[0].keys())
+
+                siz = (n_enei, nr, nz1, nz2)
+                Gsav = {k: np.zeros(siz, dtype = complex) for k in names}
+                Frsav = {k: np.zeros(siz, dtype = complex) for k in names}
+                Fzsav = {k: np.zeros(siz, dtype = complex) for k in names}
+
+            for iz1 in range(nz1):
+                for iz2 in range(nz2):
+                    r_vec = self.r
+                    z1_vec = np.full_like(r_vec, self.z1[iz1])
+                    z2_vec = np.full_like(r_vec, self.z2[iz2])
+                    result = self.layer.green(enei_arr[ien], r_vec, z1_vec, z2_vec)
+                    if pos_saved is None:
+                        pos_saved = result[3]
+                    for name in names:
+                        Gsav[name][ien, :, iz1, iz2] = np.asarray(result[0][name], dtype = complex)
+                        Frsav[name][ien, :, iz1, iz2] = np.asarray(result[1][name], dtype = complex)
+                        Fzsav[name][ien, :, iz1, iz2] = np.asarray(result[2][name], dtype = complex)
+
+        # Store results (MATLAB stores as Gsav, Frsav, Fzsav with shape [n_enei, ...])
+        self.enei = enei_arr
+        self._pos = pos_saved
+        self._Gsav_multi = Gsav
+        self._Frsav_multi = Frsav
+        self._Fzsav_multi = Fzsav
+        self._enei_tab = enei_arr
+
+        return self
 
     def __repr__(self) -> str:
         r_info = 'nr={}'.format(len(self.r)) if self.r is not None else 'no table'
