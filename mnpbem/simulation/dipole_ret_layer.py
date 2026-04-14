@@ -57,7 +57,16 @@ class DipoleRetLayer(object):
 
         # Tabulated Green function for reflected contribution
         tab = options.get('tab', None)
-        if tab is not None:
+        greentab = options.get('greentab', None)
+        if greentab is not None:
+            # Use pre-computed GreenTabLayer directly
+            if hasattr(greentab, 'r') and greentab.r is not None:
+                self.tab = greentab
+            elif hasattr(greentab, 'tab'):
+                self.tab = greentab.tab
+            else:
+                self.tab = GreenTabLayer(self.layer)
+        elif tab is not None:
             self.tab = GreenTabLayer(self.layer, tab=tab)
         else:
             self.tab = GreenTabLayer(self.layer)
@@ -699,8 +708,7 @@ class DipoleRetLayer(object):
         e = k ** 2 * e_temp / eps_val
         h = k ** 2 * h_temp / nb
 
-        # Reflected far-field contribution
-        # Uses Fresnel coefficients applied to image dipole
+        # Reflected far-field with proper TE/TM decomposition
         layer = self.layer
         z_layer = layer.z[0]
 
@@ -709,36 +717,49 @@ class DipoleRetLayer(object):
         n1_layer = np.sqrt(eps1)
         n2_layer = np.sqrt(eps2)
 
-        # For each direction on the unit sphere, compute reflected contribution
-        # via stationary phase with Fresnel coefficients
         for idir in range(n1):
-            cos_theta = np.abs(dir[idir, 2])
-            sin_theta = np.sqrt(1 - cos_theta ** 2)
+            d = dir[idir]
+            cos_theta = np.abs(d[2])
+            sin_theta = np.sqrt(max(1 - cos_theta ** 2, 0))
 
-            # Fresnel coefficients for this direction
-            cos_theta_t = np.sqrt(1 - (n1_layer / n2_layer * sin_theta) ** 2 + 0j)
-            rs_val = (n1_layer * cos_theta - n2_layer * cos_theta_t) / (n1_layer * cos_theta + n2_layer * cos_theta_t)
-            rp_val = (n2_layer * cos_theta - n1_layer * cos_theta_t) / (n2_layer * cos_theta + n1_layer * cos_theta_t)
+            # Fresnel coefficients
+            sin_theta_t_sq = (n1_layer / n2_layer * sin_theta) ** 2
+            cos_theta_t = np.sqrt(1 - sin_theta_t_sq + 0j)
+            rs_val = (n1_layer * cos_theta - n2_layer * cos_theta_t) / (
+                      n1_layer * cos_theta + n2_layer * cos_theta_t)
+            rp_val = (n2_layer * cos_theta - n1_layer * cos_theta_t) / (
+                      n2_layer * cos_theta + n1_layer * cos_theta_t)
 
-            # Phase from reflection
+            # TE/TM unit vectors in the plane of incidence
+            # Plane of incidence = plane containing dir and z-axis
+            phi = np.arctan2(d[1], d[0])
+            sinp, cosp = np.sin(phi), np.cos(phi)
+
+            # TE direction (s-polarization): perpendicular to plane of incidence
+            te_hat = np.array([-sinp, cosp, 0.0])
+            # TM direction (p-polarization): in plane of incidence, tangential
+            tm_hat = np.array([cos_theta * cosp, cos_theta * sinp, -sin_theta])
+            # TM reflected: z-component flipped
+            tm_hat_refl = np.array([cos_theta * cosp, cos_theta * sinp, sin_theta])
+
             for ipt in range(n2):
                 z_pt = pt.pos[ipt, 2]
                 phase_refl = np.exp(-2j * k * (z_pt - z_layer) * cos_theta)
 
                 for idip_idx in range(n3):
-                    # Reflected dipole contribution
                     dip_val = dip[ipt, :, idip_idx]
 
-                    # Decompose into TE/TM relative to propagation direction
-                    # Simplified: use rs for horizontal, rp for vertical
-                    dip_refl = dip_val.copy()
-                    dip_refl[0] *= rs_val
-                    dip_refl[1] *= rs_val
-                    dip_refl[2] *= -rp_val
+                    # Decompose dipole into TE and TM components
+                    d_te = np.dot(dip_val, te_hat)  # TE amplitude
+                    d_tm = np.dot(dip_val, tm_hat)   # TM amplitude
 
-                    # Add reflected contribution
-                    h_refl = np.cross(dir[idir], dip_refl) * phase_refl
-                    e_refl = np.cross(h_refl, dir[idir])
+                    # Reflected dipole moment
+                    dip_refl = (rs_val * d_te * te_hat +
+                                rp_val * d_tm * tm_hat_refl) * phase_refl
+
+                    # Far-field from reflected dipole
+                    h_refl = np.cross(d, dip_refl)
+                    e_refl = np.cross(h_refl, d)
 
                     e[idir, :, ipt, idip_idx] += k ** 2 * e_refl / eps_val
                     h[idir, :, ipt, idip_idx] += k ** 2 * h_refl / nb
