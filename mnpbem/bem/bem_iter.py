@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
@@ -124,6 +125,45 @@ class BEMIter(object):
             stat['compression'][name] = []
         if hasattr(hmat, 'compression'):
             stat['compression'][name].append(hmat.compression())
+
+    def tocout(self,
+            key: str,
+            *args: Any) -> 'BEMIter':
+
+        # MATLAB: bemiter/tocout.m
+        # Intermediate timing/progress output for iterative BEM solvers.
+        if not self.output or self.precond is None:
+            return self
+
+        timer = self._timer
+
+        if key == 'init':
+            # Initialize timer structure
+            names = args[0] if args else []
+            if timer is None:
+                timer = {'names': list(names), 'toc': []}
+            timer['toc'].append([0.0] * len(timer['names']))
+            timer['id'] = time.perf_counter()
+
+        elif key == 'close':
+            # Save total elapsed time for last step
+            elapsed = time.perf_counter() - timer['id']
+            timer['toc'][-1][-1] = elapsed
+            # Print final timing summary
+            row = timer['toc'][-1]
+            parts = ['  {}: {:.4f}s'.format(n, t) for n, t in zip(timer['names'], row)]
+            print('BEM timing:\n' + '\n'.join(parts))
+
+        else:
+            # Save elapsed time for named step and restart timer
+            elapsed = time.perf_counter() - timer['id']
+            if key in timer['names']:
+                idx = timer['names'].index(key)
+                timer['toc'][-1][idx] = elapsed
+            timer['id'] = time.perf_counter()
+
+        self._timer = timer
+        return self
 
     def _print_stat(self,
             flag: int,

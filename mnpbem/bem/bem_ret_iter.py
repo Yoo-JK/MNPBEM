@@ -98,6 +98,20 @@ class BEMRetIter(BEMIter):
 
         return self
 
+    def _compress(self,
+            hmat: Any) -> Any:
+
+        # MATLAB: bemretiter/private/compress.m
+        # Compress H-matrices for preconditioner by adjusting htol/kmax.
+        # For HMatrix objects, set htol to max(op.htol) and kmax to min(op.kmax).
+        # For dense numpy arrays, pass through unchanged.
+        if hasattr(hmat, 'htol') and hasattr(hmat, 'kmax'):
+            htol_val = self._op.get('htol', 1e-6)
+            kmax_val = self._op.get('kmax', [4, 100])
+            hmat.htol = max(htol_val) if hasattr(htol_val, '__iter__') else htol_val
+            hmat.kmax = min(kmax_val) if hasattr(kmax_val, '__iter__') else kmax_val
+        return hmat
+
     def _init_precond(self,
             enei: float) -> None:
 
@@ -108,10 +122,10 @@ class BEMRetIter(BEMIter):
         eps2 = self._eps2
         nvec = self._nvec
 
-        G1 = self._G1
-        H1 = self._H1
-        G2 = self._G2
-        H2 = self._H2
+        G1 = self._compress(self._G1)
+        H1 = self._compress(self._H1)
+        G2 = self._compress(self._G2)
+        H2 = self._compress(self._H2)
 
         # Dielectric as diagonal matrices for matrix operations
         if np.isscalar(eps1) or (isinstance(eps1, np.ndarray) and eps1.ndim == 0):

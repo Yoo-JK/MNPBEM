@@ -145,6 +145,35 @@ class BEMRetLayerIter(BEMIter):
 
         return self
 
+    def _compress(self,
+            hmat: Any) -> Any:
+
+        # MATLAB: bemretlayeriter/private/compress.m
+        # Compress H-matrices for preconditioner by adjusting htol/kmax.
+        # For HMatrix objects, set htol to max(op.htol) and kmax to min(op.kmax).
+        # For dense numpy arrays, pass through unchanged.
+        if hasattr(hmat, 'htol') and hasattr(hmat, 'kmax'):
+            htol_val = self._op.get('htol', 1e-6)
+            kmax_val = self._op.get('kmax', [4, 100])
+            hmat.htol = max(htol_val) if hasattr(htol_val, '__iter__') else htol_val
+            hmat.kmax = min(kmax_val) if hasattr(kmax_val, '__iter__') else kmax_val
+        return hmat
+
+    def _compress_layer_green(self,
+            green: Any) -> Any:
+
+        # Compress all components of a layer Green function structure.
+        # MATLAB: for name = fieldnames(obj.G2).'; G2.(name{1}) = compress(obj, obj.G2.(name{1})); end
+        if isinstance(green, dict):
+            return {k: self._compress(v) for k, v in green.items()}
+        elif hasattr(green, 'ss'):
+            for attr in ('ss', 'hh', 'p', 'sh', 'hs'):
+                if hasattr(green, attr):
+                    setattr(green, attr, self._compress(getattr(green, attr)))
+            return green
+        else:
+            return self._compress(green)
+
     def _init_precond(self,
             enei: float) -> None:
 
@@ -165,10 +194,11 @@ class BEMRetLayerIter(BEMIter):
 
         ikdeps = 1j * k * (eps1_diag - eps2_diag)
 
-        G1 = self._G1
-        H1 = self._H1
-        G2 = self._G2
-        H2 = self._H2
+        # Compress Green functions and surface derivatives for preconditioner
+        G1 = self._compress(self._G1)
+        H1 = self._compress(self._H1)
+        G2 = self._compress_layer_green(self._G2)
+        H2 = self._compress_layer_green(self._H2)
 
         # Get the parallel Green function component
         G2_p = G2.p if hasattr(G2, 'p') else (G2['p'] if isinstance(G2, dict) else G2)
