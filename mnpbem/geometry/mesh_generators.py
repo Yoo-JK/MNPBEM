@@ -487,12 +487,12 @@ def _surf2patch(x, y, z, triangles = False):
             v11 = (j + 1) * m + (i + 1)
 
             if triangles:
-                # Two triangles per quad
-                faces_list.append([v00, v10, v11])
-                faces_list.append([v00, v11, v01])
+                # Two triangles per quad (MATLAB winding: v00,v01,v11 + v00,v11,v10)
+                faces_list.append([v00, v01, v11])
+                faces_list.append([v00, v11, v10])
             else:
-                # Quadrilateral
-                faces_list.append([v00, v10, v11, v01])
+                # Quadrilateral (MATLAB surf2patch order: v00,v01,v11,v10)
+                faces_list.append([v00, v01, v11, v10])
 
     faces = np.array(faces_list, dtype = int)
     return faces, verts
@@ -554,14 +554,11 @@ def trispheresegment(phi: np.ndarray,
     z = diameter / 2.0 * np.cos(theta_grid)
 
     # Use surf2patch to create faces
-    # MATLAB trispheresegment uses surf2patch without fliplr (unlike fvgrid)
-    # Python _surf2patch has opposite winding from MATLAB, so we flip.
+    # _surf2patch now matches MATLAB surf2patch winding order
     if triangles:
         faces, verts = _surf2patch(x, y, z, triangles = True)
-        faces = faces[:, ::-1]  # flip for correct normals
     else:
         faces, verts = _surf2patch(x, y, z, triangles = False)
-        faces = faces[:, ::-1]  # flip for correct normals
 
     p = Particle(verts, faces)
     p = p.clean()

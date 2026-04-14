@@ -1756,6 +1756,8 @@ class Particle(object):
         key : str
             'flat' or 'curv' for midpoint computation
         """
+        # MATLAB: if verts2 is already set (e.g. from trispheresegment
+        # which projects midpoints onto sphere), skip midpoints/refine.
         if self.verts2 is None:
             self.midpoints(key)
 
@@ -1825,10 +1827,67 @@ class Particle(object):
         """
         Refine particle boundary using curvature (B-spline interpolation).
 
-        MATLAB: refine.m (simplified version)
+        MATLAB: refine.m — uses vertex_neighbours, edge_tangents,
+        make_halfway_vertices to compute B-spline interpolated midpoints.
         """
-        # Simplified: just use linear midpoints
-        self.midpoints('flat')
+        from .particle import Particle as _P  # avoid circular
+
+        # Step 1: split quads into triangles for neighbor finding
+        flat_p = _P(self.verts.copy(), self.faces.copy())
+        flat_p.interp = 'flat'
+        faces_tri, ind4_split = flat_p._totriangles_flat()
+        ind3_mask = np.isnan(self.faces[:, 3]) if self.faces.shape[1] > 3 else np.ones(self.nfaces, dtype=bool)
+
+        # Step 2: vertex neighbours
+        neighbours = self._vertex_neighbours()
+
+        # Step 3: edge tangents and velocities
+        tangents, velocities, edge_index = self._edge_tangents(neighbours)
+
+        # Step 4: make halfway vertices using B-spline
+        verts2_new, halfway_map = self._make_halfway_vertices(
+            tangents, velocities, edge_index, neighbours)
+        self.verts2 = verts2_new
+
+        # Step 5: build faces2 (MATLAB: refine.m lines 22-49)
+        # Reconstruct faces using halfway vertex indices
+        faces_tri_int = faces_tri[:, :3].astype(int)
+        n_tri = len(faces_tri_int)
+
+        # Find halfway vertex for each edge of each triangle
+        new_mid = np.zeros((n_tri, 3), dtype=int)
+        for i in range(n_tri):
+            v1, v2, v3 = faces_tri_int[i]
+            e12 = tuple(sorted([v1, v2]))
+            e23 = tuple(sorted([v2, v3]))
+            e31 = tuple(sorted([v3, v1]))
+            new_mid[i, 0] = halfway_map.get(e12, 0)
+            new_mid[i, 1] = halfway_map.get(e23, 0)
+            new_mid[i, 2] = halfway_map.get(e31, 0)
+
+        # Build faces2
+        n_faces = self.nfaces
+        self.faces2 = np.full((n_faces, 9), np.nan)
+        self.faces2[:, :4] = self.faces
+
+        ind3 = np.where(ind3_mask)[0]
+        ind4 = np.where(~ind3_mask)[0]
+
+        # Triangular elements: faces2[i, 4:7] = midpoints of edges 01, 12, 20
+        if len(ind3) > 0:
+            self.faces2[ind3, 4:7] = new_mid[ind3]
+
+        # Quadrilateral elements
+        if len(ind4) > 0:
+            # ind4_split maps quad faces to pairs of triangles
+            for qi, face_idx in enumerate(ind4):
+                tri_a = face_idx  # first triangle in faces_tri
+                tri_b = n_faces + qi  # second triangle (appended by totriangles)
+                # faces2[face, 4:9] = [mid_01, mid_12, mid_23, mid_30, centroid]
+                # MATLAB: faces2(ind4a, 5:9) = [faces(ind4a, [1,2]), faces(ind4b, [1,2,3])]
+                self.faces2[face_idx, 4:6] = new_mid[tri_a, :2]
+                if tri_b < n_tri:
+                    self.faces2[face_idx, 6:9] = new_mid[tri_b]
 
     def _vertex_neighbours(self):
         """
@@ -2299,15 +2358,18 @@ class Particle(object):
             self.verts = unique_verts
             self.faces = faces
 
-        # Remove quads with duplicate vertices
+        # Remove quads with duplicate vertices (MATLAB: unique + sort(order))
         ind4 = np.where(~np.isnan(self.faces[:, 3]))[0]
         for i in ind4:
             face = self.faces[i]
-            unique_vals = np.unique(face[~np.isnan(face)])
-            if len(unique_vals) == 3:
-                # Degenerate quad -> triangle
-                self.faces[i] = np.array([unique_vals[0], unique_vals[1],
-                                          unique_vals[2], np.nan])
+            valid = face[~np.isnan(face)].astype(int)
+            _, order = np.unique(valid, return_index=True)
+            if len(order) == 3:
+                # Degenerate quad -> triangle, preserve original winding
+                sorted_order = np.sort(order)
+                self.faces[i] = np.array([valid[sorted_order[0]],
+                                          valid[sorted_order[1]],
+                                          valid[sorted_order[2]], np.nan])
 
         self._norm()
 
