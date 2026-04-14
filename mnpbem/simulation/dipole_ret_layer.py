@@ -522,8 +522,10 @@ class DipoleRetLayer(object):
         from ..greenfun import CompGreenRetLayer
         g = CompGreenRetLayer(self.pt, sig.p, self.layer, **self.varargin)
 
+        # MATLAB: e = field(g, sig) + field(obj, obj.dip.pt, sig.enei, 'refl')
         field_struct = g.field(sig)
-        e = field_struct.e
+        refl_struct = self.field(self.pt, enei, key = 'refl')
+        e = field_struct.e + refl_struct.e
 
         k0 = 2 * np.pi / sig.enei
         gamma = 4 / 3 * k0 ** 3
@@ -531,8 +533,41 @@ class DipoleRetLayer(object):
         npt = self.pt.n
         ndip = self.dip.shape[2]
         tot = np.zeros((npt, ndip))
-        rad = np.zeros((npt, ndip))
         rad0 = np.zeros((npt, ndip))
+
+        # MATLAB: sca = scattering(obj.spec.farfield(sig) + farfield(obj, obj.spec, sig.enei))
+        from .retarded_utils import scattering as sca_func
+        ff_spec = self.spec.farfield(sig)
+        ff_dip = self.farfield(self.spec, enei)
+
+        # Ensure matching shapes
+        e_spec = ff_spec.e
+        h_spec = ff_spec.h
+        e_dip = ff_dip.e
+        h_dip = ff_dip.h
+
+        # Reshape to common dimensionality
+        npol = npt * ndip
+        if e_spec.ndim == 2:
+            e_spec = e_spec.reshape(e_spec.shape[0], 3, 1)
+        if h_spec.ndim == 2:
+            h_spec = h_spec.reshape(h_spec.shape[0], 3, 1)
+        if e_dip.ndim == 4:
+            e_dip = e_dip.reshape(e_dip.shape[0], 3, npol)
+        if h_dip.ndim == 4:
+            h_dip = h_dip.reshape(h_dip.shape[0], 3, npol)
+        if e_spec.ndim == 3 and e_dip.ndim == 3 and e_spec.shape[2] != e_dip.shape[2]:
+            if e_spec.shape[2] == 1:
+                e_spec = np.tile(e_spec, (1, 1, npol))
+                h_spec = np.tile(h_spec, (1, 1, npol))
+
+        ff_e = e_spec + e_dip
+        ff_h = h_spec + h_dip
+        ff_combined = CompStruct(ff_spec.p, enei, e = ff_e, h = ff_h)
+        sca = sca_func(ff_combined)
+        if np.isscalar(sca):
+            sca = np.array([sca])
+        rad = np.reshape(sca, (npt, ndip)) / (2 * np.pi * k0)
 
         # Reshape e from (npt, 3, npol) to (npt, 3, npt, ndip) if needed
         if e.ndim == 3:
@@ -545,9 +580,11 @@ class DipoleRetLayer(object):
                 dip = self.dip[ipos, :, idip]
                 nb = np.sqrt(self.pt.eps1(sig.enei)[ipos])
 
+                # MATLAB: tot = 1 + imag(e * dip') / (0.5*nb*gamma)
                 e_i = e[ipos, :, ipos, idip]
-
                 tot[ipos, idip] = np.real(1 + np.imag(e_i @ dip) / (0.5 * nb * gamma))
+                # MATLAB: rad = rad / (0.5*nb*gamma)
+                rad[ipos, idip] = rad[ipos, idip] / (0.5 * nb * gamma)
                 rad0[ipos, idip] = np.real(nb * gamma)
 
         return tot, rad, rad0

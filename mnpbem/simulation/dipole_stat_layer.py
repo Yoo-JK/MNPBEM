@@ -223,17 +223,14 @@ class DipoleStatLayer(object):
 
         gamma = 4 / 3 * (2 * np.pi / sig.enei) ** 3
 
-        area_pos = sig.p.pos * sig.p.area[:, np.newaxis]
-
-        if sig.sig.ndim == 1:
-            indip = area_pos.T @ sig.sig
-            indip = indip.reshape(3, 1, 1)
-        else:
-            indip = area_pos.T @ sig.sig
-            indip = indip.reshape(3, sig.sig.shape[0], -1)
-
         npt = self.pt.n
         ndip = self.dip.shape[2]
+
+        area_pos = sig.p.pos * sig.p.area[:, np.newaxis]
+
+        indip = area_pos.T @ sig.sig
+        # indip shape: (3, npol) where npol = npt * ndip
+        indip = indip.reshape(3, npt, ndip)
         tot = np.zeros((npt, ndip))
         rad = np.zeros((npt, ndip))
         rad0 = np.zeros((npt, ndip))
@@ -244,21 +241,23 @@ class DipoleStatLayer(object):
         elif e.ndim == 2:
             e = e.reshape(npt, 3, npt, ndip)
 
+        k0 = 2 * np.pi / sig.enei
+
         for ipos in range(npt):
             for idip in range(ndip):
                 nb = np.sqrt(self.pt.eps1(sig.enei)[ipos])
 
                 dip = self.dip[ipos, :, idip]
+                indip_i = indip[:, ipos, idip]
 
-                if indip.ndim == 3:
-                    indip_i = indip[:, ipos, idip]
-                else:
-                    indip_i = indip[:, 0]
+                # MATLAB: sca = scattering(obj.spec, indip + dip/nb^2, enei)
+                sca, _ = self.spec.scattering(indip_i.reshape(1, 3) + dip.reshape(1, 3) / nb ** 2, sig.enei)
+                # MATLAB: rad = (sca / (2*pi*k0)) / (0.5*nb*gamma)
+                rad[ipos, idip] = (sca / (2 * np.pi * k0)) / (0.5 * nb * gamma)
 
-                rad[ipos, idip] = np.linalg.norm(nb ** 2 * indip_i + dip) ** 2
-
+                # MATLAB: tot = 1 + rad + imag(e * dip') / (0.5*nb*gamma)
                 e_i = e[ipos, :, ipos, idip]
-                tot[ipos, idip] = np.real(1 + np.imag(e_i @ dip) / (0.5 * nb * gamma))
+                tot[ipos, idip] = np.real(1 + rad[ipos, idip] + np.imag(e_i @ dip) / (0.5 * nb * gamma))
 
                 rad0[ipos, idip] = np.real(nb * gamma)
 
