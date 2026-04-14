@@ -18,17 +18,19 @@ class DipoleStatLayer(object):
             layer: Any,
             dip: Optional[np.ndarray] = None,
             full: bool = False,
+            pinfty: Optional[Any] = None,
             **options: Any) -> None:
 
         self.pt = pt
         self.layer = layer
         self.varargin = options
 
-        self._init(dip, full, **options)
+        self._init(dip, full, pinfty, **options)
 
     def _init(self,
             dip: Optional[np.ndarray] = None,
             full: bool = False,
+            pinfty: Optional[Any] = None,
             **options: Any) -> None:
 
         if dip is None:
@@ -47,6 +49,10 @@ class DipoleStatLayer(object):
 
             dip_reshaped = dip.T.reshape(1, dip.shape[1], dip.shape[0])
             self.dip = np.tile(dip_reshaped, (self.pt.n, 1, 1))
+
+        # MATLAB: spectrumstatlayer for radiative decay rate
+        from ..spectrum import SpectrumStatLayer
+        self.spec = SpectrumStatLayer(pinfty, layer = self.layer)
 
     def _image_positions(self) -> np.ndarray:
 
@@ -69,12 +75,62 @@ class DipoleStatLayer(object):
 
         return q1, q2
 
-    def field(self,
+    def field2(self,
             p: Any,
             enei: float) -> CompStruct:
 
+        # MATLAB: dipolestatlayer/field2.m
+        # Electric field for mirror dipole excitation (reflected part only)
+
+        eps1, _ = self.layer.eps[0](enei)
+        eps2, _ = self.layer.eps[1](enei)
+        # Image charge factors, Jackson Eq. (4.45)
+        q1 = -(eps2 - eps1) / (eps2 + eps1)
+        q2 = 2 * eps2 / (eps2 + eps1)
+
+        pos = p.pos if hasattr(p, 'pos') else p.pc.pos
+        z_layer = self.layer.z[0]
+
+        # Image dipole: mirrored positions and flipped z-component
+        pos_image = self._image_positions()
+        dip_image = self.dip.astype(complex).copy()
+        dip_image[:, 2, :] = -dip_image[:, 2, :]
+        eps_at_dip = self.pt.eps1(enei)
+
+        if np.all(pos[:, 2] > z_layer):
+            # All points above substrate
+            e_image = self._efield(pos, pos_image, dip_image, eps_at_dip)
+            e = q1 * e_image
+            return CompStruct(p, enei, e = e)
+
+        # Points above and below substrate
+        ind1 = pos[:, 2] > z_layer
+        ind2 = pos[:, 2] < z_layer
+
+        n_obs = pos.shape[0]
+        n_dip = self.pt.n
+        ndip = self.dip.shape[2]
+        e = np.zeros((n_obs, 3, n_dip, ndip), dtype = complex)
+
+        if np.any(ind1):
+            e1 = self._efield(pos[ind1, :], pos_image, dip_image, eps_at_dip)
+            e[ind1, :, :, :] = q1 * e1
+
+        if np.any(ind2):
+            e2 = self._efield(pos[ind2, :], self.pt.pos, self.dip, eps_at_dip)
+            e[ind2, :, :, :] = q2 * e2
+
+        return CompStruct(p, enei, e = e)
+
+    def field(self,
+            p: Any,
+            enei: float,
+            key: Optional[str] = None) -> CompStruct:
+
         # MATLAB: dipolestatlayer/field.m
         # Electric field from direct dipole + image dipole
+        if key == 'refl':
+            return self.field2(p, enei)
 
         pt = self.pt
         pos1 = p.pos if hasattr(p, 'pos') else p.pc.pos
@@ -205,6 +261,55 @@ class DipoleStatLayer(object):
                 tot[ipos, idip] = np.real(1 + np.imag(e_i @ dip) / (0.5 * nb * gamma))
 
                 rad0[ipos, idip] = np.real(nb * gamma)
+
+        return tot, rad, rad0
+
+    def decayrate0(self,
+            enei: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+        # MATLAB: dipolestatlayer/decayrate0.m
+        # Total and radiative decay rate for oscillating dipole above
+        # layer structure (w/o nanoparticle) in units of the free-space decay rate
+
+        # TRUE if all dielectric functions real
+        ir = all(np.isreal(eps_func(enei)[0]) for eps_func in self.layer.eps)
+
+        # Induced electric field from image dipole at dipole positions
+        e = self.field2(self.pt, enei).e
+
+        k0 = 2 * np.pi / enei
+        # Wigner-Weisskopf decay rate in free space
+        gamma = 4 / 3 * k0 ** 3
+
+        pt = self.pt
+        npt = pt.n
+        ndip = self.dip.shape[2]
+        tot = np.zeros((npt, ndip))
+        rad = np.zeros((npt, ndip))
+        rad0 = np.zeros((npt, ndip))
+
+        for ipos in range(npt):
+            for idip in range(ndip):
+                nb = np.sqrt(pt.eps1(enei)[ipos])
+                if np.imag(nb) != 0:
+                    import warnings
+                    warnings.warn('Dipole embedded in medium with complex dielectric function')
+
+                dip = self.dip[ipos, :, idip]
+
+                # Scattering cross section from spectrum
+                sca, _ = self.spec.scattering(dip / nb ** 2, enei)
+                # Radiative decay rate in units of free-space decay rate
+                rad[ipos, idip] = (sca / (2 * np.pi * k0)) / (0.5 * nb * gamma)
+                # Free-space decay rate
+                rad0[ipos, idip] = np.real(nb * gamma)
+
+                # Total decay rate
+                if ir:
+                    tot[ipos, idip] = rad[ipos, idip]
+                else:
+                    tot[ipos, idip] = rad[ipos, idip] + np.imag(
+                        np.squeeze(e[ipos, :, ipos, idip]) @ dip) / (0.5 * nb * gamma)
 
         return tot, rad, rad0
 

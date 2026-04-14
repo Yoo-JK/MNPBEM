@@ -70,12 +70,11 @@ class DipoleRetLayer(object):
     def field(self,
             p: Any,
             enei: float,
-            inout: int = 1) -> CompStruct:
-        """Electric and magnetic field for dipole excitation.
+            key: Optional[str] = None) -> CompStruct:
 
-        MATLAB: @dipoleretlayer/field.m
-        E = ik0*A - grad(V), H = curl(A)
-        """
+        # MATLAB: @dipoleretlayer/field.m
+        # E = ik0*A - grad(V), H = curl(A)
+
         pt = self.pt
         pos1 = p.pos if hasattr(p, 'pos') else p.pc.pos
         pos2 = pt.pos
@@ -87,7 +86,7 @@ class DipoleRetLayer(object):
         exc.e = np.zeros((n1, 3, n2, ndip), dtype=complex)
         exc.h = np.zeros((n1, 3, n2, ndip), dtype=complex)
 
-        # Direct contribution
+        # Direct contribution (skip if 'refl' mode)
         eps_vals = []
         k_vals = []
         for eps_func in p.eps:
@@ -98,9 +97,10 @@ class DipoleRetLayer(object):
         eps_med = eps_vals[self._medium - 1]
         k_med = k_vals[self._medium - 1]
 
-        e_direct, h_direct = self._dipolefield(pos1, pos2, self.dip, eps_med, k_med)
-        exc.e += e_direct
-        exc.h += h_direct
+        if key != 'refl':
+            e_direct, h_direct = self._dipolefield(pos1, pos2, self.dip, eps_med, k_med)
+            exc.e += e_direct
+            exc.h += h_direct
 
         # Reflected contribution using Green function derivatives
         k0 = 2 * np.pi / enei
@@ -552,13 +552,74 @@ class DipoleRetLayer(object):
 
         return tot, rad, rad0
 
+    def decayrate0(self,
+            enei: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+        # MATLAB: dipoleretlayer/decayrate0.m
+        # Total and radiative decay rate for oscillating dipole above
+        # layer structure (w/o nanoparticle) in units of the free-space decay rate
+
+        # TRUE if all dielectric functions real
+        ir = all(np.isreal(eps_func(enei)[0]) for eps_func in self.layer.eps)
+
+        # Reflected electric field
+        e = self.field(self.pt, enei, key = 'refl').e
+
+        k0 = 2 * np.pi / enei
+        # Wigner-Weisskopf decay rate in free space
+        gamma = 4 / 3 * k0 ** 3
+
+        npt = self.pt.n
+        ndip = self.dip.shape[2]
+        tot = np.zeros((npt, ndip))
+        rad0 = np.zeros((npt, ndip))
+
+        # Scattering cross section from far-field
+        from .retarded_utils import scattering as sca_func
+        ff = self.farfield(self.spec, enei)
+        sca = sca_func(ff)
+        rad = sca.reshape((npt, ndip)) / (2 * np.pi * k0)
+
+        for ipos in range(npt):
+            for idip in range(ndip):
+                dip = self.dip[ipos, :, idip]
+
+                nb = np.sqrt(self.pt.eps1(enei)[ipos])
+                if np.imag(nb) != 0:
+                    import warnings
+                    warnings.warn('Dipole embedded in medium with complex dielectric function')
+
+                # Radiative decay rate in units of free-space decay rate
+                rad[ipos, idip] = rad[ipos, idip] / (0.5 * nb * gamma)
+                # Free-space decay rate
+                rad0[ipos, idip] = np.real(nb * gamma)
+
+                # Total decay rate
+                if ir:
+                    tot[ipos, idip] = rad[ipos, idip]
+                else:
+                    tot[ipos, idip] = 1 + np.imag(
+                        np.squeeze(e[ipos, :, ipos, idip]) @ dip) / (0.5 * nb * gamma)
+
+        return tot, rad, rad0
+
     def farfield(self,
             spec: Any,
             enei: float) -> CompStruct:
 
         dir = spec.pinfty.nvec if hasattr(spec.pinfty, 'nvec') else spec.nvec
         epstab = self.pt.eps
-        eps_val, k = epstab[spec.medium - 1](enei) if hasattr(spec, 'medium') else epstab[0](enei)
+
+        # Handle spec.medium being list (SpectrumRetLayer) or int (SpectrumRet)
+        if hasattr(spec, 'medium'):
+            medium = spec.medium
+            if isinstance(medium, (list, tuple)):
+                med_idx = medium[0] - 1
+            else:
+                med_idx = medium - 1
+        else:
+            med_idx = 0
+        eps_val, k = epstab[med_idx](enei)
         nb = np.sqrt(eps_val)
 
         pt = self.pt

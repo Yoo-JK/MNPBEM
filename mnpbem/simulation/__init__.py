@@ -37,6 +37,10 @@ from .planewave_ret_layer import PlaneWaveRetLayer
 from .dipole_stat_layer import DipoleStatLayer
 from .dipole_ret_layer import DipoleRetLayer
 from .meshfield import MeshField
+from .retarded_utils import scattering, extinction, absorption
+from .dipole_factory import dipole
+from .planewave_factory import planewave
+from .electronbeam_factory import electronbeam
 
 __all__ = [
     "PlaneWaveStat",
@@ -55,4 +59,10 @@ __all__ = [
     "DipoleStatLayer",
     "DipoleRetLayer",
     "MeshField",
+    "scattering",
+    "extinction",
+    "absorption",
+    "dipole",
+    "planewave",
+    "electronbeam",
 ]
