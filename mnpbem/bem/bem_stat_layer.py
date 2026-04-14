@@ -72,7 +72,16 @@ class BEMStatLayer(object):
 
         self._init_matrices(exc.enei)
 
-        sig_result = lu_solve(self.mat_lu, exc.phip)
+        phip = exc.phip
+        orig_shape = phip.shape
+        if phip.ndim > 2:
+            phip = phip.reshape(phip.shape[0], -1)
+
+        sig_result = lu_solve(self.mat_lu, phip)
+
+        if sig_result.shape != orig_shape:
+            sig_result = sig_result.reshape(orig_shape)
+
         sig = CompStruct(self.p, exc.enei, sig = sig_result)
 
         return sig, self
