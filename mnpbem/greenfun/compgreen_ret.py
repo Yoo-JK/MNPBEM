@@ -186,11 +186,8 @@ class CompGreenRet(object):
                 full1 = p1.pfull
 
         # Check for closed surfaces
-        # Skip for mirror particles: F is non-square and the correction
-        # requires square F matrix. Mirror BEM solver handles this.
-        if is_mirror:
-            return g
-
+        # MATLAB: initclosed.m uses p1.pfull for mirror particles but
+        # does NOT skip the closed surface correction.
         if hasattr(full1, 'closed') and (full1 is p2 or full1 == p2):
             if full1.closed is not None and any(c is not None for c in full1.closed):
                 # Loop over particles
