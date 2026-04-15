@@ -17,7 +17,7 @@ class GreenRetLayer(object):
             p2: Any,
             layer: Any,
             tab: Optional[Dict[str, Any]] = None,
-            deriv: str = 'norm',
+            deriv: str = 'cart',
             **options: Any) -> None:
 
         self.p1 = p1
@@ -110,7 +110,7 @@ class GreenRetLayer(object):
         After calling, results are stored in:
           self.G_comp  : dict of (n1, n2) arrays
           self.F_comp  : dict of (n1, n2) arrays (normal derivative)
-          self.Gp_comp : dict of (n1, n2, 3) arrays (Cartesian derivative)
+          self.Gp_comp : dict of (n1, 3, n2) arrays (Cartesian derivative)
         """
         n1 = self.p1.pos.shape[0]
         n2 = self.p2.pos.shape[0]
@@ -182,20 +182,32 @@ class GreenRetLayer(object):
             G: np.ndarray,
             Fr: np.ndarray,
             Fz: np.ndarray) -> None:
+        """Compute Cartesian derivative Gp and normal derivative F.
 
+        MATLAB: initrefl2.m
+        - Gp is the 3D Cartesian derivative, shape (n1, 3, n2)
+        - F is the 2D normal derivative: F[i,j] = nvec[i] . Gp[i,:,j]
+        """
+
+        nvec1 = self.p1.nvec
         n1 = self.p1.pos.shape[0]
         n2 = self.p2.pos.shape[0]
 
         r_safe = np.maximum(self._r, np.finfo(float).eps)
 
-        # Cartesian derivative: Gp[:,:,0] = Fr * dx/r, Gp[:,:,1] = Fr * dy/r, Gp[:,:,2] = Fz
-        Gp = np.zeros((n1, n2, 3), dtype = complex)
-        Gp[:, :, 0] = Fr * self._dx / r_safe
-        Gp[:, :, 1] = Fr * self._dy / r_safe
-        Gp[:, :, 2] = Fz
+        # Cartesian derivative: Gp[:, 0, :] = Fr * dx/r, etc.
+        # Shape (n1, 3, n2) to match MATLAB convention
+        Gp = np.zeros((n1, 3, n2), dtype = complex)
+        Gp[:, 0, :] = Fr * self._dx / r_safe
+        Gp[:, 1, :] = Fr * self._dy / r_safe
+        Gp[:, 2, :] = Fz
+
+        # Normal derivative: F = inner(nvec, Gp)
+        # F[i,j] = nvec[i,0]*Gp[i,0,j] + nvec[i,1]*Gp[i,1,j] + nvec[i,2]*Gp[i,2,j]
+        F = np.einsum('ik,ikj->ij', nvec1, Gp)
 
         self.Gp = Gp
-        self.F = Gp
+        self.F = F
 
     def setup_tabulation(self, nr = 30, nz = 20):
 

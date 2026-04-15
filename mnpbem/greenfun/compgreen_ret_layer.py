@@ -516,7 +516,7 @@ class CompGreenRetLayer(object):
         self.p1 = p1
         self.p2 = p2
         self.layer = layer
-        self.deriv = options.get('deriv', 'norm')
+        self.deriv = options.get('deriv', 'cart')
 
         # Direct (free-space) Green function
         self.g = CompGreenRet(p1, p2, **options)
