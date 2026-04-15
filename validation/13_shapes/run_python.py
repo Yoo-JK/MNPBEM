@@ -60,7 +60,7 @@ def run_bemstat(p_shape, label, pols=None):
         Total wall-clock seconds.
     """
     eps_tab = [EpsConst(1.0), EpsTable('gold.dat')]
-    p = ComParticle(eps_tab, [p_shape], [[2, 1]])
+    p = ComParticle(eps_tab, [p_shape], [[2, 1]], 1, interp='curv')
 
     if pols is None:
         pols = [np.array([1.0, 0.0, 0.0])]
