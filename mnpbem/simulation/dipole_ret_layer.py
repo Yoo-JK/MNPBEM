@@ -232,13 +232,14 @@ class DipoleRetLayer(object):
         r_flat = np.maximum(r.ravel(), rmin)
 
         # Baseline: G, Fr, Fz at (r, z1, z2)
-        G0, Fr0, Fz0 = self.tab.eval_components(enei, r_flat, z1_r, z2_r)
+        # Use direct computation (not interpolation) for accuracy at dipole positions
+        G0, Fr0, Fz0 = self.tab._compute_components(enei, r_flat, z1_r, z2_r)
 
         # Perturbed in r: (r+eta, z1, z2)
-        _, Fr_r, Fz_r = self.tab.eval_components(enei, r_flat + eta, z1_r, z2_r)
+        _, Fr_r, Fz_r = self.tab._compute_components(enei, r_flat + eta, z1_r, z2_r)
 
         # Perturbed in z2: (r, z1, z2+eta)
-        G_z, Fr_z, Fz_z = self.tab.eval_components(enei, r_flat, z1_r, z2_r + eta)
+        G_z, Fr_z, Fz_z = self.tab._compute_components(enei, r_flat, z1_r, z2_r + eta)
 
         names = list(G0.keys())
         shape = (n1, n2)
