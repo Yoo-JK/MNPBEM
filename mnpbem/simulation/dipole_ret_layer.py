@@ -664,107 +664,193 @@ class DipoleRetLayer(object):
     def farfield(self,
             spec: Any,
             enei: float) -> CompStruct:
+        """Far-field of dipole above layer structure.
 
-        dir = spec.pinfty.nvec if hasattr(spec.pinfty, 'nvec') else spec.nvec
-        epstab = self.pt.eps
+        MATLAB: @dipoleretlayer/farfield.m
+        Uses layer.reflection() + finite differences for proper treatment
+        of surface charge/current components (p, ss, hh, hs, sh).
+        """
+        from ..spectrum.spectrum_ret import SpectrumRet
 
-        # Handle spec.medium being list (SpectrumRetLayer) or int (SpectrumRet)
-        if hasattr(spec, 'medium'):
-            medium = spec.medium
-            if isinstance(medium, (list, tuple)):
-                med_idx = medium[0] - 1
-            else:
-                med_idx = medium - 1
-        else:
-            med_idx = 0
-        eps_val, k = epstab[med_idx](enei)
-        nb = np.sqrt(eps_val)
-
-        pt = self.pt
-        dip = self.dip.copy()
-
-        n1 = dir.shape[0]
-        n2 = dip.shape[0]
-        n3 = dip.shape[2]
-
-        e = np.zeros((n1, 3, n2, n3), dtype = complex)
-        h = np.zeros((n1, 3, n2, n3), dtype = complex)
-
-        # Direct far-field
-        g = np.exp(-1j * k * (dir @ pt.pos.T))
-        g = g[:, np.newaxis, :, np.newaxis]
-        g = np.tile(g, (1, 3, 1, n3))
-
-        dir_rep = dir[:, :, np.newaxis, np.newaxis]
-        dir_rep = np.tile(dir_rep, (1, 1, n2, n3))
-
-        dip_perm = dip.transpose(1, 0, 2)
-        dip_rep = dip_perm[np.newaxis, :, :, :]
-        dip_rep = np.tile(dip_rep, (n1, 1, 1, 1))
-
-        h_temp = np.cross(dir_rep, dip_rep, axis = 1) * g
-        e_temp = np.cross(h_temp, dir_rep, axis = 1)
-
-        e = k ** 2 * e_temp / eps_val
-        h = k ** 2 * h_temp / nb
-
-        # Reflected far-field with proper TE/TM decomposition
+        nvec_dir = spec.pinfty.nvec if hasattr(spec.pinfty, 'nvec') else spec.nvec
         layer = self.layer
-        z_layer = layer.z[0]
+        pt = self.pt
+        pos_dip = pt.pos.copy()
+        dip_moments = self.dip.copy()
 
-        eps1, _ = layer.eps[0](enei)
-        eps2, _ = layer.eps[1](enei)
-        n1_layer = np.sqrt(eps1)
-        n2_layer = np.sqrt(eps2)
+        # Reduced dipole: dip / eps_embedding
+        eps_at_dip = pt.eps1(enei)
+        dip2 = dip_moments / eps_at_dip[:, np.newaxis, np.newaxis]
 
-        for idir in range(n1):
-            d = dir[idir]
-            cos_theta = np.abs(d[2])
-            sin_theta = np.sqrt(max(1 - cos_theta ** 2, 0))
+        k0 = 2 * np.pi / enei
+        k_vals = np.array([eps_func(enei)[1] for eps_func in layer.eps])
+        medium = [layer.ind[0], layer.ind[-1]]
 
-            # Fresnel coefficients
-            sin_theta_t_sq = (n1_layer / n2_layer * sin_theta) ** 2
-            cos_theta_t = np.sqrt(1 - sin_theta_t_sq + 0j)
-            rs_val = (n1_layer * cos_theta - n2_layer * cos_theta_t) / (
-                      n1_layer * cos_theta + n2_layer * cos_theta_t)
-            rp_val = (n2_layer * cos_theta - n1_layer * cos_theta_t) / (
-                      n2_layer * cos_theta + n1_layer * cos_theta_t)
+        ind1 = nvec_dir[:, 2] >= 0  # upper hemisphere
+        ind2 = nvec_dir[:, 2] < 0   # lower hemisphere
 
-            # TE/TM unit vectors in the plane of incidence
-            # Plane of incidence = plane containing dir and z-axis
-            phi = np.arctan2(d[1], d[0])
-            sinp, cosp = np.sin(phi), np.cos(phi)
+        ndir = nvec_dir.shape[0]
+        npt = dip_moments.shape[0]
+        ndip = dip_moments.shape[2]
+        npol = npt * ndip
 
-            # TE direction (s-polarization): perpendicular to plane of incidence
-            te_hat = np.array([-sinp, cosp, 0.0])
-            # TM direction (p-polarization): in plane of incidence, tangential
-            tm_hat = np.array([cos_theta * cosp, cos_theta * sinp, -sin_theta])
-            # TM reflected: z-component flipped
-            tm_hat_refl = np.array([cos_theta * cosp, cos_theta * sinp, sin_theta])
+        # Finite-difference displaced positions
+        # MATLAB: pos = cat(3, pos, pos+eta*ex, pos+eta*ey, pos+eta*ez)
+        eta = 1e-6
+        pos_base = pos_dip  # (npt, 3)
+        pos_all = np.zeros((npt * 4, 3))
+        pos_all[:npt] = pos_base
+        pos_all[npt:2*npt] = pos_base + np.array([[eta, 0, 0]])
+        pos_all[2*npt:3*npt] = pos_base + np.array([[0, eta, 0]])
+        pos_all[3*npt:4*npt] = pos_base + np.array([[0, 0, eta]])
 
-            for ipt in range(n2):
-                z_pt = pt.pos[ipt, 2]
-                phase_refl = np.exp(-2j * k * (z_pt - z_layer) * cos_theta)
+        # Position structures for reflection
+        z2 = pos_all[:, 2]
+        ind2_layer, _ = layer.indlayer(z2)
+        pos_up = {'z1': np.atleast_1d(layer.z[0]), 'ind1': np.atleast_1d(1),
+                  'z2': z2, 'ind2': ind2_layer}
+        pos_down = {'z1': np.atleast_1d(layer.z[-1]),
+                    'ind1': np.atleast_1d(layer.n + 1),
+                    'z2': z2, 'ind2': ind2_layer}
 
-                for idip_idx in range(n3):
-                    dip_val = dip[ipt, :, idip_idx]
+        # Which dipoles are connected to the layer
+        # MATLAB: ind = any(bsxfun(@eq, pt.expand(pt.inout(:,end)), layer.ind), 2)
+        ind_layer = np.ones(npt, dtype=bool)
 
-                    # Decompose dipole into TE and TM components
-                    d_te = np.dot(dip_val, te_hat)  # TE amplitude
-                    d_tm = np.dot(dip_val, tm_hat)   # TM amplitude
+        # Allocate reflected vector potential
+        a = np.zeros((ndir, 3, npol), dtype=complex)
 
-                    # Reflected dipole moment
-                    dip_refl = (rs_val * d_te * te_hat +
-                                rp_val * d_tm * tm_hat_refl) * phase_refl
+        # ---- Upper hemisphere (positive propagation) ----
+        if np.imag(k_vals[0]) == 0 and np.any(ind1):
+            for idir in np.where(ind1)[0]:
+                kpar = np.real(k_vals[0]) * np.sqrt(1 - nvec_dir[idir, 2] ** 2)
 
-                    # Far-field from reflected dipole
-                    h_refl = np.cross(d, dip_refl)
-                    e_refl = np.cross(h_refl, d)
+                r, _ = layer.reflection(enei, kpar, pos_up)
 
-                    e[idir, :, ipt, idip_idx] += k ** 2 * e_refl / eps_val
-                    h[idir, :, ipt, idip_idx] += k ** 2 * h_refl / nb
+                # Distance for phase: pos_xy . dir_xy + z_layer * dir_z
+                xy_pos = pos_all[np.tile(ind_layer, 4), :2]
+                dist = xy_pos @ nvec_dir[idir, :2] + layer.z[0] * nvec_dir[idir, 2]
+                phase = np.exp(-1j * k_vals[0] * dist)  # (npt*4,)
 
-        field = CompStruct(spec.pinfty, enei, e = e, h = h)
+                # Apply phase and take finite differences
+                r_phased = {}
+                for name in r:
+                    rv = np.asarray(r[name]).ravel()
+                    rv_p = rv * phase  # (npt*4,)
+                    rv_4 = rv_p.reshape(4, npt).T  # (npt, 4)
+                    # Finite difference: columns 1,2,3 = derivative wrt x,y,z
+                    rv_4[:, 1:] = (rv_4[:, 1:] - rv_4[:, 0:1]) / eta
+                    r_phased[name] = rv_4
+
+                # Vector potential: a(idir, :, :) = -ik0*r.p*dip + r.hs*dip2 terms
+                rp = r_phased.get('p', np.zeros((npt, 4)))
+                rhh = r_phased.get('hh', np.zeros((npt, 4)))
+                rhs = r_phased.get('hs', np.zeros((npt, 4)))
+
+                for idip in range(ndip):
+                    ipol = np.arange(npt) * ndip + idip
+                    d = dip_moments[ind_layer, :, idip]  # (npt, 3)
+                    d2 = dip2[ind_layer, :, idip]  # (npt, 3)
+
+                    a[idir, 0, ipol] = -1j * k0 * (rp[:, 0] * d[:, 0])
+                    a[idir, 1, ipol] = -1j * k0 * (rp[:, 0] * d[:, 1])
+                    a[idir, 2, ipol] = (-1j * k0 * (rhh[:, 0] * d[:, 2])
+                                        + rhs[:, 1] * d2[:, 0]
+                                        + rhs[:, 2] * d2[:, 1]
+                                        + rhs[:, 3] * d2[:, 2])
+
+        # ---- Lower hemisphere (negative propagation) ----
+        if np.imag(k_vals[-1]) == 0 and np.any(ind2):
+            for idir in np.where(ind2)[0]:
+                kpar = np.real(k_vals[-1]) * np.sqrt(1 - nvec_dir[idir, 2] ** 2)
+
+                r, _ = layer.reflection(enei, kpar, pos_down)
+
+                xy_pos = pos_all[np.tile(ind_layer, 4), :2]
+                dist = xy_pos @ nvec_dir[idir, :2] + layer.z[-1] * nvec_dir[idir, 2]
+                phase = np.exp(-1j * k_vals[-1] * dist)
+
+                r_phased = {}
+                for name in r:
+                    rv = np.asarray(r[name]).ravel()
+                    rv_p = rv * phase
+                    rv_4 = rv_p.reshape(4, npt).T
+                    rv_4[:, 1:] = (rv_4[:, 1:] - rv_4[:, 0:1]) / eta
+                    r_phased[name] = rv_4
+
+                rp = r_phased.get('p', np.zeros((npt, 4)))
+                rhh = r_phased.get('hh', np.zeros((npt, 4)))
+                rhs = r_phased.get('hs', np.zeros((npt, 4)))
+
+                for idip in range(ndip):
+                    ipol = np.arange(npt) * ndip + idip
+                    d = dip_moments[ind_layer, :, idip]
+                    d2 = dip2[ind_layer, :, idip]
+
+                    a[idir, 0, ipol] = -1j * k0 * (rp[:, 0] * d[:, 0])
+                    a[idir, 1, ipol] = -1j * k0 * (rp[:, 0] * d[:, 1])
+                    a[idir, 2, ipol] = (-1j * k0 * (rhh[:, 0] * d[:, 2])
+                                        + rhs[:, 1] * d2[:, 0]
+                                        + rhs[:, 2] * d2[:, 1]
+                                        + rhs[:, 3] * d2[:, 2])
+
+        # Electric field from vector potential
+        e = 1j * k0 * a  # (ndir, 3, npol)
+
+        # ---- Direct (free-space) dipole fields ----
+        # MATLAB: farfield(dip, spectrumret(pinfty, 'medium', medium(1)), enei)
+        #       + farfield(dip, spectrumret(pinfty, 'medium', medium(2)), enei)
+        from ..simulation.dipole_ret import DipoleRet
+        dip_free = DipoleRet(pt, dip=None)
+        dip_free.dip = dip_moments
+
+        spec1 = SpectrumRet(spec.pinfty, medium=medium[0])
+        spec2 = SpectrumRet(spec.pinfty, medium=medium[1])
+        ff1 = dip_free.farfield(spec1, enei)
+        ff2 = dip_free.farfield(spec2, enei)
+
+        # Reshape free fields to (ndir, 3, npol)
+        e1 = ff1.e.reshape(ndir, 3, npol) + ff2.e.reshape(ndir, 3, npol)
+
+        # Determine which medium the dipoles are in
+        inout_vals = pt.inout  # medium indices for each dipole group
+        # For single dipole point in upper medium: set lower medium contribution to 0
+        e_up = e1.copy()
+        e_down = e1.copy()
+        # Simplified: for dipoles in medium[0], keep e_up; for medium[1], keep e_down
+        # For a single dipole in air above glass, medium[0]=air, dipole is in air
+        # So e_up = full free field, e_down = 0 for this dipole
+        for ig in range(len(pt.p)):
+            io = int(inout_vals[ig])
+            ipol_start = sum(pt.p[k].n for k in range(ig)) * ndip
+            ipol_end = ipol_start + pt.p[ig].n * ndip
+            if io != medium[0]:
+                e_up[:, :, ipol_start:ipol_end] = 0
+            if io != medium[1]:
+                e_down[:, :, ipol_start:ipol_end] = 0
+
+        # Add direct fields to reflected
+        e[ind1, :, :] += e_up[ind1, :, :]
+        e[ind2, :, :] += e_down[ind2, :, :]
+
+        # Make electric field transversal: e = e - dir * (dir . e)
+        dir_dot_e = np.einsum('ij,ijk->ik', nvec_dir, e)  # (ndir, npol)
+        e -= nvec_dir[:, :, np.newaxis] * dir_dot_e[:, np.newaxis, :]
+
+        # Magnetic field: h = (k/k0) * cross(dir, e) per hemisphere
+        h = np.zeros_like(e)
+        dir_3d = nvec_dir[:, :, np.newaxis]
+        dir_3d = np.broadcast_to(dir_3d, e.shape)
+        if np.any(ind1):
+            h[ind1] = k_vals[0] / k0 * np.cross(dir_3d[ind1], e[ind1], axis=1)
+        if np.any(ind2):
+            h[ind2] = k_vals[-1] / k0 * np.cross(dir_3d[ind2], e[ind2], axis=1)
+
+        # Reshape to (ndir, 3, npt, ndip)
+        e = e.reshape(ndir, 3, npt, ndip)
+        h = h.reshape(ndir, 3, npt, ndip)
+
+        field = CompStruct(spec.pinfty, enei, e=e, h=h)
         return field
 
     def __call__(self,
