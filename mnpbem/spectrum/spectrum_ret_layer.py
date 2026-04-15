@@ -20,7 +20,8 @@ class SpectrumRetLayer(object):
 
         # Handle different input types
         if pinfty is None:
-            self.pinfty = _load_pinfty_default()
+            _, _, nvec, area = trisphere_unit(256)
+            self.pinfty = _PinftyStruct(nvec, area)
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)
@@ -31,7 +32,8 @@ class SpectrumRetLayer(object):
         elif hasattr(pinfty, 'nvec') and hasattr(pinfty, 'area'):
             self.pinfty = pinfty
         else:
-            self.pinfty = _load_pinfty_default()
+            _, _, nvec, area = trisphere_unit(256)
+            self.pinfty = _PinftyStruct(nvec, area)
 
         self.nvec = self.pinfty.nvec if hasattr(self.pinfty, 'nvec') else self.pinfty['nvec']
         self.area = self.pinfty.area if hasattr(self.pinfty, 'area') else self.pinfty['area']

@@ -180,7 +180,8 @@ class SpectrumRet(object):
 
         # Handle different input types
         if pinfty is None:
-            self.pinfty = _load_pinfty_default()
+            _, _, nvec, area = trisphere_unit(256)
+            self.pinfty = _PinftyStruct(nvec, area)
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)

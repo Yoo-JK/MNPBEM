@@ -255,29 +255,38 @@ class LayerStructure(object):
         # Auxiliary quantity
         Delta = (k2z + k1z) * (eps1 * k2z + eps2 * k1z)
 
+        # Safe ratio: k1z/k2z and k2z/k1z (avoid divide-by-zero)
+        # MATLAB: these divisions produce NaN when kz=0, but the off-diagonal
+        # elements are multiplied by factors that go to 0 at the same rate,
+        # so the product is finite. Use safe division to handle this.
+        k1z_safe = k1z if np.abs(k1z) > 1e-30 else 1e-30 + 0j
+        k2z_safe = k2z if np.abs(k2z) > 1e-30 else 1e-30 + 0j
+        ratio_12 = k1z / k2z_safe  # k1z / k2z
+        ratio_21 = k2z / k1z_safe  # k2z / k1z
+
         # Surface charge from surface charge source
         r_ss_11 = (k1z + k2z) * (2 * eps1 * k1z - eps2 * k1z - eps1 * k2z) / Delta
         r_ss_22 = (k2z + k1z) * (2 * eps2 * k2z - eps1 * k2z - eps2 * k1z) / Delta
-        r_ss = np.array([[r_ss_11, k1z / k2z * (r_ss_22 + 1)],
-                         [k2z / k1z * (r_ss_11 + 1), r_ss_22]], dtype = complex)
+        r_ss = np.array([[r_ss_11, ratio_12 * (r_ss_22 + 1)],
+                         [ratio_21 * (r_ss_11 + 1), r_ss_22]], dtype = complex)
 
         # Induced surface current from surface charge source
         r_hs_11 = -2 * k0 * (eps2 - eps1) * eps1 * k1z / Delta
         r_hs_22 = -2 * k0 * (eps1 - eps2) * eps2 * k2z / Delta
-        r_hs = np.array([[r_hs_11, -k1z / k2z * r_hs_22],
-                         [k2z / k1z * r_hs_11, -r_hs_22]], dtype = complex)
+        r_hs = np.array([[r_hs_11, -ratio_12 * r_hs_22],
+                         [ratio_21 * r_hs_11, -r_hs_22]], dtype = complex)
 
         # Induced surface charge from surface current source
         r_sh_11 = -2 * k0 * (eps2 - eps1) * k1z / Delta
         r_sh_22 = -2 * k0 * (eps1 - eps2) * k2z / Delta
-        r_sh = np.array([[r_sh_11, -k1z / k2z * r_sh_22],
-                         [k2z / k1z * r_sh_11, -r_sh_22]], dtype = complex)
+        r_sh = np.array([[r_sh_11, -ratio_12 * r_sh_22],
+                         [ratio_21 * r_sh_11, -r_sh_22]], dtype = complex)
 
         # Surface current from surface current source
         r_hh_11 = (k1z - k2z) * (2 * eps1 * k1z - eps2 * k1z + eps1 * k2z) / Delta
         r_hh_22 = (k2z - k1z) * (2 * eps2 * k2z - eps1 * k2z + eps2 * k1z) / Delta
-        r_hh = np.array([[r_hh_11, k1z / k2z * (r_hh_22 + 1)],
-                         [k2z / k1z * (r_hh_11 + 1), r_hh_22]], dtype = complex)
+        r_hh = np.array([[r_hh_11, ratio_12 * (r_hh_22 + 1)],
+                         [ratio_21 * (r_hh_11 + 1), r_hh_22]], dtype = complex)
 
         r = {'p': r_p, 'ss': r_ss, 'hs': r_hs, 'sh': r_sh, 'hh': r_hh}
         rz = {}

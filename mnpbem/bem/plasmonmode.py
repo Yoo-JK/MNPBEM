@@ -50,20 +50,19 @@ def plasmonmode(
 
     eigs_opts = dict(which = 'SR', maxiter = 1000)
 
-    if nev_actual < n - 1:
-        # sparse eigenvalue solver (same as MATLAB eigs(..., 'sr'))
-        # scipy eigs returns (eigenvalues, eigenvectors) -- note the order
-        # is reversed compared to MATLAB which returns (V, D).
+    # Use dense solver for small-to-medium matrices (n < 2000)
+    # for exact eigenvalues matching MATLAB's LAPACK-based eigs.
+    # Sparse ARPACK solver has ~1% convergence error on higher modes.
+    use_dense = (n < 2000)
 
-        # left eigenvectors = eigenvectors of F^T
+    if not use_dense and nev_actual < n - 1:
+        # sparse eigenvalue solver (same as MATLAB eigs(..., 'sr'))
         _, ul = eigs(F.T, k = nev_actual, **eigs_opts)
         ul = ul.T  # (nev, n)
 
-        # right eigenvectors and eigenvalues
         ene_diag, ur = eigs(F, k = nev_actual, **eigs_opts)
-        # ur: (n, nev),  ene_diag: (nev,)
     else:
-        # matrix too small for sparse solver -- fall back to dense eig
+        # Dense eigensolver (LAPACK) -- exact eigenvalues
         ene_all, ur_all = np.linalg.eig(F)
         idx_sort = np.argsort(ene_all.real)[:nev_actual]
         ur = ur_all[:, idx_sort]
