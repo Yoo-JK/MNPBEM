@@ -106,7 +106,10 @@ class GreenRetRefined(object):
         # Allocate arrays for multi-order expansion (MATLAB lines 35-40)
         order = self.order
         self.g = np.zeros((n_refined, order + 1), dtype=complex)
-        self.f = np.zeros((n_refined, order + 1), dtype=complex)
+        if self.deriv == 'cart':
+            self.f = np.zeros((n_refined, 3, order + 1), dtype=complex)
+        else:
+            self.f = np.zeros((n_refined, order + 1), dtype=complex)
 
         # Refine diagonal elements (ir == 2)
         # MATLAB lines 42-95
@@ -174,17 +177,24 @@ class GreenRetRefined(object):
             for n in range(self.order + 1):
                 self.g[iref, n] = np.sum(w_face * r**(n - 1)) / math.factorial(n)
 
-            # Surface derivative (MATLAB lines 65-73)
-            # Inner product: n·r
-            n_dot_r = np.sum(vec * nvec1[i], axis=1)  # (n_points,)
+            # Surface derivative (MATLAB lines 65-94)
+            n_dot_r = np.sum(vec * nvec1[i], axis=1)
 
-            # f_n = Σ w × (n-1) × (n·r) × r^(n-3) / n! (MATLAB line 72)
-            for n in range(self.order + 1):
-                if n == 0:
-                    # For n=0: (n-1) × r^(n-3) = -1 × r^(-3)
-                    self.f[iref, n] = np.sum(w_face * (-1) * n_dot_r * r**(-3)) / math.factorial(n)
-                else:
+            if self.deriv == 'norm':
+                for n in range(self.order + 1):
                     self.f[iref, n] = np.sum(w_face * (n - 1) * n_dot_r * r**(n - 3)) / math.factorial(n)
+            else:
+                # deriv='cart': MATLAB init.m lines 74-93
+                rr = np.maximum(r, 1e-4 * np.max(r))
+                in1 = np.sum(vec * self.p1.tvec1[face], axis=1)
+                in2 = np.sum(vec * self.p1.tvec2[face], axis=1)
+                for n in range(self.order + 1):
+                    f1 = np.sum(w_face * (n - 1) * n_dot_r * r**(n - 3)) / math.factorial(n)
+                    f2 = np.sum(w_face * (n - 1) * in1 * r**n / rr**3) / math.factorial(n)
+                    f3 = np.sum(w_face * (n - 1) * in2 * r**n / rr**3) / math.factorial(n)
+                    self.f[iref, :, n] = (nvec1[i] * f1 +
+                                          self.p1.tvec1[face] * f2 +
+                                          self.p1.tvec2[face] * f3)
 
     def _refine_offdiagonal(self, ir):
         """
@@ -270,15 +280,25 @@ class GreenRetRefined(object):
                       nvec1[nb, 1:2] * y +
                       nvec1[nb, 2:3] * z)  # (n_nb, n_points)
 
-            # Lowest order (n=0): f_0 = -∫ (n·r) / r³ dA (MATLAB line 158)
-            self.f[iface, 0] = -(n_dot_r / r**3) @ w_face
-
-            # Higher orders (n>=1) (MATLAB lines 160-164)
-            for n in range(1, self.order + 1):
-                term1 = -(r - r0[:, np.newaxis])**n / (r**3 * math.factorial(n))
-                term2 = (r - r0[:, np.newaxis])**(n-1) / (r**2 * math.factorial(n-1))
-                integrand = n_dot_r * (term1 + term2)
-                self.f[iface, n] = integrand @ w_face
+            if self.deriv == 'norm':
+                self.f[iface, 0] = -(n_dot_r / r**3) @ w_face
+                for n in range(1, self.order + 1):
+                    term1 = -(r - r0[:, np.newaxis])**n / (r**3 * math.factorial(n))
+                    term2 = (r - r0[:, np.newaxis])**(n-1) / (r**2 * math.factorial(n-1))
+                    self.f[iface, n] = (n_dot_r * (term1 + term2)) @ w_face
+            else:
+                # deriv='cart': MATLAB init.m lines 165-175
+                f_scalar = -1.0 / r**3
+                self.f[iface, 0, 0] = (x * f_scalar) @ w_face
+                self.f[iface, 1, 0] = (y * f_scalar) @ w_face
+                self.f[iface, 2, 0] = (z * f_scalar) @ w_face
+                for n in range(1, self.order + 1):
+                    term1 = -(r - r0[:, np.newaxis])**n / (r**3 * math.factorial(n))
+                    term2 = (r - r0[:, np.newaxis])**(n-1) / (r**2 * math.factorial(n-1))
+                    f_scalar = term1 + term2
+                    self.f[iface, 0, n] = (x * f_scalar) @ w_face
+                    self.f[iface, 1, n] = (y * f_scalar) @ w_face
+                    self.f[iface, 2, n] = (z * f_scalar) @ w_face
 
     def _ensure_cache(self):
         """Build and cache wavelength-independent distance quantities."""
@@ -343,16 +363,35 @@ class GreenRetRefined(object):
             return G
 
         elif key == 'F':
-            n_dot_r = c['n_dot_r']
-            F = n_dot_r * (1j * k - inv_d) * inv_d2 * area2[np.newaxis, :]
+            if self.deriv == 'cart':
+                # MATLAB eval1.m lines 110-124: F via Gp inner product
+                x, y, z = c['x'], c['y'], c['z']
+                f_aux = (1j * k - inv_d) * inv_d2
+                nvec = self.p1.nvec
+                F = (nvec[:, 0:1] * (f_aux * x) +
+                     nvec[:, 1:2] * (f_aux * y) +
+                     nvec[:, 2:3] * (f_aux * z)) * area2[np.newaxis, :]
 
-            if len(self.ind) > 0:
-                ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
-                F_refined = self.f @ ik_powers
-                F[self.row, self.col] = F_refined
+                if len(self.ind) > 0:
+                    ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
+                    # MATLAB line 120: F(ind) = inner(nvec(i,:), f) * ik_powers
+                    nvec_ref = nvec[self.row]
+                    F_refined = np.einsum('ij,ijk,k->i', nvec_ref, self.f, ik_powers)
+                    F[self.row, self.col] = F_refined
 
-            F = F * np.exp(1j * k * d)
-            return F
+                F = F * np.exp(1j * k * d)
+                return F
+            else:
+                n_dot_r = c['n_dot_r']
+                F = n_dot_r * (1j * k - inv_d) * inv_d2 * area2[np.newaxis, :]
+
+                if len(self.ind) > 0:
+                    ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
+                    F_refined = self.f @ ik_powers
+                    F[self.row, self.col] = F_refined
+
+                F = F * np.exp(1j * k * d)
+                return F
 
         elif key == 'H1':
             F = self.eval(k, 'F')
@@ -370,12 +409,25 @@ class GreenRetRefined(object):
 
         elif key == 'Gp':
             x, y, z = c['x'], c['y'], c['z']
-            r_vec = np.stack([x, y, z], axis=2)  # (n1, n2, 3)
             phase = np.exp(1j * k * d)
-            # MATLAB: f = (ik - 1/d) / d^2; Gp = f .* [x,y,z] * area * phase
-            Gp_factor = phase * (1j * k - inv_d) * inv_d2
-            Gp = r_vec * Gp_factor[:, :, np.newaxis] * area2[np.newaxis, :, np.newaxis]
-            return np.transpose(Gp, (0, 2, 1))  # (n1, 3, n2)
+            f_aux = (1j * k - inv_d) * inv_d2
+            # Gp as (n1, n2, 3) — then transpose to (n1, 3, n2)
+            Gp_x = f_aux * x * area2[np.newaxis, :]
+            Gp_y = f_aux * y * area2[np.newaxis, :]
+            Gp_z = f_aux * z * area2[np.newaxis, :]
+
+            # Apply refinement (MATLAB eval1.m lines 96-98)
+            if len(self.ind) > 0 and self.deriv == 'cart':
+                ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
+                # f is (n_ref, 3, order+1), Gp_refined = f @ ik_powers → (n_ref, 3)
+                Gp_refined = np.einsum('ijk,k->ij', self.f, ik_powers)
+                Gp_x[self.row, self.col] = Gp_refined[:, 0]
+                Gp_y[self.row, self.col] = Gp_refined[:, 1]
+                Gp_z[self.row, self.col] = Gp_refined[:, 2]
+
+            Gp_x *= phase; Gp_y *= phase; Gp_z *= phase
+            Gp = np.stack([Gp_x, Gp_y, Gp_z], axis=1)  # (n1, 3, n2)
+            return Gp
 
         elif key == 'H1p':
             Gp = self.eval(k, 'Gp')

@@ -84,7 +84,7 @@ class CompGreenRet(object):
         """
         self.p1 = p1
         self.p2 = p2
-        self.deriv = options.get('deriv', 'norm')
+        self.deriv = options.get('deriv', 'cart')
         self.hmode = options.get('hmode', None)
 
         # Initialize Green function
@@ -301,7 +301,7 @@ class CompGreenRet(object):
         # Use quasistatic Green function for correction
         from .compgreen_stat import CompGreenStat
         gstat = CompGreenStat.__new__(CompGreenStat)
-        gstat.deriv = g.deriv if hasattr(g, 'deriv') else 'norm'
+        gstat.deriv = 'norm'  # Always use normal derivative for closed surface F sum
         gstat.p1 = p1
         gstat.p2 = p2
         gstat._compute_greenstat(p1, p2, **options)
@@ -342,22 +342,26 @@ class CompGreenRet(object):
 
         MATLAB: @greenret/diag.m -- modifies f(ind, 1) += correction
         The correction ensures integral of -F gives 2*pi for closed surfaces.
+
+        For deriv='norm': f[idx, 0] += correction (scalar)
+        For deriv='cart': f[idx, :, 0] += correction * nvec (3-vector)
         """
         for i, (correction, nvec_corr) in diag_corrections.items():
-            # Diagonal block g[i][i]
             if i < len(self.g) and i < len(self.g[i]):
                 block = self.g[i][i]
                 if block is not None and block.refined is not None:
                     refined = block.refined
-                    # Find diagonal elements in the refinement arrays
-                    # refined.row, refined.col are indices into the block's particle
-                    # Diagonal elements are where row == col
                     for idx in range(len(refined.row)):
                         if refined.row[idx] == refined.col[idx]:
                             face_idx = refined.row[idx]
                             if face_idx < len(correction):
-                                # MATLAB: obj.f(ind, 1) += correction
-                                refined.f[idx, 0] += correction[face_idx]
+                                if refined.f.ndim == 3:
+                                    # deriv='cart': f is (n_ref, 3, order+1)
+                                    # MATLAB: diag(g, ind, nvec * correction)
+                                    refined.f[idx, :, 0] += correction[face_idx] * nvec_corr[face_idx]
+                                else:
+                                    # deriv='norm': f is (n_ref, order+1)
+                                    refined.f[idx, 0] += correction[face_idx]
 
     def _mat2cell(self, g, p1_list, p2_list):
         """
@@ -1494,7 +1498,14 @@ class GreenRetBlock(object):
                     if key == 'G':
                         values[i_out] = (self.refined.g[idx_ref] @ ik_powers) * phase[i_out]
                     elif key in ('F', 'H1', 'H2'):
-                        f_val = (self.refined.f[idx_ref] @ ik_powers) * phase[i_out]
+                        f_coeff = self.refined.f[idx_ref]
+                        if f_coeff.ndim == 2:
+                            # deriv='cart': f is (3, order+1) → F = inner(nvec, Gp)
+                            gp_ref = f_coeff @ ik_powers  # (3,)
+                            f_val = np.dot(self.p1.nvec[r], gp_ref) * phase[i_out]
+                        else:
+                            # deriv='norm': f is (order+1,)
+                            f_val = (f_coeff @ ik_powers) * phase[i_out]
                         if key == 'H1' and self.p1 is self.p2 and r == c:
                             f_val += 2.0 * np.pi
                         elif key == 'H2' and self.p1 is self.p2 and r == c:
