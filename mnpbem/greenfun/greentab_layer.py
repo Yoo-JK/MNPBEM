@@ -112,18 +112,26 @@ class GreenTabLayer(object):
     def _interp_wavelength(self, enei):
         """Interpolate 4D multi-wavelength table to 3D at given wavelength."""
         enei_arr = self._enei_tab
-        idx = np.searchsorted(enei_arr, enei, side='right') - 1
-        idx = np.clip(idx, 0, len(enei_arr) - 2)
-        frac = (enei - enei_arr[idx]) / (enei_arr[idx + 1] - enei_arr[idx])
-
         names = list(self._Gsav_multi.keys())
         self._Gsav_comp = {}
         self._Frsav_comp = {}
         self._Fzsav_comp = {}
-        for name in names:
-            self._Gsav_comp[name] = (1 - frac) * self._Gsav_multi[name][:, :, :, idx] + frac * self._Gsav_multi[name][:, :, :, idx + 1]
-            self._Frsav_comp[name] = (1 - frac) * self._Frsav_multi[name][:, :, :, idx] + frac * self._Frsav_multi[name][:, :, :, idx + 1]
-            self._Fzsav_comp[name] = (1 - frac) * self._Fzsav_multi[name][:, :, :, idx] + frac * self._Fzsav_multi[name][:, :, :, idx + 1]
+
+        if len(enei_arr) == 1:
+            # Single wavelength — no interpolation needed
+            for name in names:
+                self._Gsav_comp[name] = self._Gsav_multi[name][:, :, :, 0]
+                self._Frsav_comp[name] = self._Frsav_multi[name][:, :, :, 0]
+                self._Fzsav_comp[name] = self._Fzsav_multi[name][:, :, :, 0]
+        else:
+            idx = np.searchsorted(enei_arr, enei, side='right') - 1
+            idx = np.clip(idx, 0, len(enei_arr) - 2)
+            frac = (enei - enei_arr[idx]) / (enei_arr[idx + 1] - enei_arr[idx])
+            for name in names:
+                self._Gsav_comp[name] = (1 - frac) * self._Gsav_multi[name][:, :, :, idx] + frac * self._Gsav_multi[name][:, :, :, idx + 1]
+                self._Frsav_comp[name] = (1 - frac) * self._Frsav_multi[name][:, :, :, idx] + frac * self._Frsav_multi[name][:, :, :, idx + 1]
+                self._Fzsav_comp[name] = (1 - frac) * self._Fzsav_multi[name][:, :, :, idx] + frac * self._Fzsav_multi[name][:, :, :, idx + 1]
+
         self._enei_comp = enei
 
     def eval(self,
