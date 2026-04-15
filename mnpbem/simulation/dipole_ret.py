@@ -150,13 +150,12 @@ class DipoleRet(object):
 
         # MATLAB: init.m lines 50-62
         # Set up spectrum for calculation of radiative decay rate
-        if pinfty is None:
-            from ..geometry import trisphere
-            pinfty = trisphere(256, 2)
-
-        # MATLAB: obj.spec = spectrumret(pinfty, 'medium', medium)
+        # MATLAB: obj.spec = spectrumret(trisphere(256, 2), 'medium', medium)
         from ..spectrum import SpectrumRet
-        self.spec = SpectrumRet(pinfty, medium = medium)
+        if pinfty is None:
+            self.spec = SpectrumRet(medium=medium)  # Uses MATLAB pinfty256.bin
+        else:
+            self.spec = SpectrumRet(pinfty, medium=medium)
         self._pinfty = pinfty
         self._medium = medium
 

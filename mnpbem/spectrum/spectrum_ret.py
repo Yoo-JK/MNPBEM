@@ -179,9 +179,9 @@ class SpectrumRet(object):
         self.medium = medium
 
         # Handle different input types
+        # Default: MATLAB trisphere(256, 2) data for consistent integration
         if pinfty is None:
-            _, _, nvec, area = trisphere_unit(256)
-            self.pinfty = _PinftyStruct(nvec, area)
+            self.pinfty = _load_pinfty_default()
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)

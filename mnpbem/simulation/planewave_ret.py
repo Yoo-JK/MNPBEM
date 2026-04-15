@@ -118,10 +118,8 @@ class PlaneWaveRet(object):
             self.spec = SpectrumRet(pinfty_arg, medium=self.medium)
         else:
             # MATLAB: obj.spec = spectrumret(trisphere(256, 2), 'medium', obj.medium)
-            from ..geometry import trisphere
             from ..spectrum import SpectrumRet
-            default_pinfty = trisphere(256, 2)
-            self.spec = SpectrumRet(default_pinfty, medium=self.medium)
+            self.spec = SpectrumRet(medium=self.medium)  # Uses MATLAB pinfty256.bin
 
     def field(self, p, enei, inout=1):
         """
