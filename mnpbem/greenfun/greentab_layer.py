@@ -25,16 +25,16 @@ class GreenTabLayer(object):
             self.r = tab.get('r', None)
             self.z1 = tab.get('z1', None)
             self.z2 = tab.get('z2', None)
-            self._Gsav = tab.get('Gsav', None)
-            self._Frsav = tab.get('Frsav', None)
-            self._Fzsav = tab.get('Fzsav', None)
         else:
             self.r = None
             self.z1 = None
             self.z2 = None
-            self._Gsav = None
-            self._Frsav = None
-            self._Fzsav = None
+
+        # Per-component 3D tables: dict[name] -> (nr, nz1, nz2) complex array
+        # These store NORMALIZED values (multiplied by distance-dependent factors)
+        self._Gsav = None
+        self._Frsav = None
+        self._Fzsav = None
 
         self.enei = None
         self.G = None
@@ -42,7 +42,7 @@ class GreenTabLayer(object):
         self.Fz = None
         self._pos = None
 
-        # Per-component caches
+        # Per-component caches (for eval_components path)
         self._enei_comp = None
         self._Gsav_comp = None
         self._Frsav_comp = None
@@ -70,17 +70,132 @@ class GreenTabLayer(object):
 
         return {'r': r, 'z1': z1, 'z2': z2}
 
+    # ------------------------------------------------------------------
+    # Grid normalization helpers (MATLAB: @greentablayer/norm.m, interp3.m)
+    #
+    # The reflected Green function G(r, z1, z2) varies rapidly near layer
+    # interfaces.  To improve interpolation accuracy we multiply by
+    # distance-dependent factors BEFORE tabulation (norm) and divide them
+    # out AFTER interpolation (denorm).
+    #
+    # Normalization factors on the grid:
+    #   d_grid  = sqrt(r_grid^2 + zmin_grid^2)
+    #   G_norm  = G * d_grid
+    #   Fr_norm = Fr * d_grid^3 / r_grid
+    #   Fz_norm = Fz * d_grid^3 / zmin_grid
+    #
+    # Denormalization at query points:
+    #   d_q    = sqrt(r_q^2 + zmin_q^2)
+    #   G      = G_interp / d_q
+    #   Fr     = Fr_interp * r_q / d_q^3
+    #   Fz     = Fz_interp * zmin_q / d_q^3
+    # ------------------------------------------------------------------
+
+    def _grid_norm_factors(self):
+        """Compute normalization factors (d, d^3/r, d^3/zmin) on the 3D grid.
+
+        Returns
+        -------
+        d_grid : ndarray (nr, nz1, nz2)
+        d3_over_r : ndarray (nr, nz1, nz2)
+        d3_over_zmin : ndarray (nr, nz1, nz2)
+        """
+        nr = len(self.r)
+        nz1 = len(self.z1)
+        nz2 = len(self.z2)
+
+        # mindist for each z1 and z2 value
+        zmin_z1, _ = self.layer.mindist(self.z1)  # (nz1,)
+        zmin_z2, _ = self.layer.mindist(self.z2)  # (nz2,)
+
+        # Broadcast to 3D: zmin(iz1, iz2) = mindist(z1) + mindist(z2)
+        # MATLAB interp3.m line 19: zmin = mindist(layer, z1) + mindist(layer, z2)
+        zmin_grid = zmin_z1[np.newaxis, :, np.newaxis] + zmin_z2[np.newaxis, np.newaxis, :]
+        # shape: (1, nz1, nz2) -> will broadcast with r
+
+        r_grid = self.r[:, np.newaxis, np.newaxis]  # (nr, 1, 1)
+
+        d_grid = np.sqrt(r_grid ** 2 + zmin_grid ** 2)  # (nr, nz1, nz2)
+
+        # Avoid division by zero for r=0 or zmin=0
+        r_safe = np.maximum(r_grid, np.finfo(float).eps)
+        zmin_safe = np.maximum(zmin_grid, np.finfo(float).eps)
+
+        d3_over_r = d_grid ** 3 / r_safe
+        d3_over_zmin = d_grid ** 3 / zmin_safe
+
+        return d_grid, d3_over_r, d3_over_zmin
+
+    def _query_denorm_factors(self, r_q, z1_q, z2_q):
+        """Compute denormalization factors at query points.
+
+        Parameters
+        ----------
+        r_q, z1_q, z2_q : ndarray (n,)
+            Query point coordinates (already clipped/rounded).
+
+        Returns
+        -------
+        inv_d : ndarray (n,)      — 1/d
+        r_over_d3 : ndarray (n,)  — r/d^3
+        zmin_over_d3 : ndarray (n,) — zmin/d^3
+        """
+        zmin_z1, _ = self.layer.mindist(z1_q)
+        zmin_z2, _ = self.layer.mindist(z2_q)
+        zmin = zmin_z1 + zmin_z2
+
+        d = np.sqrt(r_q ** 2 + zmin ** 2)
+        d_safe = np.maximum(d, np.finfo(float).eps)
+
+        inv_d = 1.0 / d_safe
+        r_over_d3 = r_q / d_safe ** 3
+        zmin_over_d3 = zmin / d_safe ** 3
+
+        return inv_d, r_over_d3, zmin_over_d3
+
+    def _query_denorm_factors_2d(self, r_q, z_eff):
+        """Compute denormalization factors for 2D (single-z2) case.
+
+        MATLAB interp2.m: zmin = mindist(layer, z_eff) where z_eff already
+        folds z1 and z2 together.
+
+        Parameters
+        ----------
+        r_q : ndarray (n,)
+        z_eff : ndarray (n,)  — combined z1 + mindist(z2) or z1 - mindist(z2)
+
+        Returns
+        -------
+        inv_d, r_over_d3, zmin_over_d3 : ndarray (n,)
+        """
+        zmin, _ = self.layer.mindist(z_eff)
+        d = np.sqrt(r_q ** 2 + zmin ** 2)
+        d_safe = np.maximum(d, np.finfo(float).eps)
+
+        inv_d = 1.0 / d_safe
+        r_over_d3 = r_q / d_safe ** 3
+        zmin_over_d3 = zmin / d_safe ** 3
+
+        return inv_d, r_over_d3, zmin_over_d3
+
+    # ------------------------------------------------------------------
+    # Multi-wavelength pre-computation
+    # ------------------------------------------------------------------
+
     def set(self, enei_arr, **options):
         """Pre-compute Green function table at multiple wavelengths.
 
         MATLAB: @compgreentablayer/set.m
-        Stores 4D arrays (nr, nz1, nz2, n_enei) for interpolation.
+        Stores NORMALIZED 4D arrays (nr, nz1, nz2, n_enei) per component.
         """
         enei_arr = np.atleast_1d(np.asarray(enei_arr, dtype=float))
         n_enei = len(enei_arr)
         nr = len(self.r)
         nz1 = len(self.z1)
         nz2 = len(self.z2)
+
+        # Grid normalization factors
+        d_grid, d3_over_r, d3_over_zmin = self._grid_norm_factors()
 
         # Determine component names
         r_sample = self.r[:1]
@@ -89,7 +204,7 @@ class GreenTabLayer(object):
         result = self.layer.green(enei_arr[0], r_sample, z1_sample, z2_sample)
         names = list(result[0].keys())
 
-        # 4D arrays: (nr, nz1, nz2, n_enei)
+        # 4D arrays: (nr, nz1, nz2, n_enei) — normalized
         self._Gsav_multi = {k: np.zeros((nr, nz1, nz2, n_enei), dtype=complex) for k in names}
         self._Frsav_multi = {k: np.zeros((nr, nz1, nz2, n_enei), dtype=complex) for k in names}
         self._Fzsav_multi = {k: np.zeros((nr, nz1, nz2, n_enei), dtype=complex) for k in names}
@@ -102,15 +217,23 @@ class GreenTabLayer(object):
                     z2_vec = np.full_like(r_vec, self.z2[iz2])
                     result = self.layer.green(enei, r_vec, z1_vec, z2_vec)
                     for name in names:
-                        self._Gsav_multi[name][:, iz1, iz2, ie] = np.asarray(result[0][name], dtype=complex)
-                        self._Frsav_multi[name][:, iz1, iz2, ie] = np.asarray(result[1][name], dtype=complex)
-                        self._Fzsav_multi[name][:, iz1, iz2, ie] = np.asarray(result[2][name], dtype=complex)
+                        G_raw = np.asarray(result[0][name], dtype=complex)
+                        Fr_raw = np.asarray(result[1][name], dtype=complex)
+                        Fz_raw = np.asarray(result[2][name], dtype=complex)
+                        # Normalize
+                        self._Gsav_multi[name][:, iz1, iz2, ie] = G_raw * d_grid[:, iz1, iz2]
+                        self._Frsav_multi[name][:, iz1, iz2, ie] = Fr_raw * d3_over_r[:, iz1, iz2]
+                        self._Fzsav_multi[name][:, iz1, iz2, ie] = Fz_raw * d3_over_zmin[:, iz1, iz2]
 
         self._enei_tab = enei_arr
         return self
 
     def _interp_wavelength(self, enei):
-        """Interpolate 4D multi-wavelength table to 3D at given wavelength."""
+        """Interpolate 4D multi-wavelength table to 3D at given wavelength.
+
+        Result is stored in _Gsav_comp / _Frsav_comp / _Fzsav_comp dicts,
+        still in NORMALIZED form.
+        """
         enei_arr = self._enei_tab
         names = list(self._Gsav_multi.keys())
         self._Gsav_comp = {}
@@ -134,91 +257,25 @@ class GreenTabLayer(object):
 
         self._enei_comp = enei
 
+    # ------------------------------------------------------------------
+    # eval / eval_components — public API
+    # ------------------------------------------------------------------
+
     def eval(self,
             enei: float,
             r: np.ndarray,
             z1: np.ndarray,
             z2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Evaluate reflected Green function, returning summed totals.
 
-        if self.r is not None:
-            return self._interp(enei, r, z1, z2)
-        else:
-            return self._compute(enei, r, z1, z2)
+        Returns (G, Fr, Fz) as plain arrays (sum of all reflection components).
+        For per-component results, use eval_components().
+        """
+        G_dict, Fr_dict, Fz_dict = self.eval_components(enei, r, z1, z2)
 
-    def _compute(self,
-            enei: float,
-            r: np.ndarray,
-            z1: np.ndarray,
-            z2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-
-        result = self.layer.green(enei, r, z1, z2)
-        # layer.green() returns (G_dict, Fr_dict, Fz_dict, pos_dict)
-        # where G, Fr, Fz are dicts keyed by reflection names.
-        # Sum all components to obtain the total reflected Green function.
-        G_dict, Fr_dict, Fz_dict = result[0], result[1], result[2]
         G = self._sum_components(G_dict)
         Fr = self._sum_components(Fr_dict)
         Fz = self._sum_components(Fz_dict)
-        self.G = G
-        self.Fr = Fr
-        self.Fz = Fz
-        self._pos = result[3]
-        self.enei = enei
-        return G, Fr, Fz
-
-    def _interp(self,
-            enei: float,
-            r: np.ndarray,
-            z1: np.ndarray,
-            z2: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-
-        if self.enei is not None and np.isclose(self.enei, enei):
-            if self.G is not None:
-                return self.G, self.Fr, self.Fz
-
-        shape = np.asarray(r).shape
-
-        # Compute tabulated values if not cached at this wavelength
-        if self._Gsav is None or (self.enei is not None and not np.isclose(self.enei, enei)):
-            self._compute_tab(enei)
-
-        # Query points
-        r_q = np.clip(np.asarray(r, dtype=float).ravel(), self.r[0], self.r[-1])
-        z1_q = np.asarray(z1, dtype=float).ravel()
-        z2_q = np.asarray(z2, dtype=float).ravel()
-
-        if len(self.z2) == 1:
-            # Single-z2: fold z2 into z1 via mindist
-            z2_ref = self.z2[0]
-            mindist_z2, _ = self.layer.mindist(z2_q)
-            if z2_ref >= self.layer.z[0]:
-                z1_eff = np.clip(z1_q + mindist_z2, self.z1[0], self.z1[-1])
-            else:
-                z1_eff = np.clip(z1_q - mindist_z2, self.z1[0], self.z1[-1])
-            points = np.column_stack([r_q, z1_eff])
-            grid = (self.r, self.z1)
-            Gsav = self._Gsav[:, :, 0]
-            Frsav = self._Frsav[:, :, 0]
-            Fzsav = self._Fzsav[:, :, 0]
-        else:
-            z1_q = np.clip(z1_q, self.z1[0], self.z1[-1])
-            z2_q = np.clip(z2_q, self.z2[0], self.z2[-1])
-            points = np.column_stack([r_q, z1_q, z2_q])
-            grid = (self.r, self.z1, self.z2)
-            Gsav = self._Gsav
-            Frsav = self._Frsav
-            Fzsav = self._Fzsav
-
-        G = RegularGridInterpolator(grid, Gsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
-          + 1j * RegularGridInterpolator(grid, Gsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
-        Fr = RegularGridInterpolator(grid, Frsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
-           + 1j * RegularGridInterpolator(grid, Frsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
-        Fz = RegularGridInterpolator(grid, Fzsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
-           + 1j * RegularGridInterpolator(grid, Fzsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
-
-        G = G.reshape(shape)
-        Fr = Fr.reshape(shape)
-        Fz = Fz.reshape(shape)
 
         self.G = G
         self.Fr = Fr
@@ -226,83 +283,6 @@ class GreenTabLayer(object):
         self.enei = enei
 
         return G, Fr, Fz
-
-    def _compute_tab(self,
-            enei: float) -> None:
-
-        nr = len(self.r)
-        nz1 = len(self.z1)
-        nz2 = len(self.z2)
-
-        self._Gsav = np.zeros((nr, nz1, nz2), dtype = complex)
-        self._Frsav = np.zeros((nr, nz1, nz2), dtype = complex)
-        self._Fzsav = np.zeros((nr, nz1, nz2), dtype = complex)
-
-        for iz1 in range(nz1):
-            for iz2 in range(nz2):
-                r_vec = self.r
-                z1_vec = np.full_like(r_vec, self.z1[iz1])
-                z2_vec = np.full_like(r_vec, self.z2[iz2])
-                result = self.layer.green(enei, r_vec, z1_vec, z2_vec)
-                G = self._sum_components(result[0])
-                Fr = self._sum_components(result[1])
-                Fz = self._sum_components(result[2])
-                self._Gsav[:, iz1, iz2] = G
-                self._Frsav[:, iz1, iz2] = Fr
-                self._Fzsav[:, iz1, iz2] = Fz
-
-        self.enei = enei
-
-    def _interp_single(self,
-            r: float,
-            z1: float,
-            z2: float) -> Tuple[complex, complex, complex]:
-
-        r_idx = np.interp(r, self.r, np.arange(len(self.r)))
-        z1_idx = np.interp(z1, self.z1, np.arange(len(self.z1)))
-        z2_idx = np.interp(z2, self.z2, np.arange(len(self.z2)))
-
-        ir = int(np.clip(r_idx, 0, len(self.r) - 2))
-        iz1 = int(np.clip(z1_idx, 0, len(self.z1) - 2))
-        iz2 = int(np.clip(z2_idx, 0, len(self.z2) - 2))
-
-        fr = r_idx - ir
-        fz1 = z1_idx - iz1
-        fz2 = z2_idx - iz2
-
-        G = self._trilinear_interp(self._Gsav, ir, iz1, iz2, fr, fz1, fz2)
-        Fr = self._trilinear_interp(self._Frsav, ir, iz1, iz2, fr, fz1, fz2)
-        Fz = self._trilinear_interp(self._Fzsav, ir, iz1, iz2, fr, fz1, fz2)
-
-        return G, Fr, Fz
-
-    def _trilinear_interp(self,
-            data: np.ndarray,
-            ir: int,
-            iz1: int,
-            iz2: int,
-            fr: float,
-            fz1: float,
-            fz2: float) -> complex:
-
-        c000 = data[ir, iz1, iz2]
-        c100 = data[ir + 1, iz1, iz2]
-        c010 = data[ir, iz1 + 1, iz2]
-        c110 = data[ir + 1, iz1 + 1, iz2]
-        c001 = data[ir, iz1, iz2 + 1]
-        c101 = data[ir + 1, iz1, iz2 + 1]
-        c011 = data[ir, iz1 + 1, iz2 + 1]
-        c111 = data[ir + 1, iz1 + 1, iz2 + 1]
-
-        c00 = c000 * (1 - fr) + c100 * fr
-        c10 = c010 * (1 - fr) + c110 * fr
-        c01 = c001 * (1 - fr) + c101 * fr
-        c11 = c011 * (1 - fr) + c111 * fr
-
-        c0 = c00 * (1 - fz1) + c10 * fz1
-        c1 = c01 * (1 - fz1) + c11 * fz1
-
-        return c0 * (1 - fz2) + c1 * fz2
 
     def eval_components(self,
             enei: float,
@@ -319,6 +299,10 @@ class GreenTabLayer(object):
         else:
             return self._compute_components(enei, r, z1, z2)
 
+    # ------------------------------------------------------------------
+    # Direct computation (no tabulation)
+    # ------------------------------------------------------------------
+
     def _compute_components(self,
             enei: float,
             r: np.ndarray,
@@ -332,19 +316,32 @@ class GreenTabLayer(object):
         self._pos = result[3]
         return G_dict, Fr_dict, Fz_dict
 
+    # ------------------------------------------------------------------
+    # Tabulation + interpolation (with norm/denorm smoothing)
+    # ------------------------------------------------------------------
+
+    def _ensure_tab(self, enei):
+        """Ensure per-component table is computed/interpolated for this enei."""
+        if hasattr(self, '_Gsav_multi') and self._Gsav_multi is not None:
+            # Multi-wavelength path
+            if self._enei_comp is None or not np.isclose(self._enei_comp, enei):
+                self._interp_wavelength(enei)
+        elif self._Gsav_comp is None or (
+                self._enei_comp is not None and not np.isclose(self._enei_comp, enei)):
+            self._compute_tab(enei)
+
     def _interp_components(self,
             enei: float,
             r: np.ndarray,
             z1: np.ndarray,
             z2: np.ndarray) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """Interpolate per-component table with norm/denorm smoothing.
 
+        MATLAB: @greentablayer/interp.m -> interp2.m / interp3.m
+        """
         shape = np.asarray(r).shape
 
-        if hasattr(self, '_Gsav_multi') and self._Gsav_multi is not None:
-            self._interp_wavelength(enei)
-        elif self._Gsav_comp is None or (
-                self._enei_comp is not None and not np.isclose(self._enei_comp, enei)):
-            self._compute_tab_components(enei)
+        self._ensure_tab(enei)
 
         # Query points
         r_q = np.clip(np.asarray(r, dtype=float).ravel(), self.r[0], self.r[-1])
@@ -356,70 +353,90 @@ class GreenTabLayer(object):
         Fr_dict = {}
         Fz_dict = {}
 
-        # Single-z2 case: MATLAB uses mindist to fold z2 into z1
-        # tabspace sets z2 = layer.z[0]+1e-10 for uppermost layer
         if len(self.z2) == 1:
-            # Fold: z1_eff = z1 + mindist(z2) for uppermost layer
-            # or z1_eff = z1 - mindist(z2) for lowermost layer
+            # --------------------------------------------------------
+            # 2D interpolation in uppermost/lowermost layer
+            # MATLAB: interp2.m
+            # --------------------------------------------------------
             z2_ref = self.z2[0]
             mindist_z2, _ = self.layer.mindist(z2_q)
             if z2_ref >= self.layer.z[0]:
-                # Uppermost layer: z1_eff = z1 + mindist(z2)
                 z1_eff = np.clip(z1_q + mindist_z2, self.z1[0], self.z1[-1])
             else:
-                # Lowermost layer
                 z1_eff = np.clip(z1_q - mindist_z2, self.z1[0], self.z1[-1])
 
-            # 2D interpolation (r, z1_eff) — squeeze out z2 dimension
             points_2d = np.column_stack([r_q, z1_eff])
             grid_2d = (self.r, self.z1)
 
+            # Denormalization factors at query points
+            inv_d, r_over_d3, zmin_over_d3 = self._query_denorm_factors_2d(r_q, z1_eff)
+
             for name in names:
-                Gsav = self._Gsav_comp[name][:, :, 0]  # (nr, nz1)
+                Gsav = self._Gsav_comp[name][:, :, 0]   # (nr, nz1) — normalized
                 Frsav = self._Frsav_comp[name][:, :, 0]
                 Fzsav = self._Fzsav_comp[name][:, :, 0]
 
-                G_arr = RegularGridInterpolator(grid_2d, Gsav.real, method='linear', bounds_error=False, fill_value=None)(points_2d) \
-                      + 1j * RegularGridInterpolator(grid_2d, Gsav.imag, method='linear', bounds_error=False, fill_value=None)(points_2d)
-                Fr_arr = RegularGridInterpolator(grid_2d, Frsav.real, method='linear', bounds_error=False, fill_value=None)(points_2d) \
-                       + 1j * RegularGridInterpolator(grid_2d, Frsav.imag, method='linear', bounds_error=False, fill_value=None)(points_2d)
-                Fz_arr = RegularGridInterpolator(grid_2d, Fzsav.real, method='linear', bounds_error=False, fill_value=None)(points_2d) \
-                       + 1j * RegularGridInterpolator(grid_2d, Fzsav.imag, method='linear', bounds_error=False, fill_value=None)(points_2d)
+                G_n = self._interp_complex(grid_2d, Gsav, points_2d)
+                Fr_n = self._interp_complex(grid_2d, Frsav, points_2d)
+                Fz_n = self._interp_complex(grid_2d, Fzsav, points_2d)
 
-                G_dict[name] = G_arr.reshape(shape)
-                Fr_dict[name] = Fr_arr.reshape(shape)
-                Fz_dict[name] = Fz_arr.reshape(shape)
+                # Denormalize
+                G_dict[name] = (G_n * inv_d).reshape(shape)
+                Fr_dict[name] = (Fr_n * r_over_d3).reshape(shape)
+                Fz_dict[name] = (Fz_n * zmin_over_d3).reshape(shape)
         else:
-            # Standard 3D interpolation
+            # --------------------------------------------------------
+            # 3D interpolation
+            # MATLAB: interp3.m
+            # --------------------------------------------------------
             z1_q = np.clip(z1_q, self.z1[0], self.z1[-1])
             z2_q = np.clip(z2_q, self.z2[0], self.z2[-1])
             points = np.column_stack([r_q, z1_q, z2_q])
             grid = (self.r, self.z1, self.z2)
+
+            # Denormalization factors at query points
+            inv_d, r_over_d3, zmin_over_d3 = self._query_denorm_factors(r_q, z1_q, z2_q)
 
             for name in names:
                 Gsav = self._Gsav_comp[name]
                 Frsav = self._Frsav_comp[name]
                 Fzsav = self._Fzsav_comp[name]
 
-                G_arr = RegularGridInterpolator(grid, Gsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
-                      + 1j * RegularGridInterpolator(grid, Gsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
-                Fr_arr = RegularGridInterpolator(grid, Frsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
-                       + 1j * RegularGridInterpolator(grid, Frsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
-                Fz_arr = RegularGridInterpolator(grid, Fzsav.real, method='linear', bounds_error=False, fill_value=None)(points) \
-                       + 1j * RegularGridInterpolator(grid, Fzsav.imag, method='linear', bounds_error=False, fill_value=None)(points)
+                G_n = self._interp_complex(grid, Gsav, points)
+                Fr_n = self._interp_complex(grid, Frsav, points)
+                Fz_n = self._interp_complex(grid, Fzsav, points)
 
-                G_dict[name] = G_arr.reshape(shape)
-                Fr_dict[name] = Fr_arr.reshape(shape)
-                Fz_dict[name] = Fz_arr.reshape(shape)
+                # Denormalize
+                G_dict[name] = (G_n * inv_d).reshape(shape)
+                Fr_dict[name] = (Fr_n * r_over_d3).reshape(shape)
+                Fz_dict[name] = (Fz_n * zmin_over_d3).reshape(shape)
 
         return G_dict, Fr_dict, Fz_dict
 
-    def _compute_tab_components(self,
-            enei: float) -> None:
+    @staticmethod
+    def _interp_complex(grid, data, points):
+        """Interpolate complex array on a regular grid (split real/imag)."""
+        val_r = RegularGridInterpolator(
+            grid, data.real, method='linear',
+            bounds_error=False, fill_value=None)(points)
+        val_i = RegularGridInterpolator(
+            grid, data.imag, method='linear',
+            bounds_error=False, fill_value=None)(points)
+        return val_r + 1j * val_i
 
+    def _compute_tab(self,
+            enei: float) -> None:
+        """Tabulate Green function for all grid points, storing NORMALIZED
+        per-component values.
+
+        MATLAB: @greentablayer/eval.m (with 'new' key) + norm.m
+        """
         nr = len(self.r)
         nz1 = len(self.z1)
         nz2 = len(self.z2)
+
+        # Grid normalization factors
+        d_grid, d3_over_r, d3_over_zmin = self._grid_norm_factors()
 
         # Determine component names from a sample call
         r_sample = self.r[:1]
@@ -439,20 +456,34 @@ class GreenTabLayer(object):
                 z2_vec = np.full_like(r_vec, self.z2[iz2])
                 result = self.layer.green(enei, r_vec, z1_vec, z2_vec)
                 for name in names:
-                    self._Gsav_comp[name][:, iz1, iz2] = np.asarray(result[0][name], dtype=complex)
-                    self._Frsav_comp[name][:, iz1, iz2] = np.asarray(result[1][name], dtype=complex)
-                    self._Fzsav_comp[name][:, iz1, iz2] = np.asarray(result[2][name], dtype=complex)
+                    G_raw = np.asarray(result[0][name], dtype=complex)
+                    Fr_raw = np.asarray(result[1][name], dtype=complex)
+                    Fz_raw = np.asarray(result[2][name], dtype=complex)
+                    # Store normalized values
+                    self._Gsav_comp[name][:, iz1, iz2] = G_raw * d_grid[:, iz1, iz2]
+                    self._Frsav_comp[name][:, iz1, iz2] = Fr_raw * d3_over_r[:, iz1, iz2]
+                    self._Fzsav_comp[name][:, iz1, iz2] = Fz_raw * d3_over_zmin[:, iz1, iz2]
 
         self._enei_comp = enei
+
+    # ------------------------------------------------------------------
+    # Legacy _interp / _compute (kept for backward compat of eval())
+    # ------------------------------------------------------------------
+    # eval() now delegates to eval_components() + _sum_components(),
+    # so these are no longer needed as separate paths.
+
+    # ------------------------------------------------------------------
+    # Grid setup
+    # ------------------------------------------------------------------
 
     def setup_grid(self,
             r: np.ndarray,
             z1: np.ndarray,
             z2: np.ndarray) -> None:
 
-        self.r = np.asarray(r, dtype = float)
-        self.z1 = np.asarray(z1, dtype = float)
-        self.z2 = np.asarray(z2, dtype = float)
+        self.r = np.asarray(r, dtype=float)
+        self.z1 = np.asarray(z1, dtype=float)
+        self.z2 = np.asarray(z2, dtype=float)
         # Invalidate caches
         self._Gsav = None
         self._Frsav = None
@@ -462,6 +493,10 @@ class GreenTabLayer(object):
         self._Fzsav_comp = None
         self.enei = None
         self._enei_comp = None
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _sum_components(d):
@@ -477,11 +512,11 @@ class GreenTabLayer(object):
             total = None
             for v in d.values():
                 if total is None:
-                    total = np.array(v, dtype = complex)
+                    total = np.array(v, dtype=complex)
                 else:
-                    total = total + np.array(v, dtype = complex)
-            return total if total is not None else np.zeros(0, dtype = complex)
-        return np.asarray(d, dtype = complex)
+                    total = total + np.array(v, dtype=complex)
+            return total if total is not None else np.zeros(0, dtype=complex)
+        return np.asarray(d, dtype=complex)
 
     def norm(self) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         # MATLAB: @greentablayer/norm.m
@@ -511,13 +546,13 @@ class GreenTabLayer(object):
         # MATLAB: @greentablayer/inside.m
         layer = self.layer
 
-        r = np.asarray(r, dtype = float)
-        z1 = np.asarray(z1, dtype = float)
+        r = np.asarray(r, dtype=float)
+        z1 = np.asarray(z1, dtype=float)
 
         # Round radii and z-values
         r = np.maximum(layer.rmin, r)
         if z2 is not None:
-            z2 = np.asarray(z2, dtype = float)
+            z2 = np.asarray(z2, dtype=float)
             z1, z2 = layer.round_z(z1, z2)
         else:
             z1, = layer.round_z(z1)
@@ -553,11 +588,20 @@ class GreenTabLayer(object):
         # Check if precomputed table is compatible with given layer and enei.
 
         # enei not set
-        if self.enei is None:
-            return False
+        if self.enei is None and self._enei_comp is None:
+            if not hasattr(self, '_enei_tab') or self._enei_tab is None:
+                return False
 
         # Check wavelength range
-        enei_tab = np.atleast_1d(self.enei) if not hasattr(self, '_enei_tab') else np.atleast_1d(self._enei_tab)
+        if hasattr(self, '_enei_tab') and self._enei_tab is not None:
+            enei_tab = np.atleast_1d(self._enei_tab)
+        elif self._enei_comp is not None:
+            enei_tab = np.atleast_1d(self._enei_comp)
+        elif self.enei is not None:
+            enei_tab = np.atleast_1d(self.enei)
+        else:
+            return False
+
         if enei is not None:
             enei = np.atleast_1d(enei)
             if np.min(enei) < np.min(enei_tab) or np.max(enei) > np.max(enei_tab):
@@ -587,14 +631,19 @@ class GreenTabLayer(object):
     def parset(self,
             enei_arr: np.ndarray,
             **options: Any) -> 'GreenTabLayer':
-        # MATLAB: @greentablayer/parset.m
-        # Same as set() but with parallel computation.
-        # Python: sequential fallback (green() may not be thread-safe).
-        enei_arr = np.atleast_1d(np.asarray(enei_arr, dtype = float))
+        """Pre-compute Green function table for multiple wavelengths.
+
+        MATLAB: @greentablayer/parset.m
+        Stores NORMALIZED 4D per-component arrays.
+        """
+        enei_arr = np.atleast_1d(np.asarray(enei_arr, dtype=float))
         n_enei = len(enei_arr)
         nr = len(self.r)
         nz1 = len(self.z1)
         nz2 = len(self.z2)
+
+        # Grid normalization factors
+        d_grid, d3_over_r, d3_over_zmin = self._grid_norm_factors()
 
         pos_saved = None
 
@@ -608,9 +657,9 @@ class GreenTabLayer(object):
                 names = list(result_sample[0].keys())
 
                 siz = (n_enei, nr, nz1, nz2)
-                Gsav = {k: np.zeros(siz, dtype = complex) for k in names}
-                Frsav = {k: np.zeros(siz, dtype = complex) for k in names}
-                Fzsav = {k: np.zeros(siz, dtype = complex) for k in names}
+                Gsav = {k: np.zeros(siz, dtype=complex) for k in names}
+                Frsav = {k: np.zeros(siz, dtype=complex) for k in names}
+                Fzsav = {k: np.zeros(siz, dtype=complex) for k in names}
 
             for iz1 in range(nz1):
                 for iz2 in range(nz2):
@@ -621,16 +670,22 @@ class GreenTabLayer(object):
                     if pos_saved is None:
                         pos_saved = result[3]
                     for name in names:
-                        Gsav[name][ien, :, iz1, iz2] = np.asarray(result[0][name], dtype = complex)
-                        Frsav[name][ien, :, iz1, iz2] = np.asarray(result[1][name], dtype = complex)
-                        Fzsav[name][ien, :, iz1, iz2] = np.asarray(result[2][name], dtype = complex)
+                        G_raw = np.asarray(result[0][name], dtype=complex)
+                        Fr_raw = np.asarray(result[1][name], dtype=complex)
+                        Fz_raw = np.asarray(result[2][name], dtype=complex)
+                        # Store normalized values
+                        Gsav[name][ien, :, iz1, iz2] = G_raw * d_grid[:, iz1, iz2]
+                        Frsav[name][ien, :, iz1, iz2] = Fr_raw * d3_over_r[:, iz1, iz2]
+                        Fzsav[name][ien, :, iz1, iz2] = Fz_raw * d3_over_zmin[:, iz1, iz2]
 
-        # Store results (MATLAB stores as Gsav, Frsav, Fzsav with shape [n_enei, ...])
+        # Store results — shape is [n_enei, nr, nz1, nz2] per component
+        # Convert to (nr, nz1, nz2, n_enei) to match set() convention
+        self._Gsav_multi = {k: np.moveaxis(Gsav[k], 0, -1) for k in names}
+        self._Frsav_multi = {k: np.moveaxis(Frsav[k], 0, -1) for k in names}
+        self._Fzsav_multi = {k: np.moveaxis(Fzsav[k], 0, -1) for k in names}
+
         self.enei = enei_arr
         self._pos = pos_saved
-        self._Gsav_multi = Gsav
-        self._Frsav_multi = Frsav
-        self._Fzsav_multi = Fzsav
         self._enei_tab = enei_arr
 
         return self
