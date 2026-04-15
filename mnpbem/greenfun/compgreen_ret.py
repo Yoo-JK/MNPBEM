@@ -160,7 +160,7 @@ class CompGreenRet(object):
         # (Refinement will be created per particle pair, not for ComParticle)
         g.refine_options = {
             'refine': options.get('refine', True),
-            'order': options.get('order', 2),
+            'order': options.get('order', 5),
             'RelCutoff': options.get('RelCutoff', 3),
             'AbsCutoff': options.get('AbsCutoff', 0),
             'deriv': self.deriv
