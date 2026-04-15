@@ -4,7 +4,33 @@ Spectrum class for computing far-fields and scattering cross sections.
 Matches MATLAB MNPBEM @spectrumret implementation.
 """
 
+import os
+
 import numpy as np
+
+
+def _load_pinfty_default():
+    """Load MATLAB-exported pinfty256 data for sphere integration.
+
+    Uses pre-computed trisphere(256, 2) face centroids and areas from MATLAB,
+    ensuring identical numerical integration mesh.
+    """
+    data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
+    pinfty_file = os.path.join(data_dir, 'pinfty256.bin')
+
+    if os.path.exists(pinfty_file):
+        with open(pinfty_file, 'rb') as f:
+            n = np.fromfile(f, dtype=np.int32, count=1)[0]
+            nx = np.fromfile(f, dtype=np.float64, count=n)
+            ny = np.fromfile(f, dtype=np.float64, count=n)
+            nz = np.fromfile(f, dtype=np.float64, count=n)
+            area = np.fromfile(f, dtype=np.float64, count=n)
+        nvec = np.column_stack([nx, ny, nz])
+        return _PinftyStruct(nvec, area)
+
+    # Fallback to icosahedron
+    _, _, nvec, area = trisphere_unit(256)
+    return _PinftyStruct(nvec, area)
 
 
 def trisphere_unit(n_faces=144):
@@ -154,8 +180,7 @@ class SpectrumRet(object):
 
         # Handle different input types
         if pinfty is None:
-            _, _, nvec, area = trisphere_unit(256)
-            self.pinfty = _PinftyStruct(nvec, area)
+            self.pinfty = _load_pinfty_default()
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)

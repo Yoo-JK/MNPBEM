@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
 
-from .spectrum_ret import trisphere_unit, _PinftyStruct
+from .spectrum_ret import trisphere_unit, _PinftyStruct, _load_pinfty_default
 from ..greenfun import CompStruct
 
 
@@ -21,8 +21,7 @@ class SpectrumStatLayer(object):
 
         # Handle different input types
         if pinfty is None:
-            _, _, nvec, area = trisphere_unit(256)
-            self.pinfty = _PinftyStruct(nvec, area)
+            self.pinfty = _load_pinfty_default()
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)
@@ -33,8 +32,7 @@ class SpectrumStatLayer(object):
         elif hasattr(pinfty, 'nvec') and hasattr(pinfty, 'area'):
             self.pinfty = pinfty
         else:
-            _, _, nvec, area = trisphere_unit(256)
-            self.pinfty = _PinftyStruct(nvec, area)
+            self.pinfty = _load_pinfty_default()
 
         self.nvec = self.pinfty.nvec if hasattr(self.pinfty, 'nvec') else self.pinfty['nvec']
         self.area = self.pinfty.area if hasattr(self.pinfty, 'area') else self.pinfty['area']
