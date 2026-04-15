@@ -81,7 +81,7 @@ class CompGreenStat(object):
         """
         self.p1 = p1
         self.p2 = p2
-        self.deriv = options.get('deriv', 'norm')
+        self.deriv = options.get('deriv', 'cart')
 
         # BEM solver cache
         self._enei_cache = None
@@ -236,12 +236,14 @@ class CompGreenStat(object):
         self.G = (1.0 / d_safe) * area2[np.newaxis, :]
 
         # F matrix: F[i,j] = - nvec1[i]·r[i,j] / d³ * area[j]
+        # NOTE: F is ALWAYS 2D (surface normal derivative)
         n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis=2)  # (n1, n2)
-        if self.deriv == 'norm':
-            self.F = -n_dot_r / (d_safe ** 3) * area2[np.newaxis, :]
-        else:  # 'cart'
-            # Cartesian derivative: Gp = -r / d³ * area
-            self.F = -r / (d_safe[:, :, np.newaxis] ** 3) * area2[np.newaxis, :, np.newaxis]
+        self.F = -n_dot_r / (d_safe ** 3) * area2[np.newaxis, :]
+
+        if self.deriv == 'cart':
+            # Also store Gp (Cartesian derivative) — used by _eval_Gp
+            self._Gp_raw = -r / (d_safe[:, :, np.newaxis] ** 3) * area2[np.newaxis, :, np.newaxis]
+            self._Gp_raw = np.transpose(self._Gp_raw, (0, 2, 1))  # (n1, 3, n2)
 
         # Apply refinement if needed
         if len(self.ind) > 0:
@@ -259,11 +261,7 @@ class CompGreenStat(object):
             # No refinement - use analytical diagonal values
             if p1 is p2:
                 np.fill_diagonal(self.G, 0.0)
-                if self.deriv == 'norm':
-                    np.fill_diagonal(self.F, -2.0 * np.pi)
-                else:  # 'cart'
-                    for i in range(n1):
-                        self.F[i, i, :] = -2.0 * np.pi * nvec1[i]
+                np.fill_diagonal(self.F, -2.0 * np.pi)
 
     def _fallback_diagonal(self, p1, p2):
         """
@@ -294,10 +292,7 @@ class CompGreenStat(object):
 
             for i in range(n):
                 self.G[i, i] = 1.0 / (4.0 * np.pi * brad_safe[i])
-                if self.deriv == 'norm':
-                    self.F[i, i] = -2.0 * np.pi
-                else:  # 'cart'
-                    self.F[i, i, :] = -2.0 * np.pi * nvec1[i]
+                self.F[i, i] = -2.0 * np.pi
 
     def _refine_greenstat(self, p1, p2, ir, **options):
         """
@@ -336,14 +331,34 @@ class CompGreenStat(object):
             g_vals = np.bincount(row_quad, weights=w_quad / r, minlength=n_diag)[:n_diag]
             self.G[diag_rows, diag_cols] = g_vals
 
-            if self.deriv == 'norm':
-                n_dot_vec = np.sum(vec * nvec1_expanded, axis=1)
-                f_vals = -np.bincount(row_quad, weights=w_quad * n_dot_vec / (r ** 3), minlength=n_diag)[:n_diag]
-                self.F[diag_rows, diag_cols] = f_vals
-            else:  # 'cart'
-                for d in range(3):
-                    f_d = -np.bincount(row_quad, weights=w_quad * vec[:, d] / (r ** 3), minlength=n_diag)[:n_diag]
-                    self.F[diag_rows, diag_cols, d] = f_d
+            # F (normal derivative) — always 2D
+            n_dot_vec = np.sum(vec * nvec1_expanded, axis=1)
+            f_vals = -np.bincount(row_quad, weights=w_quad * n_dot_vec / (r ** 3), minlength=n_diag)[:n_diag]
+            self.F[diag_rows, diag_cols] = f_vals
+
+            if self.deriv == 'cart':
+                # Also compute and store 3D Gp refinement for cart derivative
+                # MATLAB: f(iface, :) = nvec*f1 + tvec1*f2 + tvec2*f3
+                if not hasattr(self, '_f_cart_refined'):
+                    self._f_cart_refined = []
+                    self._f_cart_refined_indices = []
+
+                tvec1 = p1.tvec1[diag_rows[row_quad]] if hasattr(p1, 'tvec1') else np.zeros_like(nvec1_expanded)
+                tvec2 = p1.tvec2[diag_rows[row_quad]] if hasattr(p1, 'tvec2') else np.zeros_like(nvec1_expanded)
+                rr = np.maximum(r, 1e-4 * np.max(r))
+                in1 = np.sum(vec * tvec1, axis=1)
+                in2 = np.sum(vec * tvec2, axis=1)
+
+                f1 = -np.bincount(row_quad, weights=w_quad * n_dot_vec / (r ** 3), minlength=n_diag)[:n_diag]
+                f2 = -np.bincount(row_quad, weights=w_quad * in1 / (rr ** 3), minlength=n_diag)[:n_diag]
+                f3 = -np.bincount(row_quad, weights=w_quad * in2 / (rr ** 3), minlength=n_diag)[:n_diag]
+
+                for k in range(n_diag):
+                    f_cart = (p1.nvec[diag_rows[k]] * f1[k] +
+                              p1.tvec1[diag_rows[k]] * f2[k] +
+                              p1.tvec2[diag_rows[k]] * f3[k])
+                    self._f_cart_refined.append(f_cart)
+                    self._f_cart_refined_indices.append((diag_rows[k], diag_cols[k]))
 
         # ===== Off-diagonal refinement elements (ir == 1) =====
         offdiag_mask = ir_dense == 1
@@ -388,17 +403,20 @@ class CompGreenStat(object):
                 g_vals = (1.0 / r) @ w  # (len(nb),)
                 self.G[nb, face2] = g_vals
 
-                # Surface derivative
-                if self.deriv == 'norm':
-                    # n·vec / r³
-                    n_dot_vec = np.sum(nvec1[nb, np.newaxis, :] * vec, axis=2)  # (len(nb), n_quad)
-                    f_vals = -(n_dot_vec / (r ** 3)) @ w  # (len(nb),)
-                    self.F[nb, face2] = f_vals
-                else:  # 'cart'
-                    # -vec / r³: einsum to contract over quadrature points
-                    # (nb, nq, 3) x (nq,) -> (nb, 3)
-                    f_vals = -np.einsum('ijk,j->ik', vec / r[:, :, np.newaxis] ** 3, w)
-                    self.F[nb, face2, :] = f_vals
+                # Surface derivative (F — always 2D normal)
+                n_dot_vec = np.sum(nvec1[nb, np.newaxis, :] * vec, axis=2)
+                f_vals = -(n_dot_vec / (r ** 3)) @ w
+                self.F[nb, face2] = f_vals
+
+                if self.deriv == 'cart':
+                    # Also store 3D cart refinement for Gp
+                    f_cart_vals = -np.einsum('ijk,j->ik', vec / r[:, :, np.newaxis] ** 3, w)
+                    if not hasattr(self, '_f_cart_refined'):
+                        self._f_cart_refined = []
+                        self._f_cart_refined_indices = []
+                    for k, nb_idx in enumerate(nb):
+                        self._f_cart_refined.append(f_cart_vals[k])
+                        self._f_cart_refined_indices.append((nb_idx, face2))
 
     def _handle_closed_surfaces(self, p1, p2, full1, **options):
         """
@@ -442,16 +460,27 @@ class CompGreenStat(object):
                 else:
                     ind_array = np.array([ind])
 
-                if self.deriv == 'norm':
-                    # Add correction to diagonal: F[ind[i], ind[i]] += -2π*dir - f[i]
-                    # MATLAB: obj.f(i1,:) = obj.f(i1,:) + f(i2,:)
-                    diag_vals = -2.0 * np.pi * dir_val - f
-                    self.F[ind_array, ind_array] += diag_vals
-                else:  # 'cart'
-                    # Add correction to diagonal
-                    diag_vals = (-2.0 * np.pi * dir_val - f)[:, np.newaxis] * part.nvec
+                # F is always 2D — apply scalar correction
+                diag_vals = -2.0 * np.pi * dir_val - f
+                self.F[ind_array, ind_array] += diag_vals
+
+                if self.deriv == 'cart':
+                    # Also correct Gp refinement
+                    if not hasattr(self, '_f_cart_refined'):
+                        self._f_cart_refined = []
+                        self._f_cart_refined_indices = []
+                    cart_vals = diag_vals[:, np.newaxis] * part.nvec
                     for j, idx in enumerate(ind_array):
-                        self.F[idx, idx] += diag_vals[j]
+                        # Check if already in the list and update
+                        found = False
+                        for k, (ri, ci) in enumerate(self._f_cart_refined_indices):
+                            if ri == idx and ci == idx:
+                                self._f_cart_refined[k] += cart_vals[j]
+                                found = True
+                                break
+                        if not found:
+                            self._f_cart_refined.append(cart_vals[j])
+                            self._f_cart_refined_indices.append((idx, idx))
 
     def _closedparticle(self, p, i):
         """
@@ -719,7 +748,7 @@ class CompGreenStat(object):
         Evaluate Gp - Cartesian derivative of Green function.
 
         MATLAB: greenstat/eval1.m (case 'cart')
-        Gp = -r / d³ * area
+        Gp = -r / d³ * area, then refine: Gp(ind, :) = f
 
         Returns
         -------
@@ -727,25 +756,28 @@ class CompGreenStat(object):
             Cartesian derivative of Green function
         """
         if not hasattr(self, '_Gp'):
-            pos1 = self.p1.pos if hasattr(self, 'p1') else self.p1.pos
-            pos2 = self.p2.pos if hasattr(self, 'p2') else self.p2.pos
-            area2 = self.p2.area if hasattr(self, 'p2') else self.p2.area
+            if hasattr(self, '_Gp_raw') and self._Gp_raw is not None:
+                # Use pre-computed Gp from _init (deriv='cart')
+                self._Gp = self._Gp_raw.copy()
+            else:
+                pos1 = self.p1.pos
+                pos2 = self.p2.pos
+                area2 = self.p2.area
 
-            # r[i,j,:] = pos1[i] - pos2[j]
-            r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]  # (n1, n2, 3)
-            d = np.linalg.norm(r, axis=2)
-            d = np.maximum(d, np.finfo(float).eps)
+                r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]
+                d = np.linalg.norm(r, axis=2)
+                d = np.maximum(d, np.finfo(float).eps)
+                Gp = -r / (d[:, :, np.newaxis] ** 3) * area2[np.newaxis, :, np.newaxis]
+                self._Gp = np.transpose(Gp, (0, 2, 1))
 
-            # Gp[i,j,:] = -r[i,j,:] / d³ * area[j]
-            Gp = -r / (d[:, :, np.newaxis] ** 3) * area2[np.newaxis, :, np.newaxis]
-
-            # Reshape to (n1, 3, n2) to match MATLAB
-            self._Gp = np.transpose(Gp, (0, 2, 1))
+            # Apply refinement for cart derivative (MATLAB: Gp(ind,:) = obj.f)
+            if self.deriv == 'cart' and hasattr(self, '_f_cart_refined'):
+                for idx, (row_i, col_i) in enumerate(self._f_cart_refined_indices):
+                    self._Gp[row_i, :, col_i] = self._f_cart_refined[idx]
 
         if ind is None:
             return self._Gp
         else:
-            # For indexed access, flatten appropriately
             return self._Gp.reshape(-1, 3)[ind]
 
     def _eval_H1p(self, ind=None):
