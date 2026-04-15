@@ -149,8 +149,9 @@ class MieStat(object):
                 indip = _dipole(ltab, mtab, adip, 1.0, epsz)
                 rad[iz, idip] = np.linalg.norm(dip + indip)**2
 
-                # Induced electric field
+                # Induced electric field (normalized by epsb * diameter^3)
                 efield = _field(ltab, mtab, pos, adip, 1.0, epsz)
+                efield = efield / (epsb * self.diameter**3)
                 tot[iz, idip] = (rad[iz, idip]
                                  + np.imag(efield @ dip) / (gamma0 / 2))
 

@@ -6,8 +6,7 @@ Matches MATLAB MNPBEM @epsdrude implementation exactly.
 
 import numpy as np
 
-# Physical constant: hc in eV*nm
-EV2NM = 1240.0  # eV * nm
+from ..utils.constants import EV2NM
 
 
 class EpsDrude(object):
