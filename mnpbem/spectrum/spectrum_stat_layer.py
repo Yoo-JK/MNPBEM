@@ -20,14 +20,12 @@ class SpectrumStatLayer(object):
         self.layer = layer
 
         # Handle different input types
-        # MATLAB default: trisphere(256, 2) — pre-computed sphere mesh
         if pinfty is None:
-            self.pinfty = self._make_default_pinfty()
+            _, _, nvec, area = trisphere_unit(256)
+            self.pinfty = _PinftyStruct(nvec, area)
         elif isinstance(pinfty, int):
-            from ..geometry import trisphere
-            sp = trisphere(pinfty, 2.0)
-            nvec = sp.pos / np.linalg.norm(sp.pos, axis=1, keepdims=True)
-            self.pinfty = _PinftyStruct(nvec, sp.area)
+            _, _, nvec, area = trisphere_unit(pinfty)
+            self.pinfty = _PinftyStruct(nvec, area)
         elif isinstance(pinfty, np.ndarray):
             nvec = np.atleast_2d(pinfty)
             area = np.full(nvec.shape[0], 4 * np.pi / nvec.shape[0])
@@ -35,19 +33,13 @@ class SpectrumStatLayer(object):
         elif hasattr(pinfty, 'nvec') and hasattr(pinfty, 'area'):
             self.pinfty = pinfty
         else:
-            self.pinfty = self._make_default_pinfty()
+            _, _, nvec, area = trisphere_unit(256)
+            self.pinfty = _PinftyStruct(nvec, area)
 
         self.nvec = self.pinfty.nvec if hasattr(self.pinfty, 'nvec') else self.pinfty['nvec']
         self.area = self.pinfty.area if hasattr(self.pinfty, 'area') else self.pinfty['area']
         self.ndir = len(self.nvec)
 
-    @staticmethod
-    def _make_default_pinfty():
-        """Create default pinfty matching MATLAB trisphere(256, 2)."""
-        from ..geometry import trisphere
-        sp = trisphere(256, 2.0)
-        nvec = sp.pos / np.linalg.norm(sp.pos, axis=1, keepdims=True)
-        return _PinftyStruct(nvec, sp.area)
 
         # Separate into upper and lower hemisphere
         self._init_hemispheres()
