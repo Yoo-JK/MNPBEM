@@ -86,10 +86,14 @@ def trisphere_unit(n_faces=144):
     centroids = (v0 + v1 + v2) / 3
     nvec = centroids / np.linalg.norm(centroids, axis=1, keepdims=True)
 
-    # Solid angles (area on unit sphere)
-    # For spherical triangle: area = |cross(v1-v0, v2-v0)| / 2, projected to sphere
-    cross_prod = np.cross(v1 - v0, v2 - v0)
-    area = np.linalg.norm(cross_prod, axis=1) / 2
+    # Spherical solid angles via Van Oosterom-Strackee formula
+    # For unit sphere vertices: tan(Omega/2) = |v0.(v1 x v2)| / (1 + v0.v1 + v0.v2 + v1.v2)
+    cross_12 = np.cross(v1, v2)
+    numer = np.abs(np.sum(v0 * cross_12, axis = 1))
+    denom = (1.0 + np.sum(v0 * v1, axis = 1)
+                 + np.sum(v0 * v2, axis = 1)
+                 + np.sum(v1 * v2, axis = 1))
+    area = 2.0 * np.arctan2(numer, denom)
 
     return verts, faces, nvec, area
 
