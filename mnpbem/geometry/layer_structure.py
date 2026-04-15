@@ -716,7 +716,7 @@ class LayerStructure(object):
         y0 = np.zeros(15 * n1, dtype = complex)
         sol = solve_ivp(rhs_semi, [0, np.pi], y0,
                         t_eval = [np.pi],
-                        rtol = 1e-3, atol = self.atol,
+                        rtol = 1e-6, atol = self.atol,
                         max_step = 0.1)
         return sol.y[:, -1]
 
@@ -743,7 +743,7 @@ class LayerStructure(object):
         y0 = np.zeros(15 * n, dtype = complex)
         sol = solve_ivp(rhs_real, [1, 1e-10], y0,
                         t_eval = [1e-10],
-                        rtol = 1e-3, atol = self.atol,
+                        rtol = 1e-6, atol = self.atol,
                         max_step = 0.1)
         return sol.y[:, -1]
 
@@ -770,7 +770,7 @@ class LayerStructure(object):
         y0 = np.zeros(15 * n, dtype = complex)
         sol = solve_ivp(rhs_imag, [1, 1e-10], y0,
                         t_eval = [1e-10],
-                        rtol = 1e-3, atol = self.atol,
+                        rtol = 1e-6, atol = self.atol,
                         max_step = 0.1)
         return sol.y[:, -1]
 
