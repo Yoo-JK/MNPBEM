@@ -211,8 +211,14 @@ class BEMRet(object):
 
         # L matrices [Eq. (22)]
         # MATLAB: if all(obj.g.con{1,2} == 0), L1 = eps1; L2 = eps2
-        # For single particle with simple connectivity: L1 = eps1, L2 = eps2
-        if np.isscalar(self.eps1):
+        # Depending on the connectivity matrix, L1 and L2 can be
+        # full matrices, diagonal matrices, or scalars.
+        # When cross-connectivity is zero, L simplifies to eps directly.
+        # When cross-connectivity is non-zero AND eps is non-uniform,
+        # the full G * eps * G^{-1} product is needed.
+        # Note: when eps is scalar, G * eps * G^{-1} = eps * I, so L = eps
+        # regardless of connectivity.
+        if np.all(self.g.con[0][1] == 0) or np.isscalar(self.eps1):
             self.L1 = self.eps1
             self.L2 = self.eps2
         else:
