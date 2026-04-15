@@ -153,32 +153,36 @@ class SpectrumRet(object):
         self.medium = medium
 
         # Handle different input types like MATLAB init.m
+        # MATLAB default: trisphere(256, 2) — pre-computed sphere mesh
         if pinfty is None:
-            # Default: create trisphere(256, 2)
-            _, _, nvec, area = trisphere_unit(256)
-            self.pinfty = _PinftyStruct(nvec, area)
+            self.pinfty = self._make_default_pinfty()
         elif isinstance(pinfty, int):
-            # Integer: create unit sphere with given number of faces
-            _, _, nvec, area = trisphere_unit(pinfty)
-            self.pinfty = _PinftyStruct(nvec, area)
+            from ..geometry import trisphere
+            sp = trisphere(pinfty, 2.0)
+            nvec = sp.pos / np.linalg.norm(sp.pos, axis=1, keepdims=True)
+            self.pinfty = _PinftyStruct(nvec, sp.area)
         elif isinstance(pinfty, np.ndarray):
             # Numeric array: treat as direction vectors
             nvec = np.atleast_2d(pinfty)
-            # For direction vectors, compute area as uniform solid angles
             area = np.full(nvec.shape[0], 4 * np.pi / nvec.shape[0])
             self.pinfty = _PinftyStruct(nvec, area)
         elif hasattr(pinfty, 'nvec') and hasattr(pinfty, 'area'):
-            # Particle or struct with nvec and area properties
             self.pinfty = pinfty
         else:
-            # Try to use as particle
-            _, _, nvec, area = trisphere_unit(256)
-            self.pinfty = _PinftyStruct(nvec, area)
+            self.pinfty = self._make_default_pinfty()
 
         # Expose nvec and area directly for convenience
         self.nvec = self.pinfty.nvec if hasattr(self.pinfty, 'nvec') else self.pinfty['nvec']
         self.area = self.pinfty.area if hasattr(self.pinfty, 'area') else self.pinfty['area']
         self.ndir = len(self.nvec)
+
+    @staticmethod
+    def _make_default_pinfty():
+        """Create default pinfty matching MATLAB trisphere(256, 2)."""
+        from ..geometry import trisphere
+        sp = trisphere(256, 2.0)
+        nvec = sp.pos / np.linalg.norm(sp.pos, axis=1, keepdims=True)
+        return _PinftyStruct(nvec, sp.area)
 
 
 class _PinftyStruct(object):
