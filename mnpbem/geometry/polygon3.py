@@ -84,6 +84,37 @@ class Polygon3(object):
         mesh_poly = Polygon(mesh_pos)
         mesh_poly.sym = poly_for_mesh.sym
 
+        # Build refine function for mesh2d if refun provided.
+        # MATLAB: plate.m wraps user's refun via op.hdata.fun = refun(obj, x, y, fun).
+        fun_list = []
+        if self._refun is not None:
+            fun_list.append(self._refun)
+        if refun is not None:
+            fun_list.append(refun)
+
+        if len(fun_list) > 0:
+            z_plate = self.z
+            poly_for_dist = self.poly
+
+            def _plate_refun(x, y, *args, _fun_list = fun_list,
+                             _poly = poly_for_dist, _z = z_plate):
+                x = np.atleast_1d(x).ravel()
+                y = np.atleast_1d(y).ravel()
+                pos = np.column_stack([x, y, np.full_like(x, _z)])
+                d, _ = _poly.dist(np.column_stack([x, y]))
+                d = np.asarray(d).ravel()
+                h_vals = None
+                for fun in _fun_list:
+                    hi = np.asarray(fun(pos, d)).ravel()
+                    if h_vals is None:
+                        h_vals = hi
+                    else:
+                        h_vals = np.minimum(h_vals, hi)
+                return h_vals
+
+            hdata = dict(hdata)
+            hdata['fun'] = _plate_refun
+
         verts_2d, faces_2d = mesh_poly.polymesh2d(hdata = hdata, options = options)
 
         # create 3D vertices at the plate z-level
