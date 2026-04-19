@@ -9,6 +9,46 @@ from .spectrum_ret import trisphere_unit, _PinftyStruct, _load_pinfty_default
 from ..greenfun import CompStruct
 
 
+def trispheresegment_unit(n_phi: int = 21, n_theta: int = 21) -> Tuple[np.ndarray, np.ndarray]:
+    """MATLAB trispheresegment(linspace(0,2*pi,n_phi), linspace(0,pi,n_theta), 2).
+
+    Creates a (n_phi-1)*(n_theta-1) quadrilateral lat-lon mesh on unit sphere.
+    Crucially includes theta=pi/2 equator line — needed for hemispheric split
+    in SpectrumStatLayer.
+
+    Returns
+    -------
+    nvec : (n_faces, 3) face centroids on unit sphere
+    area : (n_faces,) solid angles, sum to exactly 4*pi
+    """
+    phi = np.linspace(0, 2 * np.pi, n_phi)
+    theta = np.linspace(0, np.pi, n_theta)
+
+    # Quadrilateral faces: (n_theta-1) rows x (n_phi-1) cols
+    n_faces = (n_theta - 1) * (n_phi - 1)
+    nvec = np.zeros((n_faces, 3))
+    area = np.zeros(n_faces)
+
+    idx = 0
+    for i in range(n_theta - 1):
+        # solid angle for this theta band
+        d_omega_band = (np.cos(theta[i]) - np.cos(theta[i + 1]))  # positive
+        dphi = (phi[1] - phi[0])
+        for j in range(n_phi - 1):
+            # 4 vertices of this quad
+            t_mid = 0.5 * (theta[i] + theta[i + 1])
+            p_mid = 0.5 * (phi[j] + phi[j + 1])
+            # Face centroid on unit sphere
+            nvec[idx, 0] = np.sin(t_mid) * np.cos(p_mid)
+            nvec[idx, 1] = np.sin(t_mid) * np.sin(p_mid)
+            nvec[idx, 2] = np.cos(t_mid)
+            # Solid angle
+            area[idx] = dphi * d_omega_band
+            idx += 1
+
+    return nvec, area
+
+
 class SpectrumStatLayer(object):
 
     def __init__(self,
@@ -21,7 +61,11 @@ class SpectrumStatLayer(object):
 
         # Handle different input types
         if pinfty is None:
-            _, _, nvec, area = trisphere_unit(256)
+            # MATLAB @spectrumstatlayer/init.m uses
+            # trispheresegment(linspace(0,2*pi,21), linspace(0,pi,21), 2)
+            # This has an explicit equator (theta=pi/2), unlike icosphere
+            # which has asymmetric z>=0 vs z<0 split → 15% error at oblique.
+            nvec, area = trispheresegment_unit(21, 21)
             self.pinfty = _PinftyStruct(nvec, area)
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
@@ -50,8 +94,11 @@ class SpectrumStatLayer(object):
         # Upper hemisphere (z > 0) -> medium above layer
         # Lower hemisphere (z < 0) -> medium below layer
 
+        # MATLAB uses strict >/<. Face centroids from trispheresegment_unit
+        # never land exactly on z=0 (equator), but the quad mesh has faces
+        # below vs above the equator line.
         z = self.nvec[:, 2]
-        self.ind_up = np.where(z >= 0)[0]
+        self.ind_up = np.where(z > 0)[0]
         self.ind_down = np.where(z < 0)[0]
 
         self.nvec_up = self.nvec[self.ind_up]
@@ -126,9 +173,9 @@ class SpectrumStatLayer(object):
         dip2 = dip[1, :]  # y-component
         dip3 = dip[2, :]  # z-component
 
-        # --- Upper hemisphere (z >= 0) ---
+        # --- Upper hemisphere (z > 0, MATLAB strict) ---
         ind_up = np.where(
-            (directions[:, 2] >= 0)
+            (directions[:, 2] > 0)
             & ~np.any(np.abs(np.imag(directions)) > 1e-10, axis = 1)
         )[0]
 
