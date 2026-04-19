@@ -70,12 +70,9 @@ class GreenRetLayer(object):
         RelCutoff = options.get('RelCutoff', 0)
         AbsCutoff = options.get('AbsCutoff', 0)
 
-        # If both cutoffs are zero, no refinement
-        if RelCutoff == 0 and AbsCutoff == 0:
-            self._diag_id = np.array([], dtype = int)
-            self._diag_faces = np.array([], dtype = int)
-            self._offdiag_ind = np.array([], dtype = int)
-            return
+        # MATLAB: always call refinematrixlayer; defaults (0,0) still select
+        # near-surface elements (d2<0 or id<0 in effective comparison).
+        # DO NOT short-circuit — was causing 752% error for d<1nm substrates.
 
         # Compute refinement matrix
         ir = refinematrixlayer(self.p1, self.p2, self.layer,

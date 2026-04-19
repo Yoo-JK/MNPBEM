@@ -564,8 +564,9 @@ def _mydelaunayn(p: np.ndarray) -> np.ndarray:
         tri = Delaunay(ps)
         t = tri.simplices
     except Exception:
-        # add small jitter and retry
-        jitter = np.random.randn(*ps.shape) * 1e-10
+        # add small jitter and retry (seeded for determinism)
+        rng = np.random.default_rng(0)
+        jitter = rng.standard_normal(ps.shape) * 1e-10
         tri = Delaunay(ps + jitter)
         t = tri.simplices
 
@@ -1350,12 +1351,12 @@ def meshpoly(node: np.ndarray,
     tndx = np.zeros(p.shape[0], dtype = int)
 
     for iteration in range(options.get('maxit', 20)):
-        # ensure unique node list
-        _, unique_idx, inverse_idx = np.unique(np.round(p * 1e10) / 1e10, axis = 0, return_index = True, return_inverse = True)
+        # ensure unique node list (MATLAB: exact unique, no rounding)
+        _, unique_idx, inverse_idx = np.unique(p, axis = 0, return_index = True, return_inverse = True)
         p = p[unique_idx]
-        fix_new = np.unique(inverse_idx[fix])
-        fix_new = fix_new[fix_new < p.shape[0]]
-        fix = fix_new
+        # MATLAB: fix = j(fix) where j is the inverse index — direct mapping
+        fix = inverse_idx[fix]
+        fix = fix[fix < p.shape[0]]
         tndx = tndx[unique_idx] if len(tndx) >= len(unique_idx) else np.zeros(p.shape[0], dtype = int)
 
         # constrained Delaunay
@@ -1389,8 +1390,9 @@ def meshpoly(node: np.ndarray,
         L = np.maximum(np.sqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
 
         # inner smoothing
+        # MATLAB meshpoly.m:110 uses `for subiter = 1:(iter-1)`, i.e. skip on iteration=0
         done = False
-        for subiter in range(max(iteration, 1)):
+        for subiter in range(iteration):
             L0_target = h * np.sqrt(np.sum(L ** 2) / np.sum(h ** 2))
             F = np.maximum(L0_target / L - 1.0, -0.1)
             Fxy = edgev * F[:, np.newaxis]
@@ -1463,10 +1465,29 @@ def meshpoly(node: np.ndarray,
             if np.any(add_mask):
                 cc = circumcircle(p, t[add_mask])
                 cc_points = cc[:, :2]
+                cc_radii = cc[:, 2]
 
                 # only keep internal points
                 inside_cc, _ = inpoly(cc_points, node, edge)
                 cc_points = cc_points[inside_cc]
+                cc_radii = cc_radii[inside_cc]
+
+                # MATLAB meshpoly.m:203-223: skip new centres that lie inside
+                # an already-accepted circumcircle (prevents duplicate nodes).
+                if len(cc_points) > 0:
+                    ok = np.ones(len(cc_points), dtype=bool)
+                    # accepted centres and radii, processed in order
+                    for i in range(len(cc_points)):
+                        if not ok[i]:
+                            continue
+                        # mark later points that fall inside this circle as rejected
+                        dx = cc_points[i+1:, 0] - cc_points[i, 0]
+                        dy = cc_points[i+1:, 1] - cc_points[i, 1]
+                        d2 = dx * dx + dy * dy
+                        r2 = cc_radii[i] ** 2
+                        inside_mask = d2 < r2
+                        ok[i+1:][inside_mask & ok[i+1:]] = False
+                    cc_points = cc_points[ok]
 
                 if len(cc_points) > 0:
                     total_new = pnew.shape[0] + cc_points.shape[0]
