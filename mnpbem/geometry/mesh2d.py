@@ -638,16 +638,11 @@ def _minrectangle(p: np.ndarray) -> float:
     except Exception:
         return 0.0
 
-    # MATLAB convhulln returns edges in CCW order starting from a
-    # specific vertex (lowest y among lowest x). Rotate Python's CCW
-    # vertex list to match MATLAB's starting vertex.
+    # MATLAB convhull() returns hull vertices starting at the LOWEST INPUT
+    # INDEX that lies on the hull, in CCW order. scipy ConvexHull starts at
+    # an arbitrary vertex; rotate to match MATLAB.
     verts_ccw = hull.vertices
-    p_hull_raw = p[verts_ccw]
-    # Find starting vertex: min x, then min y (MATLAB QHull convention)
-    min_x = np.min(p_hull_raw[:, 0])
-    candidates = np.where(np.abs(p_hull_raw[:, 0] - min_x) < 1e-10)[0]
-    start = candidates[np.argmin(p_hull_raw[candidates, 1])]
-    # Rotate so start is first
+    start = int(np.argmin(verts_ccw))
     verts_ccw = np.roll(verts_ccw, -start)
     n_hull = len(verts_ccw)
     p_hull = p[verts_ccw]
