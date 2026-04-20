@@ -658,8 +658,14 @@ def _particle_quad(p, ind):
     `quad()` method.  Because instance attributes shadow methods, we call
     the private implementations directly.
 
+    For ComParticle: use the concatenated `pc` (Particle) to match MATLAB
+    @compound/quad() delegation behavior.
+
     Returns (pos, w_sparse, iface) matching MATLAB quad().
     """
+    # ComParticle handling: delegate to concatenated Particle (pc)
+    if hasattr(p, 'pc') and p.pc is not None and not hasattr(p, 'interp'):
+        p = p.pc
     if p.interp == 'flat':
         return p._quad_flat(ind)
     else:
