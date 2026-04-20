@@ -221,7 +221,9 @@ class DipoleRetMirror(object):
                                  + d[1] * v[:, i, 1]
                                  + d[2] * v[:, i, 2])
 
-            setattr(result, name, vi)
+            # Flatten (n, npt, ndip) -> (n, npt*ndip) to match downstream
+            # (DipoleRet.scattering / spectrum_ret.farfield) expectation.
+            setattr(result, name, vi.reshape(n, npt * ndip))
 
         # transform vectors
         for name in ('e', 'h', 'h1', 'h2', 'a1', 'a1p', 'a2', 'a2p'):
@@ -246,7 +248,8 @@ class DipoleRetMirror(object):
                                     + d[1] * v[:, :, i, 1]
                                     + d[2] * v[:, :, i, 2])
 
-            setattr(result, name, vi)
+            # Flatten (n, 3, npt, ndip) -> (n, 3, npt*ndip) to match downstream.
+            setattr(result, name, vi.reshape(n, 3, npt * ndip))
 
         return result, p_full
 
