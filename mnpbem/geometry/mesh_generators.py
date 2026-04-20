@@ -7,6 +7,7 @@ import os
 from scipy.spatial import Delaunay, ConvexHull
 # scipy.io.loadmat no longer needed — sphere data stored as .bin
 from .particle import Particle
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2
 
 
 def trisphere(n, diameter=1.0, **kwargs):
@@ -345,9 +346,9 @@ def _fibonacci_sphere(n):
     phi = np.arccos(1 - 2 * indices / n)  # Latitude
     theta = np.pi * (1 + 5**0.5) * indices  # Golden angle spiral
 
-    x = np.sin(phi) * np.cos(theta)
-    y = np.sin(phi) * np.sin(theta)
-    z = np.cos(phi)
+    x = msin(phi) * mcos(theta)
+    y = msin(phi) * msin(theta)
+    z = mcos(phi)
 
     points = np.column_stack([x, y, z])
 
@@ -538,9 +539,9 @@ def trispheresegment(phi: np.ndarray,
     phi_grid, theta_grid = np.meshgrid(phi, theta)
 
     # Spherical to cartesian
-    x = diameter / 2.0 * np.sin(theta_grid) * np.cos(phi_grid)
-    y = diameter / 2.0 * np.sin(theta_grid) * np.sin(phi_grid)
-    z = diameter / 2.0 * np.cos(theta_grid)
+    x = diameter / 2.0 * msin(theta_grid) * mcos(phi_grid)
+    y = diameter / 2.0 * msin(theta_grid) * msin(phi_grid)
+    z = diameter / 2.0 * mcos(theta_grid)
 
     # Use surf2patch to create faces
     # Convert Python _surf2patch winding [v00,v10,v11,v01] to
@@ -588,8 +589,8 @@ def trirod(diameter: float,
     nphi, ntheta, nz_cyl = n
 
     # Angles
-    phi = np.linspace(0, 2 * np.pi, nphi)
-    theta = np.linspace(0, 0.5 * np.pi, ntheta)
+    phi = mlinspace(0, 2 * np.pi, nphi)
+    theta = mlinspace(0, 0.5 * np.pi, ntheta)
 
     # Upper cap: sphere segment shifted up
     # MATLAB trispheresegment uses quadrilateral faces by default
@@ -600,7 +601,7 @@ def trirod(diameter: float,
     cap2 = cap1.flip(2)
 
     # z-values for cylinder
-    z_vals = 0.5 * np.linspace(-1, 1, nz_cyl) * (height - diameter)
+    z_vals = 0.5 * mlinspace(-1, 1, nz_cyl) * (height - diameter)
 
     # Grid for cylinder
     verts_grid, faces_grid = fvgrid(phi, z_vals, triangles = triangles)
@@ -609,8 +610,8 @@ def trirod(diameter: float,
     z_cyl = verts_grid[:, 1]
 
     # Cylinder coordinates
-    x_cyl = 0.5 * diameter * np.cos(phi_cyl)
-    y_cyl = 0.5 * diameter * np.sin(phi_cyl)
+    x_cyl = 0.5 * diameter * mcos(phi_cyl)
+    y_cyl = 0.5 * diameter * msin(phi_cyl)
 
     # Create cylinder particle
     cyl_verts = np.column_stack([x_cyl, y_cyl, z_cyl])
@@ -628,7 +629,7 @@ def trirod(diameter: float,
 
 def _square_grid(n: int, e: float) -> tuple:
     # MATLAB: square() subfunction in tricube.m
-    u = np.linspace(-0.5 ** e, 0.5 ** e, n)
+    u = mlinspace(-0.5 ** e, 0.5 ** e, n)
 
     verts, faces = fvgrid(u, u)
 
@@ -671,10 +672,10 @@ def tricube(n: int,
 
     # Signed power functions
     def isin(x):
-        return np.sign(np.sin(x)) * np.abs(np.sin(x)) ** e
+        return np.sign(msin(x)) * np.abs(msin(x)) ** e
 
     def icos(x):
-        return np.sign(np.cos(x)) * np.abs(np.cos(x)) ** e
+        return np.sign(mcos(x)) * np.abs(mcos(x)) ** e
 
     # Super-sphere vertices
     x_new = 0.5 * icos(theta_sph) * icos(phi_sph)
@@ -692,8 +693,8 @@ def _cart2sph(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> tuple:
     # MATLAB cart2sph equivalent
     # Returns (azimuth, elevation) -- note MATLAB convention
     hxy = np.sqrt(x ** 2 + y ** 2)
-    phi = np.arctan2(y, x)  # azimuth
-    theta = np.arctan2(z, hxy)  # elevation
+    phi = matan2(y, x)  # azimuth
+    theta = matan2(z, hxy)  # elevation
     return phi, theta
 
 
@@ -713,17 +714,17 @@ def tritorus(diameter: float,
 
     # Grid triangulation
     verts_grid, faces_grid = fvgrid(
-        np.linspace(0, 2 * np.pi, n[0]),
-        np.linspace(0, 2 * np.pi, n[1]))
+        mlinspace(0, 2 * np.pi, n[0]),
+        mlinspace(0, 2 * np.pi, n[1]))
 
     # Angles
     phi = verts_grid[:, 0]
     theta = verts_grid[:, 1]
 
     # Coordinates of torus
-    x = (0.5 * diameter + rad * np.cos(theta)) * np.cos(phi)
-    y = (0.5 * diameter + rad * np.cos(theta)) * np.sin(phi)
-    z = rad * np.sin(theta)
+    x = (0.5 * diameter + rad * mcos(theta)) * mcos(phi)
+    y = (0.5 * diameter + rad * mcos(theta)) * msin(phi)
+    z = rad * msin(theta)
 
     # Make torus
     p = Particle(np.column_stack([x, y, z]), faces_grid, **kwargs).clean()

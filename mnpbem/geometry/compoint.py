@@ -5,6 +5,8 @@ import copy
 import numpy as np
 from typing import Optional, List, Tuple, Any, Union
 
+from ..utils.matlab_compat import matan2
+
 
 class Point(object):
     """Single collection of points in space.
@@ -63,7 +65,7 @@ class Point(object):
 
         if polfun is not None:
             x, y, z = self.pos[:, 0], self.pos[:, 1], self.pos[:, 2]
-            phi = np.arctan2(y, x)
+            phi = matan2(y, x)
             r = np.sqrt(x ** 2 + y ** 2)
             mask = polfun(phi, r, z)
             mask = np.asarray(mask, dtype = bool)
@@ -72,7 +74,7 @@ class Point(object):
         if sphfun is not None:
             x, y, z = self.pos[:, 0], self.pos[:, 1], self.pos[:, 2]
             r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
-            phi = np.arctan2(y, x)
+            phi = matan2(y, x)
             theta = np.arccos(np.clip(z / np.maximum(r, 1e-30), -1, 1))
             mask = sphfun(phi, theta, r)
             mask = np.asarray(mask, dtype = bool)

@@ -8,6 +8,7 @@ import numpy as np
 from scipy.linalg import expm
 from scipy.sparse import csr_matrix, diags
 from ..utils.quadface import QuadFace as QuadFaceNew
+from ..utils.matlab_compat import mcos, msin, matan2
 from ..geometry.shape_functions import TriangleShape, QuadShape
 
 
@@ -79,7 +80,7 @@ class QuadFace(object):
         """
         n1 = n + 1
         # Use Chebyshev-Gauss-Lobatto nodes as first guess
-        x = np.cos(np.pi * np.arange(n1) / n)
+        x = mcos(np.pi * np.arange(n1) / n)
 
         # Legendre Vandermonde Matrix
         p = np.zeros((n1, n1))
@@ -126,7 +127,7 @@ class QuadFace(object):
         phi_flat = phi_grid.flatten()
 
         # Radius scaling for triangle geometry
-        rad = 1.0 / np.abs(2 * np.sin(phi_flat))
+        rad = 1.0 / np.abs(2 * msin(phi_flat))
 
         # Create 3 rotated sectors (120° apart)
         phi_all = np.hstack([phi_flat, phi_flat + phi0, phi_flat + 2*phi0])
@@ -134,8 +135,8 @@ class QuadFace(object):
         rad_all = np.tile(rad, 3)
 
         # Integration points in triangle
-        x = np.cos(phi_all) * rho_all * rad_all
-        y = np.sin(phi_all) * rho_all * rad_all
+        x = mcos(phi_all) * rho_all * rad_all
+        y = msin(phi_all) * rho_all * rad_all
 
         # Transform to unit triangle coordinates
         # MATLAB: (1 - sqrt(3)*x - y)/3, (1 + sqrt(3)*x - y)/3
@@ -178,7 +179,7 @@ class QuadFace(object):
         phi_flat = phi_grid.flatten()
 
         # Radius scaling for quadrilateral geometry
-        rad = 1.0 / np.abs(np.sin(phi_flat))
+        rad = 1.0 / np.abs(msin(phi_flat))
 
         # Create 4 rotated sectors (90° apart)
         phi_all = np.hstack([phi_flat, phi_flat + phi0,
@@ -187,8 +188,8 @@ class QuadFace(object):
         rad_all = np.tile(rad, 4)
 
         # Integration points in quadrilateral
-        x_quad = np.cos(phi_all) * rho_all * rad_all
-        y_quad = np.sin(phi_all) * rho_all * rad_all
+        x_quad = mcos(phi_all) * rho_all * rad_all
+        y_quad = msin(phi_all) * rho_all * rad_all
 
         # Integration weights
         w = np.outer(w1, w2).flatten()  # Tensor product of 1D weights
@@ -924,13 +925,13 @@ class Particle(object):
         elif carfun is not None:
             idx = np.where(carfun(x, y, z))[0]
         elif polfun is not None:
-            phi = np.arctan2(y, x)
+            phi = matan2(y, x)
             r = np.sqrt(x**2 + y**2)
             idx = np.where(polfun(phi, r, z))[0]
         elif sphfun is not None:
-            phi = np.arctan2(y, x)
+            phi = matan2(y, x)
             r = np.sqrt(x**2 + y**2 + z**2)
-            theta = np.arctan2(np.sqrt(x**2 + y**2), z)
+            theta = matan2(np.sqrt(x**2 + y**2), z)
             idx = np.where(sphfun(phi, np.pi/2 - theta, r))[0]
         else:
             raise ValueError("Must specify index, carfun, polfun, or sphfun")

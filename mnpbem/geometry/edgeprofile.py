@@ -5,6 +5,8 @@ import numpy as np
 from typing import Optional, Tuple, List, Union
 from scipy.interpolate import CubicSpline
 
+from ..utils.matlab_compat import mlinspace, mcos, msin
+
 
 class EdgeProfile(object):
 
@@ -43,16 +45,16 @@ class EdgeProfile(object):
                     [0.0, -0.5 * height],
                     [0.0, 0.5 * height],
                     [np.nan, 0.0]])
-                self.z = np.linspace(-0.5, 0.5, nz) * height
+                self.z = mlinspace(-0.5, 0.5, nz) * height
             else:
                 # Supercircle edge profile
                 pows = lambda x: np.sign(x) * np.abs(x) ** e
 
                 # Angles
-                phi = np.linspace(-1, 1, 51).reshape(-1) * np.pi / 2.0
+                phi = mlinspace(-1, 1, 51).reshape(-1) * np.pi / 2.0
 
-                x = pows(np.cos(phi))
-                z_vals = pows(np.sin(phi))
+                x = pows(mcos(phi))
+                z_vals = pows(msin(phi))
 
                 # Find index closest to (1 - dz)
                 ind = np.argmin(np.abs(z_vals - (1.0 - dz)))
@@ -61,7 +63,7 @@ class EdgeProfile(object):
                 self.pos = 0.5 * height * np.column_stack([x - x[ind], z_vals])
 
                 # Representative values along z
-                z_lin = np.linspace(-1, 1, nz)
+                z_lin = mlinspace(-1, 1, nz)
                 self.z = self.pos[ind, 1] * np.abs(z_lin) ** e * np.sign(z_lin)
 
                 # Indices for different regions

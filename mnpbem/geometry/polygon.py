@@ -2,6 +2,8 @@ import numpy as np
 from typing import Tuple, Optional, Union, List, Any, Dict
 from matplotlib.path import Path
 
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2
+
 
 class Polygon(object):
 
@@ -16,7 +18,7 @@ class Polygon(object):
         if isinstance(n_or_verts, (int, np.integer)):
             n = int(n_or_verts)
             phi = np.arange(n) / n * 2 * np.pi + np.pi / n
-            self.pos = np.column_stack([np.cos(phi), np.sin(phi)])
+            self.pos = np.column_stack([mcos(phi), msin(phi)])
         else:
             self.pos = np.asarray(n_or_verts, dtype = float).copy()
             if self.pos.ndim == 1:
@@ -102,7 +104,7 @@ class Polygon(object):
         beta = np.arccos(dot_prod) / 2.0
 
         # center of rounding circles
-        cos_beta = np.cos(beta)
+        cos_beta = mcos(beta)
         cos_beta[cos_beta < np.finfo(float).eps] = 1.0
         zero = pos + rad * dir_vec / cos_beta[:, np.newaxis]
 
@@ -119,11 +121,11 @@ class Polygon(object):
                 if abs(beta[i]) < 1e-3:
                     angles = np.array([0.0])
                 else:
-                    angles = beta[i] * np.linspace(-1, 1, nrad) * sgn[i]
+                    angles = beta[i] * mlinspace(-1, 1, nrad) * sgn[i]
 
                 for phi in angles:
-                    c = np.cos(phi)
-                    s = np.sin(phi)
+                    c = mcos(phi)
+                    s = msin(phi)
                     rot_mat = np.array([[c, s], [-s, c]])
                     pt = zero[i] - rad * dir_vec[i] @ rot_mat
                     new_pos_list.append(pt.reshape(1, 2))
@@ -134,8 +136,8 @@ class Polygon(object):
     def rot(self, angle: float) -> 'Polygon':
         # MATLAB @polygon/rot.m - rotate by angle in degrees
         angle_rad = angle / 180.0 * np.pi
-        c = np.cos(angle_rad)
-        s = np.sin(angle_rad)
+        c = mcos(angle_rad)
+        s = msin(angle_rad)
         rot_mat = np.array([[c, s], [-s, c]])
         self.pos = self.pos @ rot_mat
         return self
