@@ -453,11 +453,13 @@ class Polygon(object):
 
         return pos
 
-    def union(self, *others: 'Polygon') -> Tuple[np.ndarray, np.ndarray]:
-        # MATLAB @polygon/union.m - combine polygons for mesh2d
+    def _union_parts(self, *others: 'Polygon') -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+        # Internal helper: concatenate polygons and return upos, unet plus
+        # one edge-index array per input polygon (one "face" per loop).
         all_polys = [self] + list(others)
         upos = np.empty((0, 2))
         unet = np.empty((0, 2), dtype = int)
+        face_list: List[np.ndarray] = []
 
         for poly in all_polys:
             pos = poly.pos
@@ -467,6 +469,7 @@ class Polygon(object):
 
             net_shifted = net + upos.shape[0]
 
+            edge_start = unet.shape[0]
             total_net = unet.shape[0] + net_shifted.shape[0]
             unet_new = np.empty((total_net, 2), dtype = int)
             unet_new[:unet.shape[0]] = unet
@@ -479,7 +482,25 @@ class Polygon(object):
             upos_new[upos.shape[0]:] = pos
             upos = upos_new
 
+            face_list.append(np.arange(edge_start, edge_start + n, dtype = int))
+
+        return upos, unet, face_list
+
+    def union(self, *others: 'Polygon') -> Tuple[np.ndarray, np.ndarray]:
+        # MATLAB @polygon/union.m - combine polygons for mesh2d.
+        # Returns (upos, unet). For hole-aware meshing use
+        # :meth:`union_faces` instead, which also returns a list of
+        # edge-index arrays (one per input polygon) suitable for passing as
+        # ``face=...`` to :func:`mesh2d`.
+        upos, unet, _ = self._union_parts(*others)
         return upos, unet
+
+    def union_faces(self, *others: 'Polygon') -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+        # Same as :meth:`union` but also returns ``face_list``: a list where
+        # ``face_list[k]`` is the array of edge indices belonging to loop k.
+        # The caller can pass this straight to ``mesh2d(..., face=face_list)``
+        # to mesh an outer polygon with holes (MATLAB plate() semantics).
+        return self._union_parts(*others)
 
     def polymesh2d(self,
             hdata: Optional[Dict[str, Any]] = None,
@@ -493,9 +514,9 @@ class Polygon(object):
         elif 'output' not in options:
             options['output'] = False
 
-        pos, cnet = self.union()
+        pos, cnet, face_list = self.union_faces()
 
-        verts, faces = mesh2d(pos, cnet, hdata = hdata, options = options)
+        verts, faces = mesh2d(pos, cnet, hdata = hdata, options = options, face = face_list)
         return verts, faces
 
     def copy(self) -> 'Polygon':

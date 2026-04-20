@@ -1436,15 +1436,21 @@ def meshpoly(node: np.ndarray,
             Ah = 0.5 * _tricentre(t, hn) ** 2
             t_area = np.abs(triarea(p, t))
 
-            # remove nodes
+            # MATLAB meshpoly.m:173-175
             small_tri = np.where(t_area < smalltri * Ah)[0]
+            # MATLAB:174 k = find(sum(abs(S),2)<2) — nodes with <2 edge connections
+            conn_count = np.asarray(np.abs(S).sum(axis = 1)).ravel()
+            low_conn = np.where(conn_count < 2)[0]
             short_edges = np.where(r < shortedge)[0]
 
+            # MATLAB meshpoly.m:176-190 prob array construction (order: edges, triangles, low-conn)
             prob = np.zeros(p.shape[0], dtype = bool)
             if len(short_edges) > 0:
                 prob[e[short_edges].ravel()] = True
             if len(small_tri) > 0:
                 prob[t[small_tri].ravel()] = True
+            if len(low_conn) > 0:
+                prob[low_conn] = True
             prob[fix] = False
 
             pnew = p[~prob]
@@ -1458,38 +1464,48 @@ def meshpoly(node: np.ndarray,
             fix = fix[fix >= 0]
 
             # add new nodes at circumcentres of large/low-quality triangles
+            # MATLAB meshpoly.m:192-204
             large_tri = t_area > largetri * Ah
             r_tri = _longest(p, t) / np.maximum(_tricentre(t, hn), np.finfo(float).eps)
             q = quality(p, t)
             low_quality = (r_tri > longedge) & (q < qlimit)
 
-            add_mask = large_tri | low_quality
-            if np.any(add_mask):
-                cc = circumcircle(p, t[add_mask])
+            if np.any(large_tri | low_quality):
+                # MATLAB:197-198 k = find(k & ~i); i = find(i);
+                i_large = np.where(large_tri)[0]
+                k_lq_only = np.where(low_quality & ~large_tri)[0]
+                # MATLAB:201 cc = circumcircle(p, [t(i,:); t(k,:)])
+                tri_idx = np.concatenate([i_large, k_lq_only])
+                cc = circumcircle(p, t[tri_idx])
                 cc_points = cc[:, :2]
                 cc_radii = cc[:, 2]
 
-                # only keep internal points
-                inside_cc, _ = inpoly(cc_points, node, edge)
-                cc_points = cc_points[inside_cc]
-                cc_radii = cc_radii[inside_cc]
+                # MATLAB:204 ok = [true(size(i)); false(size(k))]
+                ok = np.zeros(len(cc_points), dtype = bool)
+                ok[:len(i_large)] = True
 
-                # MATLAB meshpoly.m:203-223: skip new centres that lie inside
-                # an already-accepted circumcircle (prevents duplicate nodes).
+                # MATLAB:205-223 skip new centres inside an already-accepted circle
+                for ii in range(len(i_large), len(cc_points)):
+                    x = cc_points[ii, 0]
+                    y = cc_points[ii, 1]
+                    is_inside = False
+                    # MATLAB:211 j = find(ok) - recompute each iteration (accept set grows)
+                    for kk in np.where(ok)[0]:
+                        dx2 = (x - cc_points[kk, 0]) ** 2
+                        r2 = cc_radii[kk] ** 2
+                        if dx2 < r2:
+                            if dx2 + (y - cc_points[kk, 1]) ** 2 < r2:
+                                is_inside = True
+                                break
+                    if not is_inside:
+                        ok[ii] = True
+
+                # MATLAB:224 cc = cc(ok,:)
+                cc_points = cc_points[ok]
+                # MATLAB:225 cc = cc(inpoly(cc(:,1:2),node,edge),:) — inpoly AFTER dedup
                 if len(cc_points) > 0:
-                    ok = np.ones(len(cc_points), dtype=bool)
-                    # accepted centres and radii, processed in order
-                    for i in range(len(cc_points)):
-                        if not ok[i]:
-                            continue
-                        # mark later points that fall inside this circle as rejected
-                        dx = cc_points[i+1:, 0] - cc_points[i, 0]
-                        dy = cc_points[i+1:, 1] - cc_points[i, 1]
-                        d2 = dx * dx + dy * dy
-                        r2 = cc_radii[i] ** 2
-                        inside_mask = d2 < r2
-                        ok[i+1:][inside_mask & ok[i+1:]] = False
-                    cc_points = cc_points[ok]
+                    inside_cc, _ = inpoly(cc_points, node, edge)
+                    cc_points = cc_points[inside_cc]
 
                 if len(cc_points) > 0:
                     total_new = pnew.shape[0] + cc_points.shape[0]
@@ -1532,10 +1548,29 @@ def _checkgeometry(node: np.ndarray,
         node = node[unique_idx]
         edge = remap[edge]
 
-    # remove duplicate edges
+    # remove duplicate edges; remap `face` so its edge indices still refer
+    # to the correct rows of the reordered `edge` array.
+    nedge_old = edge.shape[0]
     e_sorted = np.sort(edge, axis = 1)
     _, unique_e_idx = np.unique(e_sorted, axis = 0, return_index = True)
+    # `unique_e_idx` contains indices into the OLD edge array that survive.
+    # Build a map old_idx -> new_idx (or -1 if dropped as duplicate).
+    old_to_new = np.full(nedge_old, -1, dtype = int)
+    # reorder unique_e_idx so that edges keep their original order as much as
+    # possible — MATLAB's `[i,i,j] = unique(sort(edge,2),'rows')` returns
+    # sorted indices; we preserve original insertion order to keep `face`
+    # indices stable. Sort the surviving indices by their original position.
+    unique_e_idx = np.sort(unique_e_idx)
+    for new_i, old_i in enumerate(unique_e_idx):
+        old_to_new[old_i] = new_i
     edge = edge[unique_e_idx]
+
+    remapped_face: List[np.ndarray] = []
+    for f in face:
+        mapped = old_to_new[np.asarray(f, dtype = int)]
+        mapped = mapped[mapped >= 0]
+        remapped_face.append(mapped)
+    face = remapped_face
 
     return node, edge, face, hdata
 
@@ -1563,18 +1598,166 @@ def _getoptions(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return options
 
 
+def _detect_loops(edge: np.ndarray, nnode: int) -> List[np.ndarray]:
+    # Walk the edge adjacency graph to split EDGE into connected components
+    # (assumed to be closed loops). Returns a list of edge-index arrays.
+    nedge = edge.shape[0]
+    used = np.zeros(nedge, dtype = bool)
+
+    node_to_edges: Dict[int, List[int]] = {}
+    for ei in range(nedge):
+        a, b = int(edge[ei, 0]), int(edge[ei, 1])
+        node_to_edges.setdefault(a, []).append(ei)
+        node_to_edges.setdefault(b, []).append(ei)
+
+    loops: List[List[int]] = []
+    for start in range(nedge):
+        if used[start]:
+            continue
+        loop = [start]
+        used[start] = True
+        start_node = int(edge[start, 0])
+        cur_node = int(edge[start, 1])
+        while cur_node != start_node:
+            next_ei = -1
+            nxt = -1
+            for ei in node_to_edges.get(cur_node, []):
+                if used[ei]:
+                    continue
+                a, b = int(edge[ei, 0]), int(edge[ei, 1])
+                if a == cur_node:
+                    next_ei = ei
+                    nxt = b
+                    break
+                if b == cur_node:
+                    next_ei = ei
+                    nxt = a
+                    break
+            if next_ei < 0:
+                break
+            used[next_ei] = True
+            loop.append(next_ei)
+            cur_node = nxt
+        loops.append(np.array(loop, dtype = int))
+
+    return loops
+
+
+def _loop_vertices(edge_indices: np.ndarray,
+        edge: np.ndarray,
+        node: np.ndarray) -> np.ndarray:
+    # Walk edges in a loop and return the ordered vertex positions.
+    if len(edge_indices) == 0:
+        return np.empty((0, 2))
+    a0 = int(edge[edge_indices[0], 0])
+    b0 = int(edge[edge_indices[0], 1])
+    pts = [node[a0], node[b0]]
+    prev = b0
+    for k in range(1, len(edge_indices)):
+        ei = int(edge_indices[k])
+        a, b = int(edge[ei, 0]), int(edge[ei, 1])
+        if a == prev:
+            pts.append(node[b])
+            prev = b
+        elif b == prev:
+            pts.append(node[a])
+            prev = a
+        else:
+            pts.append(node[a])
+            prev = b
+    arr = np.asarray(pts)
+    if arr.shape[0] > 1 and np.allclose(arr[0], arr[-1]):
+        arr = arr[:-1]
+    return arr
+
+
+def _loop_signed_area(edge_indices: np.ndarray,
+        edge: np.ndarray,
+        node: np.ndarray) -> float:
+    arr = _loop_vertices(edge_indices, edge, node)
+    if arr.shape[0] < 3:
+        return 0.0
+    x = arr[:, 0]
+    y = arr[:, 1]
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def _classify_faces(face_chk: List[np.ndarray],
+        edge: np.ndarray,
+        node: np.ndarray) -> Tuple[List[int], List[int], List[np.ndarray]]:
+    # Split face_chk into (outer_idx, hole_idx) via containment: face i is a
+    # hole iff its first vertex lies strictly inside some other face's loop.
+    face_verts = [_loop_vertices(f, edge, node) for f in face_chk]
+    is_hole = [False] * len(face_chk)
+    for i, vi in enumerate(face_verts):
+        if vi.shape[0] == 0:
+            continue
+        probe = vi[0:1]
+        for j, vj in enumerate(face_verts):
+            if i == j or vj.shape[0] < 3:
+                continue
+            inside_j, _ = inpoly(probe, vj)
+            if bool(inside_j[0]):
+                is_hole[i] = True
+                break
+    outer_idx = [k for k, h in enumerate(is_hole) if not h]
+    hole_idx = [k for k, h in enumerate(is_hole) if h]
+    # fall back to "face[0] is outer" when classification is degenerate
+    if not outer_idx or (len(face_chk) > 1 and not hole_idx and all(is_hole)):
+        outer_idx = [0]
+        hole_idx = list(range(1, len(face_chk)))
+    return outer_idx, hole_idx, face_verts
+
+
 def mesh2d(node: np.ndarray,
         edge: Optional[np.ndarray] = None,
         hdata: Optional[Dict[str, Any]] = None,
-        options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, np.ndarray]:
+        options: Optional[Dict[str, Any]] = None,
+        face: Optional[List[np.ndarray]] = None) -> Tuple[np.ndarray, np.ndarray]:
 
     # MATLAB Mesh2d/mesh2d.m -> meshfaces -> meshpoly
+    #
+    # When `edge` contains multiple closed loops (e.g. an outer rectangle
+    # with an inner triangular hole) the caller can pass `face` as
+    # [outer_edges, hole_edges, ...] or let mesh2d auto-detect topology by
+    # walking the edge adjacency graph and checking containment.
     node = np.asarray(node, dtype = float)
     if edge is not None:
         edge = np.asarray(edge, dtype = int)
 
     opts = _getoptions(options)
-    node, edge, face, hdata = _checkgeometry(node, edge, None, hdata)
+
+    if face is not None:
+        face_in = [np.asarray(f, dtype = int) for f in face]
+    else:
+        face_in = None
+
+    node, edge, face_chk, hdata = _checkgeometry(node, edge, face_in, hdata)
+
+    # auto-detect topology when caller did not pass `face`
+    auto_detected = False
+    if face_in is None and edge is not None and edge.shape[0] > 0:
+        loops = _detect_loops(edge, node.shape[0])
+        if len(loops) > 1:
+            # only split into multiple faces if at least one loop is a hole
+            loop_verts_auto = [_loop_vertices(lp, edge, node) for lp in loops]
+            any_hole = False
+            for i, vi in enumerate(loop_verts_auto):
+                if vi.shape[0] == 0:
+                    continue
+                probe = vi[0:1]
+                for j, vj in enumerate(loop_verts_auto):
+                    if i == j or vj.shape[0] < 3:
+                        continue
+                    inside_j, _ = inpoly(probe, vj)
+                    if bool(inside_j[0]):
+                        any_hole = True
+                        break
+                if any_hole:
+                    break
+            if any_hole:
+                face_chk = loops
+                auto_detected = True
 
     # quadtree decomposition
     qt_p, qt_t, qt_h = quadtree(node, edge, hdata, opts['dhmax'], opts.get('output', False))
@@ -1583,27 +1766,73 @@ def mesh2d(node: np.ndarray,
     # boundary nodes
     pbnd = _boundarynodes(qt_p, qt_t, qt_h, node, edge)
 
-    # mesh each face
     p_all = np.empty((0, 2))
     t_all = np.empty((0, 3), dtype = int)
 
-    for k in range(len(face)):
-        face_edges = edge[face[k]]
-        pnew, tnew = meshpoly(node, face_edges, qt, pbnd, opts)
+    # classify faces into outer / hole (either from caller or auto-detected)
+    if len(face_chk) > 1 and (face_in is not None or auto_detected):
+        outer_idx, hole_idx, _ = _classify_faces(face_chk, edge, node)
 
-        if tnew.shape[0] > 0:
-            tnew_shifted = tnew + p_all.shape[0]
-            total_t = t_all.shape[0] + tnew_shifted.shape[0]
-            t_combined = np.empty((total_t, 3), dtype = int)
-            t_combined[:t_all.shape[0]] = t_all
-            t_combined[t_all.shape[0]:] = tnew_shifted
-            t_all = t_combined
+        hole_edges_all: List[int] = []
+        for h in hole_idx:
+            hole_edges_all.extend(face_chk[h].tolist())
+        hole_edges_arr = np.asarray(hole_edges_all, dtype = int)
 
-            total_p = p_all.shape[0] + pnew.shape[0]
-            p_combined = np.empty((total_p, 2))
-            p_combined[:p_all.shape[0]] = p_all
-            p_combined[p_all.shape[0]:] = pnew
-            p_all = p_combined
+        # vertex arrays for each hole (used for explicit triangle filtering)
+        hole_vert_sets = [_loop_vertices(face_chk[h], edge, node) for h in hole_idx]
+
+        for k in outer_idx:
+            if len(hole_edges_arr) > 0:
+                combined = np.concatenate([face_chk[k], hole_edges_arr])
+            else:
+                combined = face_chk[k]
+            face_edges = edge[combined]
+            pnew, tnew = meshpoly(node, face_edges, qt, pbnd, opts)
+
+            # explicit hole filter: drop triangles whose centroid lies inside
+            # any hole loop. This is a belt-and-braces guard for degenerate
+            # triangles that slip through meshpoly's internal inpoly() check.
+            if tnew.shape[0] > 0 and len(hole_vert_sets) > 0:
+                centroids = np.mean(pnew[tnew], axis = 1)
+                keep = np.ones(tnew.shape[0], dtype = bool)
+                for hv in hole_vert_sets:
+                    if hv.shape[0] < 3:
+                        continue
+                    inside_h, on_h = inpoly(centroids, hv)
+                    keep &= ~(inside_h & ~on_h)
+                tnew = tnew[keep]
+
+            if tnew.shape[0] > 0:
+                tnew_shifted = tnew + p_all.shape[0]
+                total_t = t_all.shape[0] + tnew_shifted.shape[0]
+                t_combined = np.empty((total_t, 3), dtype = int)
+                t_combined[:t_all.shape[0]] = t_all
+                t_combined[t_all.shape[0]:] = tnew_shifted
+                t_all = t_combined
+
+                total_p = p_all.shape[0] + pnew.shape[0]
+                p_combined = np.empty((total_p, 2))
+                p_combined[:p_all.shape[0]] = p_all
+                p_combined[p_all.shape[0]:] = pnew
+                p_all = p_combined
+    else:
+        for k in range(len(face_chk)):
+            face_edges = edge[face_chk[k]]
+            pnew, tnew = meshpoly(node, face_edges, qt, pbnd, opts)
+
+            if tnew.shape[0] > 0:
+                tnew_shifted = tnew + p_all.shape[0]
+                total_t = t_all.shape[0] + tnew_shifted.shape[0]
+                t_combined = np.empty((total_t, 3), dtype = int)
+                t_combined[:t_all.shape[0]] = t_all
+                t_combined[t_all.shape[0]:] = tnew_shifted
+                t_all = t_combined
+
+                total_p = p_all.shape[0] + pnew.shape[0]
+                p_combined = np.empty((total_p, 2))
+                p_combined[:p_all.shape[0]] = p_all
+                p_combined[p_all.shape[0]:] = pnew
+                p_all = p_combined
 
     # fix mesh
     if p_all.shape[0] > 0 and t_all.shape[0] > 0:
