@@ -128,6 +128,14 @@ class Polygon3(object):
         # add midpoints (flat)
         p = _add_midpoints_flat(p)
 
+        # check normal direction and flip if needed
+        # MATLAB plate.m L62: flip BEFORE edge-profile vshift and final curved
+        # particle construction. Applying vshift first can perturb the summed
+        # normal-z sign (boundary faces tilt) and invert the flip decision.
+        nvec_sum = np.sum(p.nvec[:, 2])
+        if np.sign(nvec_sum) != dir:
+            p = p.flipfaces()
+
         # MATLAB: obj(i).poly = interp1(obj(i).poly, verts)
         #         [~, obj(i).poly] = symmetry(obj(i).poly, op.sym)
         # Enrich polygon with mesh boundary vertices, return FULL polygon
@@ -150,11 +158,6 @@ class Polygon3(object):
 
         # create final particle with midpoints
         p = Particle(p.verts2, p.faces2)
-
-        # check normal direction and flip if needed
-        nvec_sum = np.sum(p.nvec[:, 2])
-        if np.sign(nvec_sum) != dir:
-            p = p.flipfaces()
 
         return p, result_poly3
 
