@@ -195,16 +195,23 @@ class DipoleRetMirror(object):
         # requested dipole moments
         dip = self.dip.dip  # (npt, 3, ndip)
 
+        npt = dip.shape[0]
+        ndip = dip.shape[2]
+
         # transform scalars
         for name in ('sig1', 'sig2', 'phi1', 'phi1p', 'phi2', 'phi2p'):
             v = getattr(vmean, name, None)
             if v is None:
                 continue
 
-            # v shape: (n, npt, 3) where 3 = x,y,z basis dipoles
+            # DipoleRet.potential() flattens (n, npt, 3) -> (n, npt*3) for BEM.
+            # Reshape back to (n, npt, 3) before transforming.
             n = v.shape[0]
-            npt = dip.shape[0]
-            ndip = dip.shape[2]
+            if v.ndim == 2 and v.shape[1] == npt * 3:
+                v = v.reshape(n, npt, 3)
+            elif v.ndim == 2 and v.shape[1] == 3 and npt == 1:
+                v = v.reshape(n, 1, 3)
+
             vi = np.zeros((n, npt, ndip), dtype = complex)
 
             for i in range(npt):
@@ -222,10 +229,14 @@ class DipoleRetMirror(object):
             if v is None:
                 continue
 
-            # v shape: (n, 3, npt, 3) where last dim = x,y,z basis dipoles
+            # DipoleRet.potential() flattens (n, 3, npt, 3) -> (n, 3, npt*3).
+            # Reshape back to (n, 3, npt, 3) before transforming.
             n = v.shape[0]
-            npt = dip.shape[0]
-            ndip = dip.shape[2]
+            if v.ndim == 3 and v.shape[2] == npt * 3:
+                v = v.reshape(n, 3, npt, 3)
+            elif v.ndim == 3 and v.shape[2] == 3 and npt == 1:
+                v = v.reshape(n, 3, 1, 3)
+
             vi = np.zeros((n, 3, npt, ndip), dtype = complex)
 
             for i in range(npt):
