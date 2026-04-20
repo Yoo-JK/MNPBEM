@@ -17,6 +17,13 @@ import ctypes
 from ctypes import c_int, c_double, POINTER
 import numpy as np
 
+try:
+    from mpmath import mp, atan2 as _mp_atan2
+    mp.dps = 50
+    _HAS_MPMATH = True
+except ImportError:
+    _HAS_MPMATH = False
+
 
 _mkl = None
 _vdCos = None
@@ -76,8 +83,14 @@ def msin(x):
 def matan2(y, x):
     """MATLAB-compatible atan2.
 
-    MKL vdAtan2 and glibc atan2 both differ by 1 ULP from MATLAB in some
-    inputs. Currently use np.arctan2; a future fix could route through
-    a more accurate implementation.
+    Investigated 2026-04-20: `np.arctan2` and MKL vdAtan2 return identical
+    values, but MATLAB atan2 differs by 1 ULP in some inputs (MATLAB uses
+    its own `libmwmathutil` binary, not glibc or MKL VML).
+
+    mpmath 50-digit + double rounding tested — same result as np.arctan2,
+    i.e. correctly-rounded. MATLAB atan2 is NOT correctly-rounded in
+    these cases, so bit-identical matching with correctly-rounded atan2
+    is impossible. Kept as pass-through since mpmath adds overhead without
+    measurable benefit.
     """
     return np.arctan2(y, x)
