@@ -103,6 +103,22 @@ class ComParticle(object):
                 else:
                     p.flat()
 
+        # MATLAB getinput.m: re-init p.quad with bemoptions refine/rule/npol
+        quad_kwargs = {}
+        if 'rule' in kwargs:
+            quad_kwargs['rule'] = kwargs['rule']
+        if 'npol' in kwargs:
+            quad_kwargs['npol'] = kwargs['npol']
+        if 'refine' in kwargs:
+            quad_kwargs['refine'] = kwargs['refine']
+        if quad_kwargs:
+            from ..utils.quadface import QuadFace as _QuadFace
+            _rule = quad_kwargs.get('rule', 18)
+            _npol = quad_kwargs.get('npol', (7, 5))
+            _refine = quad_kwargs.get('refine', None)
+            for p in particles:
+                p.quad = _QuadFace(rule=_rule, npol=_npol, refine=_refine)
+
         return particles, closed_args
 
     def _norm(self):

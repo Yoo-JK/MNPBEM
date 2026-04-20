@@ -18,6 +18,32 @@ except ImportError:
     from quadrature import lglnodes, triangle_unit_set
 
 
+def _trisubdivide(xtab, ytab, wtab, nsub):
+    """Refine unit-triangle integration by nsub x nsub subdivision.
+
+    MATLAB: @quadface/private/trisubdivide.m
+    """
+    x_list, y_list, w_list = [], [], []
+    h = 1.0 / nsub
+    for i in range(nsub):
+        for j in range(nsub - i):
+            # triangle pointing upwards
+            x_list.append(i + xtab)
+            y_list.append(j + ytab)
+            w_list.append(wtab.copy())
+            # triangle pointing downwards (except for last row)
+            if j != nsub - 1 - i:
+                x_list.append(i + 1 - xtab)
+                y_list.append(j + 1 - ytab)
+                w_list.append(wtab.copy())
+    x_out = np.hstack(x_list) * h
+    y_out = np.hstack(y_list) * h
+    w_out = np.hstack(w_list)
+    n_sub_tri = len(x_out) // len(xtab)
+    w_out = w_out / n_sub_tri
+    return x_out, y_out, w_out
+
+
 class QuadFace(object):
     """
     Integration over triangular or quadrilateral boundary elements.
@@ -39,7 +65,8 @@ class QuadFace(object):
         Polar integration points and weights for quadrilaterals
     """
 
-    def __init__(self, rule: int = 18, npol: Tuple[int, int] = (7, 5)):
+    def __init__(self, rule: int = 18, npol: Tuple[int, int] = (7, 5),
+            refine: int = None):
         """
         Initialize quadrature rules.
 
@@ -53,11 +80,18 @@ class QuadFace(object):
             Default: (7, 5) = 7 radial × 5 angular points
             Total points: 3 × n_radial × n_angular (for triangles)
                          4 × n_radial × n_angular (for quads)
+        refine : int, optional
+            Subdivide unit triangle into refine×refine sub-triangles, giving
+            finer integration points. MATLAB: bemoptions('refine', N).
         """
         self.npol = npol
 
         # Standard triangle quadrature
         self.x, self.y, self.w = triangle_unit_set(rule)
+
+        # Optional refinement (MATLAB @quadface/private/init.m lines 20-23)
+        if refine is not None and refine > 1:
+            self.x, self.y, self.w = _trisubdivide(self.x, self.y, self.w, int(refine))
 
         # Polar triangle quadrature
         self.x3, self.y3, self.w3 = self._polar_triangle(npol)

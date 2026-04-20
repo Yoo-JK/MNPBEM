@@ -363,7 +363,8 @@ class Particle(object):
         # Quadrature rules
         rule = kwargs.get('rule', 18)  # Use rule=18 (28 points) matching MATLAB default
         npol = kwargs.get('npol', (7, 5))  # (n_radial, n_angular)
-        self.quad = QuadFaceNew(rule=rule, npol=npol)
+        refine = kwargs.get('refine', None)  # MATLAB bemoptions('refine', N)
+        self.quad = QuadFaceNew(rule=rule, npol=npol, refine=refine)
 
         # Interpolation type
         self.interp = interp

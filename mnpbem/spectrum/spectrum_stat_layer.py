@@ -63,10 +63,14 @@ class SpectrumStatLayer(object):
         if pinfty is None:
             # MATLAB @spectrumstatlayer/init.m uses
             # trispheresegment(linspace(0,2*pi,21), linspace(0,pi,21), 2)
-            # This has an explicit equator (theta=pi/2), unlike icosphere
-            # which has asymmetric z>=0 vs z<0 split → 15% error at oblique.
-            nvec, area = trispheresegment_unit(21, 21)
-            self.pinfty = _PinftyStruct(nvec, area)
+            # The MATLAB particle has CURVED quad face areas (computed via
+            # midpoint interpolation) that differ from analytical solid angles
+            # by ~1.1%. Using solid angles gave 3.86% scattering error.
+            from ..geometry import trispheresegment
+            phi_grid = np.linspace(0, 2 * np.pi, 21)
+            theta_grid = np.linspace(0, np.pi, 21)
+            p_inf = trispheresegment(phi_grid, theta_grid, 2)
+            self.pinfty = _PinftyStruct(p_inf.nvec.copy(), p_inf.area.copy())
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)
