@@ -602,12 +602,14 @@ class DipoleRetLayer(object):
                 dip = self.dip[ipos, :, idip]
                 nb = np.sqrt(self.pt.eps1(sig.enei)[ipos])
 
-                # MATLAB: tot = 1 + imag(e * dip') / (0.5*nb*gamma)
+                # MATLAB @dipoleretlayer/decayrate.m:52-57 —
+                # tot = 1 + imag(e * dip') / (0.5*nb*gamma)   (no rad term!)
+                # rad = rad / (0.5*nb*gamma)
+                # MATLAB stores complex if nb is complex (absorbing medium).
                 e_i = e[ipos, :, ipos, idip]
-                tot[ipos, idip] = np.real(1 + np.imag(e_i @ dip) / (0.5 * nb * gamma))
-                # MATLAB: rad = rad / (0.5*nb*gamma)
+                tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma)
                 rad[ipos, idip] = rad[ipos, idip] / (0.5 * nb * gamma)
-                rad0[ipos, idip] = np.real(nb * gamma)
+                rad0[ipos, idip] = nb * gamma
 
         return tot, rad, rad0
 
