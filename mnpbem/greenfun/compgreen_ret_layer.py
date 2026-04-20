@@ -540,13 +540,29 @@ class CompGreenRetLayer(object):
         self._G_cache = {}
 
     def _init_layer_indices(self) -> None:
+        # MATLAB Greenfun/@compgreenretlayer/private/init.m:17-21
+        #   inout1 = p1.expand( num2cell( p1.inout(:, end) ) )
+        #   ind1 = find( any( inout1 == layer.ind, 2 ) )
+        # i.e. faces whose OUTSIDE medium index belongs to layer.ind
+        def _layer_faces(p, layer_ind):
+            if hasattr(p, 'expand') and hasattr(p, 'inout'):
+                inout_last = np.atleast_2d(p.inout)[:, -1]
+                try:
+                    face_medium = p.expand([int(v) for v in inout_last])
+                    face_medium = np.asarray(face_medium).ravel()
+                except Exception:
+                    # Fallback: use comparticle particle index
+                    pos = p.pos if hasattr(p, 'pos') else p.pc.pos
+                    return np.arange(pos.shape[0])
+            else:
+                pos = p.pos if hasattr(p, 'pos') else p.pc.pos
+                return np.arange(pos.shape[0])
+            layer_ind_arr = np.atleast_1d(np.asarray(layer_ind, dtype = int))
+            mask = np.isin(face_medium, layer_ind_arr)
+            return np.where(mask)[0]
 
-        pos1 = self.p1.pos if hasattr(self.p1, 'pos') else self.p1.pc.pos
-        pos2 = self.p2.pos if hasattr(self.p2, 'pos') else self.p2.pc.pos
-
-        # All faces are connected to the layer (for substrate geometry)
-        self.ind1 = np.arange(pos1.shape[0])
-        self.ind2 = np.arange(pos2.shape[0])
+        self.ind1 = _layer_faces(self.p1, self.layer.ind)
+        self.ind2 = _layer_faces(self.p2, self.layer.ind)
 
     def _is_outer_surface(self, i, j):
         # MATLAB eval1.m line 33: i1 == size(obj.p1.inout, 2) && i2 == 2
