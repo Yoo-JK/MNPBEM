@@ -2,6 +2,8 @@ import numpy as np
 from typing import Tuple, Optional, Dict, Any, Callable, List
 from scipy.spatial import Delaunay, ConvexHull
 
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2
+
 
 def inpoly(p: np.ndarray,
         node: np.ndarray,
@@ -621,8 +623,8 @@ def _getedges(t: np.ndarray,
 def _rotate(p: np.ndarray,
         theta: float) -> np.ndarray:
 
-    s = np.sin(theta)
-    c = np.cos(theta)
+    s = msin(theta)
+    c = mcos(theta)
     rot = np.array([[c, s], [-s, c]])
     return p @ rot
 
@@ -652,7 +654,7 @@ def _minrectangle(p: np.ndarray) -> float:
 
     for k in range(n_hull):
         dxy = p_hull[(k + 1) % n_hull] - p_hull[k]
-        ang = np.arctan2(dxy[1], dxy[0])
+        ang = matan2(dxy[1], dxy[0])
         theta = -ang
 
         pr = _rotate(p_hull, theta)
@@ -1753,7 +1755,7 @@ def mesh_collection(num: int) -> Tuple[np.ndarray, np.ndarray]:
         node = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 1.0], [0.0, 1.0]])
         # rotate by 45 degrees
         theta = np.radians(45)
-        c, s = np.cos(theta), np.sin(theta)
+        c, s = mcos(theta), msin(theta)
         rot = np.array([[c, s], [-s, c]])
         node = node @ rot
         hdata = {'hmax': 0.5}
@@ -1761,9 +1763,9 @@ def mesh_collection(num: int) -> Tuple[np.ndarray, np.ndarray]:
 
     elif num == 2:
         # Rectangle with circular hole
-        theta = np.linspace(0, 2 * np.pi, 100, endpoint = False)
-        x = np.cos(theta) / 2
-        y = np.sin(theta) / 2
+        theta = mlinspace(0, 2 * np.pi, 101)[:-1]
+        x = mcos(theta) / 2
+        y = msin(theta) / 2
 
         n_circ = len(theta)
         rect_nodes = np.array([[-5.0, -5.0], [5.0, -5.0], [5.0, 15.0], [-5.0, 15.0]])
