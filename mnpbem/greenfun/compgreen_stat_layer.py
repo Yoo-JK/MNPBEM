@@ -38,8 +38,9 @@ class CompGreenStatLayer(object):
             layer: Any,
             **options: Any) -> None:
 
-        # MATLAB: compgreenstatlayer uses image charge method
+        # MATLAB: @compgreenstatlayer/init.m uses image charge method
         # Only works for single layer (substrate) with particle in upper medium
+        assert layer.n == 1, 'compgreenstatlayer requires a single interface'
 
         # Direct Green function (free-space)
         self.g = CompGreenStat(p1, p2, **options)
@@ -47,7 +48,23 @@ class CompGreenStatLayer(object):
         z_layer = layer.z[0]
         self._z_layer = z_layer
 
-        # Create reflected particle by mirroring p2 across the layer interface
+        # MATLAB indices (1-based translated to 0-based):
+        #   [ind, indl] = indlayer(layer, p2.pos(:,3))
+        #   indl = find(indl)         faces of p2 LOCATED in the layer
+        #   ind2 = setdiff(1:n, indl) faces of p2 NOT in the layer
+        #   ind1 = find(indlayer(p1.pos(:,3)) == layer.ind(1))  p1 in upper medium
+        ind_p2, in_p2 = layer.indlayer(p2.pos[:, 2])
+        self._indl = np.where(in_p2)[0]
+        self._ind2 = np.setdiff1d(np.arange(p2.pos.shape[0]), self._indl)
+
+        ind_p1, _ = layer.indlayer(p1.pos[:, 2])
+        self._ind1 = np.where(ind_p1 == layer.ind[0])[0]
+
+        # All p2 positions must be in upper medium (assertion from MATLAB)
+        assert np.all(ind_p2 == layer.ind[0]), \
+            'compgreenstatlayer: p2 must be in upper medium'
+
+        # Create reflected particle by mirroring ONLY ind2 faces of p2
         # MATLAB: p2r = shift(flip(select(shift(p2, vec), 'index', ind2), 3), -vec)
         self._create_reflected_green(p1, p2, z_layer, **options)
 
@@ -198,26 +215,87 @@ class CompGreenStatLayer(object):
             enei: float,
             key: str = 'G') -> np.ndarray:
 
-        _, f2, _ = self._image_factors(enei)
+        # MATLAB: @compgreenstatlayer/eval.m
+        layer = self.layer
+        eps1_val, _ = layer.eps[0](enei)
+        eps2_val, _ = layer.eps[1](enei)
+
+        # image charge factor in upper medium
+        f2 = -(eps2_val - eps1_val) / (eps2_val + eps1_val)
+
+        n1 = self.p1.pos.shape[0]
+        ind1 = self._ind1
+        indl = self._indl
+        ind2 = self._ind2
+
+        # MATLAB: accumarray(ind1, 1, [n,1], [], 2*eps1/(eps1+eps2))
+        # Places val=1 at ind1 indices; fill others with 2*eps1/(eps1+eps2).
+        f1 = np.full(n1, 2 * eps1_val / (eps1_val + eps2_val), dtype = complex)
+        f1[ind1] = 1.0
+        # MATLAB: 2 * accumarray(ind1, eps1, [n,1], [], eps2) / (eps1+eps2)
+        # ind1 -> eps1; others -> eps2; then *2/(eps1+eps2).
+        fl = np.full(n1, 2 * eps2_val / (eps1_val + eps2_val), dtype = complex)
+        fl[ind1] = 2 * eps1_val / (eps1_val + eps2_val)
+
+        same_p = (self.p1 is self.p2) or getattr(self, 'p1', None) is getattr(self, 'p2', None)
 
         if key == 'G':
-            return self.g.G + f2 * self._gr.G
-        elif key == 'F':
-            return self.g.F + f2 * self._gr.F
-        elif key == 'H1':
-            H1_direct = self.g.F + 2 * np.pi * np.eye(self.g.F.shape[0])
-            return H1_direct + f2 * self._gr.F
-        elif key == 'H2':
-            H2_direct = self.g.F - 2 * np.pi * np.eye(self.g.F.shape[0])
-            return H2_direct + f2 * self._gr.F
-        elif key == 'Gp':
-            return self.g._eval_Gp() + f2 * self._gr.Gp
-        elif key == 'H1p':
-            return self.g._eval_H1p() + f2 * self._gr.Gp
-        elif key == 'H2p':
-            return self.g._eval_H2p() + f2 * self._gr.Gp
-        else:
-            raise ValueError('[error] Unknown Green function key: <{}>'.format(key))
+            G = self.g.G * f1[:, np.newaxis]
+            # layer correction
+            if len(indl) > 0:
+                G[:, indl] = self.g.G[:, indl] * fl[:, np.newaxis]
+            # reflected part (only for upper-medium p1 x not-in-layer p2)
+            if len(ind1) > 0 and len(ind2) > 0:
+                gr_F = self._gr.G
+                G[np.ix_(ind1, ind2)] += f2 * gr_F[np.ix_(ind1, ind2)]
+            return G
+
+        if key in ('F', 'H1', 'H2'):
+            F = self.g.F * f1[:, np.newaxis]
+            # layer correction: (ind1 \ indl, indl) *= (1 + f2) / f1_prev_factor
+            # MATLAB: F(ind, indl) = F(ind, indl) * (1 + f2), where F already had
+            # f1 applied. Since f1[ind]=2*eps1/(eps1+eps2) and we want to end up
+            # with (1+f2), we re-scale from f1 to (1+f2) by multiplying by (1+f2)/f1.
+            # Simpler: recompute from raw g.F * (1 + f2).
+            ind_notin = np.setdiff1d(ind1, indl)
+            if len(ind_notin) > 0 and len(indl) > 0:
+                F[np.ix_(ind_notin, indl)] = self.g.F[np.ix_(ind_notin, indl)] * (1 + f2)
+            # reflected part
+            if len(ind1) > 0 and len(ind2) > 0:
+                F[np.ix_(ind1, ind2)] += f2 * self._gr.F[np.ix_(ind1, ind2)]
+            # Same-particle: zero out in-layer self-block + diagonal f
+            if same_p and len(indl) > 0:
+                F[np.ix_(indl, indl)] = 0
+                f_diag = np.zeros(n1, dtype = complex)
+                f_diag[indl] = f2
+                if key == 'H1':
+                    F = F + 2 * np.pi * (np.diag(f_diag) + np.eye(n1))
+                elif key == 'H2':
+                    F = F + 2 * np.pi * (np.diag(f_diag) - np.eye(n1))
+            elif same_p:
+                if key == 'H1':
+                    F = F + 2 * np.pi * np.eye(n1)
+                elif key == 'H2':
+                    F = F - 2 * np.pi * np.eye(n1)
+            return F
+
+        if key == 'Gp':
+            Gp = self.g._eval_Gp()
+            Gp_out = Gp * f1[:, np.newaxis, np.newaxis]
+            if len(indl) > 0:
+                Gp_out[:, :, indl] = Gp[:, :, indl] * fl[:, np.newaxis, np.newaxis]
+            if len(ind1) > 0 and len(ind2) > 0:
+                Gp_out[np.ix_(ind1, np.arange(3), ind2)] += f2 * self._gr.Gp[np.ix_(ind1, np.arange(3), ind2)]
+            return Gp_out
+
+        if key in ('H1p', 'H2p'):
+            Hp_raw = self.g._eval_H1p() if key == 'H1p' else self.g._eval_H2p()
+            Hp = Hp_raw * f1[:, np.newaxis, np.newaxis]
+            if len(ind1) > 0 and len(ind2) > 0:
+                Hp[np.ix_(ind1, np.arange(3), ind2)] += f2 * self._gr.Gp[np.ix_(ind1, np.arange(3), ind2)]
+            return Hp
+
+        raise ValueError('[error] Unknown Green function key: <{}>'.format(key))
 
     def eval_multi(self,
             enei: float,

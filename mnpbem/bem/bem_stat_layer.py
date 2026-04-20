@@ -42,22 +42,28 @@ class BEMStatLayer(object):
         if self.enei is not None and np.isclose(self.enei, enei):
             return self
 
-        # Get Green function with reflected contribution
-        F_total = self.g.eval(enei, 'F')
+        # MATLAB @bemstatlayer/subsref.m "()" branch:
+        #   [H1, H2] = eval(obj.g, enei, 'H1', 'H2')
+        #   mat = -inv(eps1 * H1 - eps2 * H2) * (eps1 - eps2)
+        # The eps1/eps2 are inside/outside dielectric functions of the
+        # particle (per-face). They are scalars for homogeneous setups.
+        H1 = self.g.eval(enei, 'H1')
+        H2 = self.g.eval(enei, 'H2')
 
-        # Inside and outside dielectric function
-        eps1 = self.p.eps1(enei)
-        eps2 = self.p.eps2(enei)
+        eps1 = np.atleast_1d(self.p.eps1(enei)).astype(complex)
+        eps2 = np.atleast_1d(self.p.eps2(enei)).astype(complex)
+        n = H1.shape[0]
+        if eps1.size == 1:
+            eps1 = np.full(n, eps1[0], dtype = complex)
+        if eps2.size == 1:
+            eps2 = np.full(n, eps2[0], dtype = complex)
 
-        # Lambda [Garcia de Abajo, Eq. (23)]
-        # MATLAB: lambda = 2 * pi * (eps1 + eps2) ./ (eps1 - eps2)
-        lambda_diag = 2 * np.pi * (eps1 + eps2) / (eps1 - eps2)
+        # Use diagonal multiplication to avoid forming dense diag matrices.
+        A = eps1[:, np.newaxis] * H1 - eps2[:, np.newaxis] * H2
+        rhs_scale = eps1 - eps2  # per-face
 
-        # BEM resolvent matrix
-        # MATLAB: obj.mat = -inv(diag(lambda) + F_total)
-        Lambda = np.diag(lambda_diag)
-        self.mat_lu = lu_factor(-(Lambda + F_total))
-
+        self._A_lu = lu_factor(A)
+        self._rhs_scale = rhs_scale
         self.enei = enei
 
         return self
@@ -77,7 +83,9 @@ class BEMStatLayer(object):
         if phip.ndim > 2:
             phip = phip.reshape(phip.shape[0], -1)
 
-        sig_result = lu_solve(self.mat_lu, phip)
+        # MATLAB mat * phip = -inv(A) * diag(eps1 - eps2) * phip
+        rhs = self._rhs_scale[:, np.newaxis] * phip
+        sig_result = -lu_solve(self._A_lu, rhs)
 
         if sig_result.shape != orig_shape:
             sig_result = sig_result.reshape(orig_shape)
