@@ -657,8 +657,13 @@ def _minrectangle(p: np.ndarray) -> float:
 
         pr = _rotate(p_hull, theta)
         dxy_r = np.max(pr, axis = 0) - np.min(pr, axis = 0)
-        area = np.round(dxy_r[0] * dxy_r[1], 10)
-        if area < best_area:
+        # MATLAB uses raw float product with strict '<'. For regular polygons
+        # where all edges give (nearly) identical area, MATLAB FP noise
+        # often selects the LAST matching edge. Use '<=' + no rounding so
+        # ties favour last edge → matches MATLAB for symmetric polygons
+        # (e.g. 25-gon: Python -7.2° → +7.2° matching MATLAB).
+        area = dxy_r[0] * dxy_r[1]
+        if area <= best_area:
             best_area = area
             best_theta = theta
 
