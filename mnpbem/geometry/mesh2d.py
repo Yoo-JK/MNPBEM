@@ -1225,7 +1225,7 @@ def _boundarynodes(ph: np.ndarray,
         L = np.sqrt(np.sum(dxy ** 2, axis = 1))
         he = 0.5 * (h[e[:, 0]] + h[e[:, 1]])
 
-        ratio = L / np.maximum(he, np.finfo(float).eps)
+        ratio = L / he
         split = ratio >= 1.5
 
         if not np.any(split):
@@ -1284,7 +1284,7 @@ def _boundarynodes(ph: np.ndarray,
     for _iter in range(50):
         delta_old = delta
 
-        F_factor = he / np.maximum(L, np.finfo(float).eps) - 1.0
+        F_factor = he / L - 1.0
         Fxy = dxy * F_factor[:, np.newaxis]
         Fp = S.dot(Fxy)
         Fp[:nnode_orig] = 0.0
@@ -1292,7 +1292,7 @@ def _boundarynodes(ph: np.ndarray,
 
         dxy = p[e[:, 1]] - p[e[:, 0]]
         Lnew = np.sqrt(np.sum(dxy ** 2, axis = 1))
-        delta = np.max(np.abs((Lnew - L) / np.maximum(Lnew, np.finfo(float).eps)))
+        delta = np.max(np.abs((Lnew - L) / Lnew))
         if delta < 0.02:
             break
         L = Lnew
