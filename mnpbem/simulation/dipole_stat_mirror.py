@@ -216,7 +216,8 @@ class DipoleStatMirror(object):
                                  + d[1] * v[:, i, 1]
                                  + d[2] * v[:, i, 2])
 
-            setattr(result, name, vi)
+            # Flatten to (n, npt*ndip) for downstream consumers.
+            setattr(result, name, vi.reshape(n, npt * ndip))
 
         # transform vectors
         for name in ('e',):
@@ -241,7 +242,8 @@ class DipoleStatMirror(object):
                                     + d[1] * v[:, :, i, 1]
                                     + d[2] * v[:, :, i, 2])
 
-            setattr(result, name, vi)
+            # Flatten to (n, 3, npt*ndip) for downstream consumers.
+            setattr(result, name, vi.reshape(n, 3, npt * ndip))
 
         return result, p_full
 

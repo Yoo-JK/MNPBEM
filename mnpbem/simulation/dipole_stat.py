@@ -342,6 +342,13 @@ class DipoleStat(object):
 
         npt = self.pt.n
         ndip = self.dip.shape[2]
+
+        # Reshape e from (npt, 3, npol) to (npt, 3, npt, ndip) for decayrate indexing
+        # (matches DipoleRet.decayrate, DipoleStatLayer.decayrate).
+        if e.ndim == 3 and e.shape[2] == npt * ndip:
+            e = e.reshape(npt, 3, npt, ndip)
+        elif e.ndim == 3 and e.shape[2] == ndip and npt == 1:
+            e = e.reshape(npt, 3, npt, ndip)
         sig_arr = sig.sig
         # Reshape sig to (nfaces, npt*ndip) for matrix multiply
         if sig_arr.ndim == 1:
