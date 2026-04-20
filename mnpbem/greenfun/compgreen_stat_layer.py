@@ -289,8 +289,13 @@ class CompGreenStatLayer(object):
             return Gp_out
 
         if key in ('H1p', 'H2p'):
+            # MATLAB eval.m handles Gp (not H1p/H2p directly). H1p/H2p add
+            # 2π·nvec only for self-term (p1 is p2). Apply the same layer
+            # corrections as Gp.
             Hp_raw = self.g._eval_H1p() if key == 'H1p' else self.g._eval_H2p()
             Hp = Hp_raw * f1[:, np.newaxis, np.newaxis]
+            if len(indl) > 0:
+                Hp[:, :, indl] = Hp_raw[:, :, indl] * fl[:, np.newaxis, np.newaxis]
             if len(ind1) > 0 and len(ind2) > 0:
                 Hp[np.ix_(ind1, np.arange(3), ind2)] += f2 * self._gr.Gp[np.ix_(ind1, np.arange(3), ind2)]
             return Hp
