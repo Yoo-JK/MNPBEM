@@ -196,7 +196,10 @@ def refinematrixlayer(p1, p2, layer, AbsCutoff=0, RelCutoff=0, memsize=2e7):
         d2 = d - rad2[chunk][np.newaxis, :]
 
         # Distance in units of boundary element radius
-        if len(rad1) != 1:
+        # MATLAB: if size(rad,1) ~= 1 (column vector of length p1.n), use rad;
+        # else fall back to rad2(chunk). For ComPoint which lacks bradius,
+        # rad1 was set to rad2 (length n2, NOT n1) -- in that case use rad2.
+        if len(rad1) == n1:
             id_rel = d2 / rad1[:, np.newaxis]
         else:
             id_rel = d2 / rad2[chunk][np.newaxis, :]

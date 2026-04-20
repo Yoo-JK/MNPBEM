@@ -759,9 +759,9 @@ class EELSBase(object):
     @staticmethod
     def _quad(p: object, face_idx: int) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Get quadrature positions and weights for a boundary element.
+        Get quadrature positions and weights for a single boundary element.
 
-        MATLAB: quad(p, i1)
+        MATLAB: [pos, w] = quad(p, i1)
 
         Parameters
         ----------
@@ -774,13 +774,23 @@ class EELSBase(object):
         pos : ndarray, shape (nquad, 3)
             Quadrature positions
         w : ndarray, shape (nquad,)
-            Quadrature weights
+            Quadrature weights (sum to p.area[face_idx])
         """
-        if hasattr(p, 'quad') and p.quad is not None:
-            return p.quad(face_idx)
-        else:
-            # Fallback: single point at centroid
-            return p.pos[face_idx:face_idx + 1, :], np.array([1.0])
+        # Prefer full Gauss-Legendre quadrature via quad_integration which
+        # matches MATLAB Particle/quad.m. Returns (pos, w_sparse, iface).
+        if hasattr(p, 'quad_integration') and callable(p.quad_integration):
+            pos, w_sparse, _ = p.quad_integration(np.array([face_idx]))
+            # w_sparse has shape (1, nquad); convert to 1-D array summing to area
+            w = np.asarray(w_sparse.toarray()).ravel()
+            # Only keep quadrature points with non-zero weights for this face
+            mask = w != 0
+            if not np.all(mask):
+                pos = pos[mask, :]
+                w = w[mask]
+            return pos, w
+        # Fallback: single point at centroid. Weight must equal face area so
+        # subsequent normalization w/area yields unit weight.
+        return p.pos[face_idx:face_idx + 1, :], np.array([p.area[face_idx]])
 
     def __repr__(self) -> str:
         return 'EELSBase(n_impact={}, vel={:.4f}, width={})'.format(

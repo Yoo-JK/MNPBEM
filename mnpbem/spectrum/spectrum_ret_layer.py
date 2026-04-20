@@ -20,8 +20,13 @@ class SpectrumRetLayer(object):
 
         # Handle different input types
         if pinfty is None:
-            _, _, nvec, area = trisphere_unit(256)
-            self.pinfty = _PinftyStruct(nvec, area)
+            # MATLAB @spectrumretlayer/init.m uses
+            # trispheresegment(linspace(0,2*pi,21), linspace(0,pi,21), 2)
+            from ..geometry import trispheresegment
+            phi_grid = np.linspace(0, 2 * np.pi, 21)
+            theta_grid = np.linspace(0, np.pi, 21)
+            p_inf = trispheresegment(phi_grid, theta_grid, 2)
+            self.pinfty = _PinftyStruct(p_inf.nvec.copy(), p_inf.area.copy())
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)
