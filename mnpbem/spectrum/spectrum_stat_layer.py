@@ -70,7 +70,8 @@ class SpectrumStatLayer(object):
             phi_grid = np.linspace(0, 2 * np.pi, 21)
             theta_grid = np.linspace(0, np.pi, 21)
             p_inf = trispheresegment(phi_grid, theta_grid, 2)
-            self.pinfty = _PinftyStruct(p_inf.nvec.copy(), p_inf.area.copy())
+            self.pinfty = _PinftyStruct(
+                p_inf.nvec.copy(), p_inf.area.copy(), pos = p_inf.pos.copy())
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)
@@ -86,6 +87,10 @@ class SpectrumStatLayer(object):
 
         self.nvec = self.pinfty.nvec if hasattr(self.pinfty, 'nvec') else self.pinfty['nvec']
         self.area = self.pinfty.area if hasattr(self.pinfty, 'area') else self.pinfty['area']
+        # MATLAB scattering.m uses pinfty.pos for the hemisphere split.
+        # pos is the actual face centroid (radius ~2 for trispheresegment),
+        # which can differ in sign from nvec at faces straddling the equator.
+        self.pos = self.pinfty.pos if hasattr(self.pinfty, 'pos') and self.pinfty.pos is not None else self.nvec
         self.ndir = len(self.nvec)
 
 
@@ -97,11 +102,8 @@ class SpectrumStatLayer(object):
         # MATLAB: spectrumstatlayer/init.m
         # Upper hemisphere (z > 0) -> medium above layer
         # Lower hemisphere (z < 0) -> medium below layer
-
-        # MATLAB uses strict >/<. Face centroids from trispheresegment_unit
-        # never land exactly on z=0 (equator), but the quad mesh has faces
-        # below vs above the equator line.
-        z = self.nvec[:, 2]
+        # MATLAB uses pinfty.pos (face centroid position), NOT nvec.
+        z = self.pos[:, 2]
         self.ind_up = np.where(z > 0)[0]
         self.ind_down = np.where(z < 0)[0]
 
@@ -381,10 +383,11 @@ class SpectrumStatLayer(object):
             ind = np.arange(self.ndir)
         else:
             if self.layer is not None:
+                # MATLAB: uses pinfty.pos[:,3], not nvec[:,3]
                 if self.medium == self.layer.ind[0]:
-                    ind = np.where(self.nvec[:, 2] > 0)[0]
+                    ind = np.where(self.pos[:, 2] > 0)[0]
                 elif self.medium == self.layer.ind[-1]:
-                    ind = np.where(self.nvec[:, 2] < 0)[0]
+                    ind = np.where(self.pos[:, 2] < 0)[0]
                 else:
                     ind = np.arange(self.ndir)
             else:

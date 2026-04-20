@@ -205,9 +205,14 @@ class SpectrumRet(object):
 class _PinftyStruct(object):
     """Simple struct to hold pinfty data."""
 
-    def __init__(self, nvec, area):
+    def __init__(self, nvec, area, pos = None):
         self.nvec = nvec
         self.area = area
+        # pos: actual face centroid positions on unit-sphere-at-infinity.
+        # MATLAB spectrumstatlayer/scattering.m uses pinfty.pos[:,3] for the
+        # hemisphere split (not nvec[:,3]). For flat-triangle sphere meshes
+        # straddling the equator, these can disagree in sign.
+        self.pos = pos if pos is not None else nvec
 
 
 # Add methods to SpectrumRet class
