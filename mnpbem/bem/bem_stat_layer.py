@@ -80,11 +80,15 @@ class BEMStatLayer(object):
 
         phip = exc.phip
         orig_shape = phip.shape
-        if phip.ndim > 2:
-            phip = phip.reshape(phip.shape[0], -1)
+        if phip.ndim == 1:
+            phip_2d = phip.reshape(-1, 1)
+        elif phip.ndim > 2:
+            phip_2d = phip.reshape(phip.shape[0], -1)
+        else:
+            phip_2d = phip
 
         # MATLAB mat * phip = -inv(A) * diag(eps1 - eps2) * phip
-        rhs = self._rhs_scale[:, np.newaxis] * phip
+        rhs = self._rhs_scale[:, np.newaxis] * phip_2d
         sig_result = -lu_solve(self._A_lu, rhs)
 
         if sig_result.shape != orig_shape:
