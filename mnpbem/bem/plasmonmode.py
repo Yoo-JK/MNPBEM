@@ -72,16 +72,19 @@ def plasmonmode(
         idx_sort_l = np.argsort(ene_all_l.real)[:nev_actual]
         ul = ul_all[:, idx_sort_l].T  # (nev, n)
 
-    # make eigenvectors bi-orthogonal  (MATLAB: ul = (ul * ur) \ ul)
-    overlap = ul @ ur  # (nev, nev)
-    ul = np.linalg.solve(overlap, ul)
-
     # extract eigenvalues and sort by ascending real part
+    # IMPORTANT: sort BEFORE bi-orthogonalization so ul and ur are properly
+    # paired. Sorting after bi-orthogonalization breaks the identity
+    # ul @ ur = I when sort_idx is not the identity permutation.
     ene = ene_diag.real if np.all(np.isreal(ene_diag)) else ene_diag
     sort_idx = np.argsort(ene.real)
     ene = ene[sort_idx].real
 
     ur = ur[:, sort_idx]
     ul = ul[sort_idx, :]
+
+    # make eigenvectors bi-orthogonal  (MATLAB: ul = (ul * ur) \ ul)
+    overlap = ul @ ur  # (nev, nev)
+    ul = np.linalg.solve(overlap, ul)
 
     return ene, ur, ul

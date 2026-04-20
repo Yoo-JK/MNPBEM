@@ -679,6 +679,16 @@ class EELSBase(object):
         in_expanded = path.contains_points(points, radius = 1e-10)
         on_mask = in_expanded & ~in_mask
 
+        # Explicit vertex check: points coincident with polygon vertices
+        # can be missed by matplotlib Path (impact=0 grazing vertex case).
+        vertex_coords = np.column_stack([xv, yv])
+        if vertex_coords.size > 0:
+            from scipy.spatial.distance import cdist
+            dist_to_vertices = cdist(points, vertex_coords)
+            min_dist = np.min(dist_to_vertices, axis = 1)
+            on_vertex = min_dist < 1e-10
+            on_mask = on_mask | on_vertex
+
         # Combine: in_mask includes points on boundary
         in_mask = in_mask | on_mask
 
