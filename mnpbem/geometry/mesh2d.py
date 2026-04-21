@@ -1684,14 +1684,17 @@ def _loop_signed_area(edge_indices: np.ndarray,
 def _classify_faces(face_chk: List[np.ndarray],
         edge: np.ndarray,
         node: np.ndarray) -> Tuple[List[int], List[int], List[np.ndarray]]:
-    # Split face_chk into (outer_idx, hole_idx) via containment: face i is a
-    # hole iff its first vertex lies strictly inside some other face's loop.
+    # Split face_chk into (outer_idx, hole_idx) via containment.
+    # Use the polygon CENTROID as probe (not the first vertex) — a hole's
+    # vertex can lie on the outer boundary, but its centroid is always
+    # strictly inside the outer loop.
     face_verts = [_loop_vertices(f, edge, node) for f in face_chk]
     is_hole = [False] * len(face_chk)
     for i, vi in enumerate(face_verts):
-        if vi.shape[0] == 0:
+        if vi.shape[0] < 3:
             continue
-        probe = vi[0:1]
+        # centroid: robust inside-probe
+        probe = vi.mean(axis = 0, keepdims = True)
         for j, vj in enumerate(face_verts):
             if i == j or vj.shape[0] < 3:
                 continue
