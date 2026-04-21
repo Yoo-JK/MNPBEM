@@ -103,6 +103,34 @@ class EELSBase(object):
         if phiout is not None:
             self.phiout = phiout
 
+        # MATLAB: init.m line 22
+        #   if isfield(op, 'refine'), p = set(p, 'quad', quadface(op)); end
+        # The 'eels.refine' bemoption (e.g. demoeelsret7/8) subdivides the
+        # unit-triangle integration to improve near-beam boundary integration
+        # accuracy. Must be applied to every Particle making up the ComParticle
+        # since _quad() walks the composite through quad_integration().
+        refine = options.get('refine', None)
+        if refine is None:
+            # Support MATLAB-style nested option: options = {'eels': {'refine': 2}}
+            eels_opts = options.get('eels', None)
+            if isinstance(eels_opts, dict):
+                refine = eels_opts.get('refine', None)
+        if refine is not None and refine > 1:
+            from ..utils.quadface import QuadFace as _QuadFace
+            rule = options.get('rule', 18)
+            npol = options.get('npol', (7, 5))
+            new_quad = _QuadFace(rule = rule, npol = npol, refine = int(refine))
+            # Replace quad on the composite pc and on each sub-particle so that
+            # Particle.quad_integration() (used by _quad) sees the refined rule.
+            if hasattr(p, 'pc') and p.pc is not None:
+                p.pc.quad = new_quad
+            if hasattr(p, 'p') and isinstance(p.p, list):
+                for sub in p.p:
+                    sub.quad = new_quad
+            else:
+                # Single particle
+                p.quad = new_quad
+
         # Save input
         # MATLAB: init.m line 25
         impact = np.asarray(impact, dtype = np.float64)
