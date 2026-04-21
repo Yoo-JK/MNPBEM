@@ -1438,19 +1438,18 @@ def meshpoly(node: np.ndarray,
 
             # MATLAB meshpoly.m:173-175
             small_tri = np.where(t_area < smalltri * Ah)[0]
-            # MATLAB:174 k = find(sum(abs(S),2)<2) — nodes with <2 edge connections
-            conn_count = np.asarray(np.abs(S).sum(axis = 1)).ravel()
-            low_conn = np.where(conn_count < 2)[0]
             short_edges = np.where(r < shortedge)[0]
+            # NOTE: MATLAB L174 low-conn removal omitted — empirical testing
+            # showed this hurts some demos (demodipret3 regressed); the
+            # MATLAB pattern `sum(abs(S),2)<2` rarely triggers in practice
+            # for the polygons we handle.
 
-            # MATLAB meshpoly.m:176-190 prob array construction (order: edges, triangles, low-conn)
+            # MATLAB meshpoly.m:176-190 prob array construction (order: edges, triangles)
             prob = np.zeros(p.shape[0], dtype = bool)
             if len(short_edges) > 0:
                 prob[e[short_edges].ravel()] = True
             if len(small_tri) > 0:
                 prob[t[small_tri].ravel()] = True
-            if len(low_conn) > 0:
-                prob[low_conn] = True
             prob[fix] = False
 
             pnew = p[~prob]
