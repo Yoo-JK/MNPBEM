@@ -659,13 +659,14 @@ def _minrectangle(p: np.ndarray) -> float:
 
         pr = _rotate(p_hull, theta)
         dxy_r = np.max(pr, axis = 0) - np.min(pr, axis = 0)
-        # MATLAB uses raw float product with strict '<'. For regular polygons
-        # where all edges give (nearly) identical area, MATLAB FP noise
-        # often selects the LAST matching edge. Use '<=' + no rounding so
-        # ties favour last edge → matches MATLAB for symmetric polygons
-        # (e.g. 25-gon: Python -7.2° → +7.2° matching MATLAB).
-        area = dxy_r[0] * dxy_r[1]
-        if area <= best_area:
+        # MATLAB @quadtree/minrectangle uses strict '<': first edge of a tie wins.
+        # Regular N-gons give near-identical areas differing only in FP noise;
+        # round to 10 digits so exact ties are preserved and strict '<' keeps
+        # the first edge, matching MATLAB. Critical for refun-based subdivision:
+        # picking the wrong tied edge rotates the quadtree grid and causes huge
+        # mesh quality differences (demodipstat4 -1177 vs +25).
+        area = round(dxy_r[0] * dxy_r[1], 10)
+        if area < best_area:
             best_area = area
             best_theta = theta
 
