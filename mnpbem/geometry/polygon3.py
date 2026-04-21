@@ -149,6 +149,37 @@ class Polygon3(object):
             enriched_poly.sym = None
         result_poly3.poly = enriched_poly
 
+        # MATLAB plate.m L69-82: boundary smoothing via midpoints('same') on
+        # polygon enriched with verts2 (flat midpoints). This spline-smooths
+        # the tessellated disk boundary so plate and ribbon share a
+        # consistent curved outline. Empirically this reduces demospecret3
+        # and demospecstat6 diffs; edge-profile vshift below still uses the
+        # raw polygon distance since Python's interp1 orders points
+        # differently from MATLAB's and the smoothed-dist path regresses
+        # other tripolygon demos.
+        #
+        # Guard: only apply smoothing when every loop_poly point matches
+        # exactly one verts2 row. Partial matches indicate FP drift between
+        # mesh edges and polygon segments, which triggers inconsistent
+        # boundary updates for complex geometries (e.g. bowties, rounded
+        # triangles) that regress more than the target demos improve.
+        loop_poly = self.poly.copy().interp1(p.verts2[:, :2])
+        if sym is not None:
+            loop_poly._apply_symmetry(sym)
+            loop_poly.pos = loop_poly.get_full_polygon()
+            loop_poly.sym = None
+
+        eq_x = (p.verts2[:, 0:1] == loop_poly.pos[np.newaxis, :, 0])
+        eq_y = (p.verts2[:, 1:2] == loop_poly.pos[np.newaxis, :, 1])
+        match = eq_x & eq_y
+        row_idx, col_idx = np.where(match)
+
+        n_loop = loop_poly.pos.shape[0]
+        if n_loop > 0 and len(col_idx) == n_loop and len(np.unique(col_idx)) == n_loop:
+            smoothed_poly = loop_poly.copy()
+            smoothed_poly.midpoints(mode = 'same')
+            p.verts2[row_idx, :2] = smoothed_poly.pos[col_idx, :]
+
         # apply edge profile vertical shift to boundary vertices
         if self.edge is not None and self.edge.pos is not None:
             d_vals, _ = self.poly.dist(p.verts2[:, :2])
