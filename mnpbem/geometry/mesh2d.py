@@ -1357,9 +1357,10 @@ def meshpoly(node: np.ndarray,
         _, unique_idx, inverse_idx = np.unique(p, axis = 0, return_index = True, return_inverse = True)
         p = p[unique_idx]
         # MATLAB: fix = j(fix) where j is the inverse index — direct mapping
+        # MATLAB meshpoly.m:79: fix = j(fix) (no bounds guard)
+        # MATLAB meshpoly.m:80: tndx = tndx(i) (no fallback)
         fix = inverse_idx[fix]
-        fix = fix[fix < p.shape[0]]
-        tndx = tndx[unique_idx] if len(tndx) >= len(unique_idx) else np.zeros(p.shape[0], dtype = int)
+        tndx = tndx[unique_idx]
 
         # constrained Delaunay
         p, t = _cdt(p, node, edge)
@@ -1453,14 +1454,13 @@ def meshpoly(node: np.ndarray,
             prob[fix] = False
 
             pnew = p[~prob]
-            tndx_new = tndx[~prob] if len(tndx) == p.shape[0] else np.zeros(pnew.shape[0], dtype = int)
+            tndx_new = tndx[~prob]
 
-            # re-index fix
+            # re-index fix (MATLAB meshpoly.m:184-187: j(~prob)=1; j=cumsum(j); fix=j(fix))
             remap_arr = np.zeros(p.shape[0], dtype = int)
             remap_arr[~prob] = 1
             remap_arr = np.cumsum(remap_arr) - 1
             fix = remap_arr[fix]
-            fix = fix[fix >= 0]
 
             # add new nodes at circumcentres of large/low-quality triangles
             # MATLAB meshpoly.m:192-204
