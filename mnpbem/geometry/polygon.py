@@ -168,19 +168,19 @@ class Polygon(object):
         nx = nvec[:, 0]
         ny = nvec[:, 1]
 
-        n = len(x)
-        inner_prod = nx[:, np.newaxis] * ny[np.newaxis, :] - ny[:, np.newaxis] * nx[np.newaxis, :]
+        # inner product of displacement/normal (MATLAB: nx * ny' - ny * nx')
+        inner_prod = np.outer(nx, ny) - np.outer(ny, nx)
         inner_prod[np.abs(inner_prod) < 1e-10] = 0
 
-        # distance to crossing points
-        lam = np.full((n, n), 1e10)
-        for i in range(n):
-            for j in range(n):
-                if abs(inner_prod[i, j]) > 0:
-                    lam[i, j] = (x[j] * ny[j] - y[j] * nx[j] - (x[i] * ny[j] - y[i] * nx[j])) / inner_prod[i, j]
+        # distance to crossing points (MATLAB vectorised expression):
+        #   lambda = ( repmat((x.*ny - y.*nx)', n, 1) - (x*ny' - y*nx') ) ./ in
+        # numerator uses division by zero giving NaN/Inf; we mask later.
+        num = (x * ny - y * nx)[np.newaxis, :] - (np.outer(x, ny) - np.outer(y, nx))
+        with np.errstate(divide = 'ignore', invalid = 'ignore'):
+            lam = num / inner_prod
 
-        # discard negative and self-crossings
-        lam[(np.isnan(lam)) | (lam < 0) | (lam * lam.T < 0)] = 1e10
+        # discard NaN, negative, and self-crossings (MATLAB sets to 1e10)
+        lam[np.isnan(lam) | (lam < 0) | (lam * lam.T < 0)] = 1e10
 
         # take max of symmetric pairs
         a = np.maximum(lam, lam.T)
@@ -301,16 +301,22 @@ class Polygon(object):
         xb = np.roll(xa, -1)
         yb = np.roll(ya, -1)
 
+        # MATLAB divides without adding eps; a degenerate segment (xa==xb and
+        # ya==yb) would produce NaN, but that only happens for coincident
+        # vertices which is not a valid polygon.
+        dx = xb - xa
+        dy = yb - ya
+        denom = dx * dx + dy * dy
+
         for j in range(npts):
             x = pts[j, 0]
             y = pts[j, 1]
 
-            lam = ((xb - xa) * (x - xa) + (yb - ya) * (y - ya)) / \
-                  ((xb - xa) ** 2 + (yb - ya) ** 2 + np.finfo(float).eps)
-            lam = np.clip(lam, 0, 1)
+            with np.errstate(divide = 'ignore', invalid = 'ignore'):
+                lam = (dx * (x - xa) + dy * (y - ya)) / denom
+            lam = np.clip(lam, 0.0, 1.0)
 
-            d = np.sqrt((xa + lam * (xb - xa) - x) ** 2 +
-                        (ya + lam * (yb - ya) - y) ** 2)
+            d = np.sqrt((xa + lam * dx - x) ** 2 + (ya + lam * dy - y) ** 2)
             idx = np.argmin(d)
             if d[idx] < dmin[j]:
                 dmin[j] = d[idx]
@@ -323,16 +329,19 @@ class Polygon(object):
         if self.sym is None:
             return self
 
-        ind = []
+        # find positions that lie on x and/or y axis (matches MATLAB unique)
+        ind = np.array([], dtype = int)
         if self.sym in ('x', 'xy'):
             idx_x = np.where(np.abs(self.pos[:, 0]) < 1e-6)[0]
-            ind.extend(idx_x.tolist())
+            ind = idx_x
         if self.sym in ('y', 'xy'):
             idx_y = np.where(np.abs(self.pos[:, 1]) < 1e-6)[0]
-            ind = list(set(ind + idx_y.tolist()))
+            ind = np.unique(np.concatenate([ind, idx_y]))
 
-        ind.sort()
-
+        # shift positions such that first/last point are on x/y axis
+        # MATLAB: circshift(pos, [n - ind(end) + 1, 0]); 1-indexed so
+        # ind(end) = k maps to shift k; in 0-indexed Python ind[-1] = k-1,
+        # so shift = n - ind[-1].
         if len(ind) >= 2 and ind[0] != 0:
             shift = self.pos.shape[0] - ind[-1]
             self.pos = np.roll(self.pos, shift, axis = 0)
