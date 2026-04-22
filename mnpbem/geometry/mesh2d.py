@@ -640,14 +640,33 @@ def _minrectangle(p: np.ndarray) -> float:
     except Exception:
         return 0.0
 
-    # MATLAB convhull() returns hull vertices starting at the LOWEST INPUT
-    # INDEX that lies on the hull, in CCW order. scipy ConvexHull starts at
-    # an arbitrary vertex; rotate to match MATLAB.
-    verts_ccw = hull.vertices
-    start = int(np.argmin(verts_ccw))
-    verts_ccw = np.roll(verts_ccw, -start)
-    n_hull = len(verts_ccw)
-    p_hull = p[verts_ccw]
+    # MATLAB minrectangle: e = convhulln(p); i = unique(e(:)); pp = p(i,:).
+    # `unique()` returns indices ascending, so MATLAB's `pp` is pos subset
+    # in input-index order. The edge iteration then starts at `pp(1)→pp(2)`.
+    #
+    # BUT MATLAB's `convhulln` returns edge pairs in qhull's internal facet
+    # order, NOT input order. For a regular n-gon with all points on the
+    # hull, qhull's first facet empirically starts at vertex ceil(n/2)
+    # (1-indexed MATLAB), i.e. ceil(n/2)-1 (0-indexed) = ceil(n/2) after
+    # subtracting 1 and converting, simplifying to floor((n-1)/2)+1 = n//2
+    # for even n, (n+1)//2 for odd n — i.e. roughly the midpoint of the
+    # input CCW listing. Because MATLAB then rotates convhulln's output
+    # through `j(e)` using `cumsum(j)` tracking, the effective iteration
+    # order starts from that qhull-chosen vertex. For regular polygons many
+    # hull edges give FP-tied rectangle areas, so the starting vertex
+    # determines which tied theta wins — and therefore which mesh
+    # orientation emerges from quadtree (critical for refun-based demos
+    # like demodipstat7 where the size function is x-dependent and not
+    # rotation-invariant).
+    #
+    # For non-regular polygons the min-area rectangle is unique, so start
+    # offset doesn't matter. Using ceil(n_hull/2) therefore works for both
+    # regular (matches MATLAB's qhull start) and non-regular (irrelevant).
+    hull_idx_sorted = np.sort(hull.vertices)
+    n_hull = len(hull_idx_sorted)
+    matlab_start = (n_hull + 1) // 2  # ceil(n_hull / 2), 0-indexed offset
+    hull_idx = np.roll(hull_idx_sorted, -matlab_start)
+    p_hull = p[hull_idx]
 
     best_theta = 0.0
     best_area = np.inf
@@ -659,13 +678,7 @@ def _minrectangle(p: np.ndarray) -> float:
 
         pr = _rotate(p_hull, theta)
         dxy_r = np.max(pr, axis = 0) - np.min(pr, axis = 0)
-        # MATLAB @quadtree/minrectangle uses strict '<': first edge of a tie wins.
-        # Regular N-gons give near-identical areas differing only in FP noise;
-        # round to 10 digits so exact ties are preserved and strict '<' keeps
-        # the first edge, matching MATLAB. Critical for refun-based subdivision:
-        # picking the wrong tied edge rotates the quadtree grid and causes huge
-        # mesh quality differences (demodipstat4 -1177 vs +25).
-        area = round(dxy_r[0] * dxy_r[1], 10)
+        area = dxy_r[0] * dxy_r[1]
         if area < best_area:
             best_area = area
             best_theta = theta
@@ -1100,10 +1113,15 @@ def quadtree(node: np.ndarray,
         num_conn = n2n[:, 0] <= 4
         reg = np.all(num_conn[b_arr], axis = 1)
 
+        # MATLAB L357: t = [b(reg,[1,2,3]); b(reg,[1,3,4])]
+        # Concatenate ALL first-triangles, then ALL second-triangles (not
+        # interleaved). Triangle ordering matters for downstream meshpoly
+        # because _mytsearch() walks triangles in this order.
         t_list = []
         reg_idx = np.where(reg)[0]
         for i in reg_idx:
             t_list.append([b_arr[i, 0], b_arr[i, 1], b_arr[i, 2]])
+        for i in reg_idx:
             t_list.append([b_arr[i, 0], b_arr[i, 2], b_arr[i, 3]])
 
         irreg_idx = np.where(~reg)[0]
@@ -1151,18 +1169,23 @@ def quadtree(node: np.ndarray,
                 t_list.append([bn1, bn2, bn3])
                 t_list.append([bn1, bn3, bn4])
             elif nnode == 5:
+                # MATLAB quadtree.m L455-473. Find first index (2..5) where
+                # nlist deviates from the box corner order, then rotate the
+                # (n1,n2,n3,n4) labelling so the mid-side node sits between
+                # n1 and n2. MATLAB j=2 ↔ Python jj=1 (no rotation), j=3 ↔
+                # jj=2 (rotate once), etc.
                 jj = 1
                 while jj <= 3:
                     if nlist[jj] != b_arr[k, jj]:
                         break
                     jj += 1
-                if jj == 2:
+                if jj == 1:
                     cn1, cn2, cn3, cn4 = bn1, bn2, bn3, bn4
-                elif jj == 3:
+                elif jj == 2:
                     cn1, cn2, cn3, cn4 = bn2, bn3, bn4, bn1
-                elif jj == 4:
+                elif jj == 3:
                     cn1, cn2, cn3, cn4 = bn3, bn4, bn1, bn2
-                else:
+                else:  # jj == 4 (all matched through index 3)
                     cn1, cn2, cn3, cn4 = bn4, bn1, bn2, bn3
                 mid = nlist[jj]
                 t_list.append([cn1, mid, cn4])

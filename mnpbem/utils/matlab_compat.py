@@ -35,14 +35,19 @@ _MATLAB_LIB_PATH = '/usr/local/MATLAB/R2025b/bin/glnxa64/libmwmathutil.so'
 _mathutil = None
 _matan2_vec = None
 _matan2_scalar = None
+_mcos_vec = None
+_mcos_scalar = None
+_msin_vec = None
+_msin_scalar = None
 
 
 def _init_matlab_atan2():
-    """Attempt to load MATLAB's atan2 from libmwmathutil.so. Returns True on
-    success, False if MATLAB is not installed — callers then fall back to
-    np.arctan2.
+    """Attempt to load MATLAB's atan2/cos/sin from libmwmathutil.so. Returns
+    True on success, False if MATLAB is not installed — callers then fall
+    back to np.arctan2 / np.cos / np.sin.
     """
     global _mathutil, _matan2_vec, _matan2_scalar
+    global _mcos_vec, _mcos_scalar, _msin_vec, _msin_scalar
     if _mathutil is not None:
         return True
     if not os.path.exists(_MATLAB_LIB_PATH):
@@ -58,11 +63,30 @@ def _init_matlab_atan2():
         _matan2_scalar = _mathutil.muDoubleScalarAtan2
         _matan2_scalar.argtypes = [c_double, c_double]
         _matan2_scalar.restype = c_double
+        # MATLAB cos/sin — single-argument vector+scalar forms
+        _mcos_vec = _mathutil._ZN2mu3CosIdEEvPT_S2_mmm
+        _mcos_vec.argtypes = [POINTER(c_double), POINTER(c_double),
+                              c_size_t, c_size_t, c_size_t]
+        _mcos_vec.restype = None
+        _mcos_scalar = _mathutil.muDoubleScalarCos
+        _mcos_scalar.argtypes = [c_double]
+        _mcos_scalar.restype = c_double
+        _msin_vec = _mathutil._ZN2mu3SinIdEEvPT_S2_mmm
+        _msin_vec.argtypes = [POINTER(c_double), POINTER(c_double),
+                              c_size_t, c_size_t, c_size_t]
+        _msin_vec.restype = None
+        _msin_scalar = _mathutil.muDoubleScalarSin
+        _msin_scalar.argtypes = [c_double]
+        _msin_scalar.restype = c_double
         return True
     except (OSError, AttributeError):
         _mathutil = None
         _matan2_vec = None
         _matan2_scalar = None
+        _mcos_vec = None
+        _mcos_scalar = None
+        _msin_vec = None
+        _msin_scalar = None
         return False
 
 
@@ -90,13 +114,47 @@ def mlinspace(a, b, n):
 
 
 def mcos(x):
-    """Pass-through: np.cos already matches MATLAB via MKL."""
-    return np.cos(x)
+    """MATLAB-compatible cos.
+
+    MATLAB ships its own cos in libmwmathutil (fdlibm-derived) that differs
+    from np.cos / Intel MKL at 1 ULP on certain inputs (e.g.
+    sin(2*pi/3) = 0.866025403784438486 via MKL vs 0.866025403784438597 via
+    MATLAB). 1-ULP drift in sin/cos propagates through p @ rot and breaks
+    quadtree/meshpoly topology. Falls back to np.cos when MATLAB is not
+    available.
+    """
+    if not _MATLAB_ATAN2_AVAILABLE:
+        return np.cos(x)
+    if np.isscalar(x):
+        return _mcos_scalar(float(x))
+    x_arr = np.ascontiguousarray(np.asarray(x, dtype=np.float64))
+    if x_arr.ndim == 0:
+        return np.float64(_mcos_scalar(float(x_arr)))
+    out = np.empty_like(x_arr)
+    _mcos_vec(
+        out.ctypes.data_as(POINTER(c_double)),
+        x_arr.ctypes.data_as(POINTER(c_double)),
+        c_size_t(1), c_size_t(1), c_size_t(x_arr.size),
+    )
+    return out
 
 
 def msin(x):
-    """Pass-through: np.sin already matches MATLAB via MKL."""
-    return np.sin(x)
+    """MATLAB-compatible sin. See mcos() for rationale."""
+    if not _MATLAB_ATAN2_AVAILABLE:
+        return np.sin(x)
+    if np.isscalar(x):
+        return _msin_scalar(float(x))
+    x_arr = np.ascontiguousarray(np.asarray(x, dtype=np.float64))
+    if x_arr.ndim == 0:
+        return np.float64(_msin_scalar(float(x_arr)))
+    out = np.empty_like(x_arr)
+    _msin_vec(
+        out.ctypes.data_as(POINTER(c_double)),
+        x_arr.ctypes.data_as(POINTER(c_double)),
+        c_size_t(1), c_size_t(1), c_size_t(x_arr.size),
+    )
+    return out
 
 
 def _matan2_impl(y_arr, x_arr):
