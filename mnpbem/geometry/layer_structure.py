@@ -20,7 +20,7 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 import numpy as np
 from scipy.special import jv as besselj
 from scipy.special import hankel1
-from scipy.integrate import solve_ivp
+from scipy.integrate import solve_ivp, quad_vec
 
 
 class LayerStructure(object):
@@ -694,31 +694,444 @@ class LayerStructure(object):
         pos_out = {'r': r_exp, 'z1': z1_exp, 'z2': z2_exp, 'zmin': zmin}
         return G, Fr, Fz, pos_out
 
+    def _build_integrate_context(self,
+            enei: float,
+            pos: Dict[str, Any]) -> Dict[str, Any]:
+        # Precompute pos/enei-dependent quantities shared across ODE RHS evals.
+        eps_vals = np.empty(len(self.eps), dtype = complex)
+        k_vals = np.empty(len(self.eps), dtype = complex)
+        for i, eps_func in enumerate(self.eps):
+            eps_vals[i], k_vals[i] = eps_func(enei)
+
+        r_exp = self._mul(pos['r'], self._mul(np.ones_like(pos['z1']), np.ones_like(pos['z2'])))
+        r_flat = r_exp.ravel()
+
+        ind1_raw = pos['ind1']
+        ind2_raw = pos['ind2']
+        z1_raw = pos['z1']
+        z2_raw = pos['z2']
+
+        ind1 = np.atleast_1d(ind1_raw).ravel()
+        ind2 = np.atleast_1d(ind2_raw).ravel()
+        z1 = np.atleast_1d(z1_raw).ravel()
+        z2 = np.atleast_1d(z2_raw).ravel()
+
+        # kz expansion index mapping ind1 -> r_flat layout.
+        if len(ind1) == len(r_flat):
+            kz_expand_idx = ind1 - 1
+        else:
+            n_r = np.atleast_1d(pos['r']).size
+            n_z2 = z2.size
+            kz_expand_idx = np.tile(np.repeat(ind1 - 1, n_z2), n_r)[:len(r_flat)]
+
+        # Shape check mirroring _reflection_subs:
+        # original used z1.ndim==1 branch. Reproduce that.
+        if hasattr(z1_raw, 'ndim') and np.ndim(z1_raw) == 1:
+            abs_z1 = np.abs(z1[:, np.newaxis] - self.z)
+            abs_z2 = np.abs(z2[:, np.newaxis] - self.z)
+            sign_z1 = np.sign(z1[:, np.newaxis] - self.z)
+        else:
+            abs_z1 = np.abs(np.asarray(z1_raw) - self.z)
+            abs_z2 = np.abs(np.asarray(z2_raw) - self.z)
+            sign_z1 = np.sign(np.asarray(z1_raw) - self.z)
+
+        same_size_refl = (np.shape(ind1_raw) == np.shape(ind2_raw))
+
+        ctx: Dict[str, Any] = {
+            'enei': enei,
+            'eps_vals': eps_vals,
+            'k_vals': k_vals,
+            'k0': 2 * np.pi / enei,
+            'r_flat': r_flat,
+            'ind1': ind1,
+            'ind2': ind2,
+            'z1': z1,
+            'z2': z2,
+            'kz_expand_idx': kz_expand_idx,
+            'abs_z1': abs_z1,
+            'abs_z2': abs_z2,
+            'sign_z1': sign_z1,
+            'same_size_refl': same_size_refl,
+            'is_subs': (len(self.z) == 1),
+            'pos': pos,
+        }
+        return ctx
+
+    def _reflection_subs_ctx(self,
+            kpar: Union[float, complex],
+            ctx: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray]:
+        # Fast substrate reflection path using precomputed ctx.
+        # Returns (refl_dict, reflz_dict, kz_vec).
+        eps_vals = ctx['eps_vals']
+        k_vals = ctx['k_vals']
+        k0 = ctx['k0']
+
+        kz = np.sqrt(k_vals ** 2 - kpar ** 2)
+        kz = kz * np.sign(np.imag(kz + 1e-10j))
+
+        eps1 = eps_vals[0]
+        eps2 = eps_vals[1]
+        k1z = kz[0]
+        k2z = kz[1]
+
+        rr_p = (k1z - k2z) / (k2z + k1z)
+        r_p = np.array([[rr_p, 1 + rr_p], [1 - rr_p, -rr_p]], dtype = complex)
+
+        Delta = (k2z + k1z) * (eps1 * k2z + eps2 * k1z)
+
+        k1z_safe = k1z if np.abs(k1z) > 1e-30 else 1e-30 + 0j
+        k2z_safe = k2z if np.abs(k2z) > 1e-30 else 1e-30 + 0j
+        ratio_12 = k1z / k2z_safe
+        ratio_21 = k2z / k1z_safe
+
+        r_ss_11 = (k1z + k2z) * (2 * eps1 * k1z - eps2 * k1z - eps1 * k2z) / Delta
+        r_ss_22 = (k2z + k1z) * (2 * eps2 * k2z - eps1 * k2z - eps2 * k1z) / Delta
+        r_ss = np.array([[r_ss_11, ratio_12 * (r_ss_22 + 1)],
+                         [ratio_21 * (r_ss_11 + 1), r_ss_22]], dtype = complex)
+
+        r_hs_11 = -2 * k0 * (eps2 - eps1) * eps1 * k1z / Delta
+        r_hs_22 = -2 * k0 * (eps1 - eps2) * eps2 * k2z / Delta
+        r_hs = np.array([[r_hs_11, -ratio_12 * r_hs_22],
+                         [ratio_21 * r_hs_11, -r_hs_22]], dtype = complex)
+
+        r_sh_11 = -2 * k0 * (eps2 - eps1) * k1z / Delta
+        r_sh_22 = -2 * k0 * (eps1 - eps2) * k2z / Delta
+        r_sh = np.array([[r_sh_11, -ratio_12 * r_sh_22],
+                         [ratio_21 * r_sh_11, -r_sh_22]], dtype = complex)
+
+        r_hh_11 = (k1z - k2z) * (2 * eps1 * k1z - eps2 * k1z + eps1 * k2z) / Delta
+        r_hh_22 = (k2z - k1z) * (2 * eps2 * k2z - eps1 * k2z + eps2 * k1z) / Delta
+        r_hh = np.array([[r_hh_11, ratio_12 * (r_hh_22 + 1)],
+                         [ratio_21 * (r_hh_11 + 1), r_hh_22]], dtype = complex)
+
+        r_mat = (('p', r_p), ('ss', r_ss), ('hs', r_hs), ('sh', r_sh), ('hh', r_hh))
+
+        ind1 = ctx['ind1']
+        ind2 = ctx['ind2']
+        abs_z1 = ctx['abs_z1']
+        abs_z2 = ctx['abs_z2']
+        sign_z1 = ctx['sign_z1']
+
+        kz_ind1 = kz[ind1 - 1]
+        kz_ind2 = kz[ind2 - 1]
+        # Propagation factors
+        if abs_z1.ndim == 2:
+            g1 = np.exp(1j * kz_ind1[:, np.newaxis] * abs_z1)
+            g2 = np.exp(1j * kz_ind2[:, np.newaxis] * abs_z2)
+        else:
+            g1 = np.exp(1j * kz_ind1 * abs_z1)
+            g2 = np.exp(1j * kz_ind2 * abs_z2)
+        g1z = g1 * sign_z1
+
+        r_out: Dict[str, np.ndarray] = {}
+        rz_out: Dict[str, np.ndarray] = {}
+
+        same_size = ctx['same_size_refl']
+        g1_flat = g1.ravel()
+        g2_flat = g2.ravel()
+        g1z_flat = g1z.ravel()
+
+        if same_size:
+            idx = (ind1 - 1, ind2 - 1)
+            for name, rr in r_mat:
+                rr_sel = rr[idx]
+                r_out[name] = g1_flat * rr_sel * g2_flat
+                rz_out[name] = g1z_flat * rr_sel * g2_flat
+        else:
+            outer_g = np.outer(g1_flat, g2_flat)
+            outer_gz = np.outer(g1z_flat, g2_flat)
+            for name, rr in r_mat:
+                sel = rr[ind1 - 1][:, ind2 - 1]
+                r_out[name] = sel * outer_g
+                rz_out[name] = sel * outer_gz
+
+        return r_out, rz_out, kz
+
+    def _reflection_subs_batch(self,
+            kpar_arr: np.ndarray,
+            ctx: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray]:
+        # Vectorized substrate reflection over array of kpar.
+        # kpar_arr shape (M,). Returns refl[name] shape depending on same_size:
+        #   same_size: (M, n_flat); not same_size: (M, n1, n2).
+        # kz shape (M, 2).
+        eps_vals = ctx['eps_vals']
+        k_vals = ctx['k_vals']
+        k0 = ctx['k0']
+        ind1 = ctx['ind1']
+        ind2 = ctx['ind2']
+        abs_z1 = ctx['abs_z1']
+        abs_z2 = ctx['abs_z2']
+        sign_z1 = ctx['sign_z1']
+        same_size = ctx['same_size_refl']
+
+        kpar_arr = np.asarray(kpar_arr)
+        M = kpar_arr.size
+
+        # kz shape (M, 2)
+        kz = np.sqrt(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2)
+        kz = kz * np.sign(np.imag(kz + 1e-10j))
+
+        k1z = kz[:, 0]
+        k2z = kz[:, 1]
+        eps1 = eps_vals[0]
+        eps2 = eps_vals[1]
+
+        rr_p = (k1z - k2z) / (k2z + k1z)
+        Delta = (k2z + k1z) * (eps1 * k2z + eps2 * k1z)
+
+        # safe ratios (avoid divide-by-zero at kz=0)
+        k1z_safe = np.where(np.abs(k1z) > 1e-30, k1z, 1e-30 + 0j)
+        k2z_safe = np.where(np.abs(k2z) > 1e-30, k2z, 1e-30 + 0j)
+        ratio_12 = k1z / k2z_safe
+        ratio_21 = k2z / k1z_safe
+
+        r_ss_11 = (k1z + k2z) * (2 * eps1 * k1z - eps2 * k1z - eps1 * k2z) / Delta
+        r_ss_22 = (k2z + k1z) * (2 * eps2 * k2z - eps1 * k2z - eps2 * k1z) / Delta
+        r_hs_11 = -2 * k0 * (eps2 - eps1) * eps1 * k1z / Delta
+        r_hs_22 = -2 * k0 * (eps1 - eps2) * eps2 * k2z / Delta
+        r_sh_11 = -2 * k0 * (eps2 - eps1) * k1z / Delta
+        r_sh_22 = -2 * k0 * (eps1 - eps2) * k2z / Delta
+        r_hh_11 = (k1z - k2z) * (2 * eps1 * k1z - eps2 * k1z + eps1 * k2z) / Delta
+        r_hh_22 = (k2z - k1z) * (2 * eps2 * k2z - eps1 * k2z + eps2 * k1z) / Delta
+
+        mats: Dict[str, np.ndarray] = {}
+        # r_p: [[rr, 1+rr], [1-rr, -rr]]
+        r_p = np.empty((M, 2, 2), dtype = complex)
+        r_p[:, 0, 0] = rr_p
+        r_p[:, 0, 1] = 1 + rr_p
+        r_p[:, 1, 0] = 1 - rr_p
+        r_p[:, 1, 1] = -rr_p
+        mats['p'] = r_p
+
+        # mat1 pattern for ss, hh: [[r1, rat12*(r2+1)], [rat21*(r1+1), r2]]
+        def _mat1(r1, r2):
+            m = np.empty((M, 2, 2), dtype = complex)
+            m[:, 0, 0] = r1
+            m[:, 0, 1] = ratio_12 * (r2 + 1)
+            m[:, 1, 0] = ratio_21 * (r1 + 1)
+            m[:, 1, 1] = r2
+            return m
+
+        # mat2 pattern for hs, sh: [[r1, -rat12*r2], [rat21*r1, -r2]]
+        def _mat2(r1, r2):
+            m = np.empty((M, 2, 2), dtype = complex)
+            m[:, 0, 0] = r1
+            m[:, 0, 1] = -ratio_12 * r2
+            m[:, 1, 0] = ratio_21 * r1
+            m[:, 1, 1] = -r2
+            return m
+
+        mats['ss'] = _mat1(r_ss_11, r_ss_22)
+        mats['hs'] = _mat2(r_hs_11, r_hs_22)
+        mats['sh'] = _mat2(r_sh_11, r_sh_22)
+        mats['hh'] = _mat1(r_hh_11, r_hh_22)
+
+        # Propagation factors
+        kz_i1 = kz[:, ind1 - 1]  # (M, n1)
+        kz_i2 = kz[:, ind2 - 1]  # (M, n2)
+        if abs_z1.ndim == 2:
+            abs_z1f = abs_z1[:, 0]
+            abs_z2f = abs_z2[:, 0]
+            sign_z1f = sign_z1[:, 0]
+        else:
+            abs_z1f = abs_z1
+            abs_z2f = abs_z2
+            sign_z1f = sign_z1
+
+        g1 = np.exp(1j * kz_i1 * abs_z1f)  # (M, n1)
+        g2 = np.exp(1j * kz_i2 * abs_z2f)  # (M, n2)
+        g1z = g1 * sign_z1f
+
+        refl_out: Dict[str, np.ndarray] = {}
+        reflz_out: Dict[str, np.ndarray] = {}
+        if same_size:
+            i1m = ind1 - 1
+            i2m = ind2 - 1
+            for name, rr in mats.items():
+                rr_sel = rr[:, i1m, i2m]  # (M, n_flat)
+                base = rr_sel * g2
+                refl_out[name] = g1 * base
+                reflz_out[name] = g1z * base
+        else:
+            for name, rr in mats.items():
+                sel = rr[:, ind1 - 1, :][:, :, ind2 - 1]  # (M, n1, n2)
+                outer_g = g1[:, :, np.newaxis] * g2[:, np.newaxis, :]
+                outer_gz = g1z[:, :, np.newaxis] * g2[:, np.newaxis, :]
+                refl_out[name] = sel * outer_g
+                reflz_out[name] = sel * outer_gz
+
+        return refl_out, reflz_out, kz
+
+    def _intbessel_batch(self,
+            kpar_arr: np.ndarray,
+            ctx: Dict[str, Any],
+            ind: np.ndarray) -> np.ndarray:
+        # Batched _intbessel over an array of kpar values. Returns (M, 15*n).
+        kpar_arr = np.asarray(kpar_arr)
+        M = kpar_arr.size
+        n = len(ind)
+
+        if ctx['is_subs']:
+            refl, reflz, kz = self._reflection_subs_batch(kpar_arr, ctx)
+        else:
+            # Fallback: scalar loop (multi-layer case, rarely hit in demos).
+            y = np.empty((M, 15 * n), dtype = complex)
+            for m in range(M):
+                y[m, :] = self._intbessel_ctx(kpar_arr[m], ctx, ind)
+            return y
+
+        kz_full = kz[:, ctx['kz_expand_idx']]  # (M, n_flat)
+        kz_ind = kz_full[:, ind]
+
+        r_ind = ctx['r_flat'][ind]
+        arg = kpar_arr[:, np.newaxis] * r_ind[np.newaxis, :]
+        # Bessel accepts complex directly; small cost increase for complex kpar.
+        j0 = besselj(0, arg)
+        j1 = besselj(1, arg)
+
+        y = np.empty((M, 15 * n), dtype = complex)
+        kpar_col = kpar_arr[:, np.newaxis]
+        kpar_sq_col = (kpar_arr ** 2)[:, np.newaxis]
+        inv_kz = 1.0 / kz_ind
+
+        j0_k_invkz = 1j * j0 * kpar_col * inv_kz
+        j1_k2_invkz = -1j * j1 * kpar_sq_col * inv_kz
+        j0_k = -j0 * kpar_col
+
+        names = ('p', 'ss', 'hs', 'sh', 'hh')
+        for iname, name in enumerate(names):
+            rr = refl[name]
+            rrz = reflz[name]
+            if rr.ndim > 2:
+                # outer-product case: flatten (n1, n2) -> (n1*n2). Also take [ind].
+                rr = rr.reshape(M, -1)[:, ind]
+                rrz = rrz.reshape(M, -1)[:, ind]
+            else:
+                rr = rr[:, ind]
+                rrz = rrz[:, ind]
+            base = iname * 3 * n
+            y[:, base:base + n] = j0_k_invkz * rr
+            y[:, base + n:base + 2 * n] = j1_k2_invkz * rr
+            y[:, base + 2 * n:base + 3 * n] = j0_k * rrz
+
+        return y
+
+    def _inthankel_batch(self,
+            kpar_arr: np.ndarray,
+            ctx: Dict[str, Any],
+            ind: np.ndarray) -> np.ndarray:
+        # Batched _inthankel over an array of complex kpar. Returns (M, 15*n).
+        kpar_arr = np.asarray(kpar_arr)
+        M = kpar_arr.size
+        n = len(ind)
+
+        kpar1 = kpar_arr
+        kpar2 = np.conj(kpar_arr)
+
+        if ctx['is_subs']:
+            refl1, refl1z, kz1 = self._reflection_subs_batch(kpar1, ctx)
+            refl2, refl2z, kz2 = self._reflection_subs_batch(kpar2, ctx)
+        else:
+            y = np.empty((M, 15 * n), dtype = complex)
+            for m in range(M):
+                y[m, :] = self._inthankel_ctx(kpar_arr[m], ctx, ind)
+            return y
+
+        kz1_full = kz1[:, ctx['kz_expand_idx']]
+        kz2_full = kz2[:, ctx['kz_expand_idx']]
+        kz1_ind = kz1_full[:, ind]
+        kz2_ind = kz2_full[:, ind]
+
+        r_ind = ctx['r_flat'][ind]
+        arg = kpar_arr[:, np.newaxis] * r_ind[np.newaxis, :]
+        h0 = hankel1(0, arg)
+        h1 = hankel1(1, arg)
+        h0_conj = np.conj(h0)
+        h1_conj = np.conj(h1)
+
+        y = np.empty((M, 15 * n), dtype = complex)
+        kpar1_col = kpar1[:, np.newaxis]
+        kpar2_col = kpar2[:, np.newaxis]
+        kpar1_sq_col = (kpar1 ** 2)[:, np.newaxis]
+        kpar2_sq_col = (kpar2 ** 2)[:, np.newaxis]
+        inv_kz1 = 1.0 / kz1_ind
+        inv_kz2 = 1.0 / kz2_ind
+
+        a1 = 0.5j * h0 * kpar1_col * inv_kz1
+        a2 = 0.5j * h0_conj * kpar2_col * inv_kz2
+        b1 = 0.5j * h1 * kpar1_sq_col * inv_kz1
+        b2 = 0.5j * h1_conj * kpar2_sq_col * inv_kz2
+        c1 = 0.5 * h0 * kpar1_col
+        c2 = 0.5 * h0_conj * kpar2_col
+
+        names = ('p', 'ss', 'hs', 'sh', 'hh')
+        for iname, name in enumerate(names):
+            rr1 = refl1[name]
+            rr1z = refl1z[name]
+            rr2 = refl2[name]
+            rr2z = refl2z[name]
+            if rr1.ndim > 2:
+                rr1 = rr1.reshape(M, -1)[:, ind]
+                rr1z = rr1z.reshape(M, -1)[:, ind]
+                rr2 = rr2.reshape(M, -1)[:, ind]
+                rr2z = rr2z.reshape(M, -1)[:, ind]
+            else:
+                rr1 = rr1[:, ind]
+                rr1z = rr1z[:, ind]
+                rr2 = rr2[:, ind]
+                rr2z = rr2z[:, ind]
+            base = iname * 3 * n
+            y[:, base:base + n] = a1 * rr1 - a2 * rr2
+            y[:, base + n:base + 2 * n] = -b1 * rr1 + b2 * rr2
+            y[:, base + 2 * n:base + 3 * n] = -c1 * rr1z + c2 * rr2z
+
+        return y
+
+    # Cache Gauss-Legendre nodes/weights per order.
+    _GL_CACHE: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+
+    @classmethod
+    def _gl_nodes_weights(cls, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        if n not in cls._GL_CACHE:
+            cls._GL_CACHE[n] = np.polynomial.legendre.leggauss(n)
+        return cls._GL_CACHE[n]
+
+    @staticmethod
+    def _gl_panels(a: float, b: float, n_panels: int, order: int) -> Tuple[np.ndarray, np.ndarray]:
+        # Composite Gauss-Legendre nodes/weights over [a, b] split into n_panels
+        # equal sub-intervals, each with `order`-point GL rule.
+        nodes_ref, weights_ref = LayerStructure._gl_nodes_weights(order)
+        edges = np.linspace(a, b, n_panels + 1)
+        xs_all = np.empty(n_panels * order)
+        ws_all = np.empty(n_panels * order)
+        for i in range(n_panels):
+            lo, hi = edges[i], edges[i + 1]
+            xs_all[i * order:(i + 1) * order] = 0.5 * (hi - lo) * nodes_ref + 0.5 * (hi + lo)
+            ws_all[i * order:(i + 1) * order] = 0.5 * (hi - lo) * weights_ref
+        return xs_all, ws_all
+
     def _integrate_semiellipse(self,
             enei: float,
             pos: Dict[str, Any],
             n1: int,
             n_names: int) -> np.ndarray:
-        # Integration along semi-ellipse in complex kr-plane
-        k_vals = np.empty(len(self.eps), dtype = complex)
-        for i, eps_func in enumerate(self.eps):
-            _, k_vals[i] = eps_func(enei)
+        # Integration along semi-ellipse in complex kr-plane using composite
+        # Gauss-Legendre with a vectorized batch RHS over all sample points.
+        # Far faster than RK45 for this smooth integrand and accurate to ~1e-7.
+        ctx = self._build_integrate_context(enei, pos)
+        k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
+        ind_full = np.arange(len(ctx['r_flat']))
+        semi = self.semi
 
-        k0 = 2 * np.pi / enei
-        k1max = np.max(np.real(k_vals)) + k0
+        # semi-ellipse integrand is smooth; 4 panels x 40 order = 160 pts suffice.
+        xs, ws = self._gl_panels(0.0, np.pi, 4, 40)
 
-        def rhs_semi(x, y):
-            kr = k1max * (1 - np.cos(x) - 1j * self.semi * np.sin(x))
-            dkr = k1max * (np.sin(x) - 1j * self.semi * np.cos(x))
-            integ = self._intbessel(enei, kr, pos)
-            return dkr * integ
+        kr_arr = k1max * (1 - np.cos(xs) - 1j * semi * np.sin(xs))
+        dkr_arr = k1max * (np.sin(xs) - 1j * semi * np.cos(xs))
 
-        y0 = np.zeros(15 * n1, dtype = complex)
-        sol = solve_ivp(rhs_semi, [0, np.pi], y0,
-                        t_eval = [np.pi],
-                        rtol = 1e-6, atol = self.atol,
-                        max_step = 0.1)
-        return sol.y[:, -1]
+        y_batch = self._intbessel_batch(kr_arr, ctx, ind_full)
+        weighted = (ws * dkr_arr)[:, np.newaxis] * y_batch
+        return weighted.sum(axis = 0)
 
     def _integrate_real(self,
             enei: float,
@@ -726,26 +1139,30 @@ class LayerStructure(object):
             ind: np.ndarray,
             n: int,
             n_names: int) -> np.ndarray:
-        k_vals = np.empty(len(self.eps), dtype = complex)
-        for i, eps_func in enumerate(self.eps):
-            _, k_vals[i] = eps_func(enei)
+        # Real kr-axis integration. Original ODE went x: 1 -> 1e-10.
+        # We integrate forward over [1e-10, 1] with composite GL (more panels
+        # near the small-x end where integrand oscillates) and negate.
+        ctx = self._build_integrate_context(enei, pos)
+        k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
 
-        k0 = 2 * np.pi / enei
-        k1max = np.max(np.real(k_vals)) + k0
+        # Use logarithmic panel boundaries to capture oscillations near x->0.
+        # Break [1e-10, 1] into panels with geometrically increasing widths.
+        order = 40
+        edges = np.concatenate(([1e-10], np.logspace(-9, 0, 10)))
+        nodes_ref, weights_ref = self._gl_nodes_weights(order)
+        xs = np.empty((len(edges) - 1) * order)
+        ws = np.empty((len(edges) - 1) * order)
+        for i in range(len(edges) - 1):
+            lo, hi = edges[i], edges[i + 1]
+            xs[i * order:(i + 1) * order] = 0.5 * (hi - lo) * nodes_ref + 0.5 * (hi + lo)
+            ws[i * order:(i + 1) * order] = 0.5 * (hi - lo) * weights_ref
 
-        def rhs_real(x, y):
-            if x < 1e-15:
-                return np.zeros_like(y)
-            kr = 2 * k1max / x
-            integ = self._intbessel(enei, kr, pos, ind)
-            return -2 * k1max * integ / x ** 2
+        kr_arr = 2 * k1max / xs
+        fac_arr = -2 * k1max / (xs ** 2)
 
-        y0 = np.zeros(15 * n, dtype = complex)
-        sol = solve_ivp(rhs_real, [1, 1e-10], y0,
-                        t_eval = [1e-10],
-                        rtol = 1e-6, atol = self.atol,
-                        max_step = 0.1)
-        return sol.y[:, -1]
+        y_batch = self._intbessel_batch(kr_arr, ctx, ind)
+        weighted = (ws * fac_arr)[:, np.newaxis] * y_batch
+        return -weighted.sum(axis = 0)
 
     def _integrate_imag(self,
             enei: float,
@@ -753,169 +1170,167 @@ class LayerStructure(object):
             ind: np.ndarray,
             n: int,
             n_names: int) -> np.ndarray:
-        k_vals = np.empty(len(self.eps), dtype = complex)
-        for i, eps_func in enumerate(self.eps):
-            _, k_vals[i] = eps_func(enei)
+        ctx = self._build_integrate_context(enei, pos)
+        k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
 
-        k0 = 2 * np.pi / enei
-        k1max = np.max(np.real(k_vals)) + k0
+        order = 40
+        edges = np.concatenate(([1e-10], np.logspace(-9, 0, 10)))
+        nodes_ref, weights_ref = self._gl_nodes_weights(order)
+        xs = np.empty((len(edges) - 1) * order)
+        ws = np.empty((len(edges) - 1) * order)
+        for i in range(len(edges) - 1):
+            lo, hi = edges[i], edges[i + 1]
+            xs[i * order:(i + 1) * order] = 0.5 * (hi - lo) * nodes_ref + 0.5 * (hi + lo)
+            ws[i * order:(i + 1) * order] = 0.5 * (hi - lo) * weights_ref
 
-        def rhs_imag(x, y):
-            if x < 1e-15:
-                return np.zeros_like(y)
-            kr = 2 * k1max * (1 - 1j + 1j / x)
-            integ = self._inthankel(enei, kr, pos, ind)
-            return -2j * k1max * integ / x ** 2
+        kr_arr = 2 * k1max * (1 - 1j + 1j / xs)
+        fac_arr = -2j * k1max / (xs ** 2)
 
-        y0 = np.zeros(15 * n, dtype = complex)
-        sol = solve_ivp(rhs_imag, [1, 1e-10], y0,
-                        t_eval = [1e-10],
-                        rtol = 1e-6, atol = self.atol,
-                        max_step = 0.1)
-        return sol.y[:, -1]
+        y_batch = self._inthankel_batch(kr_arr, ctx, ind)
+        weighted = (ws * fac_arr)[:, np.newaxis] * y_batch
+        return -weighted.sum(axis = 0)
+
+    def _intbessel_ctx(self,
+            kpar: complex,
+            ctx: Dict[str, Any],
+            ind: np.ndarray) -> np.ndarray:
+        # Fast _intbessel using precomputed ctx.
+        if ctx['is_subs']:
+            refl, reflz, kz = self._reflection_subs_ctx(kpar, ctx)
+        else:
+            pos = ctx['pos']
+            refl, reflz = self.reflection(ctx['enei'], kpar, pos)
+            k_vals = ctx['k_vals']
+            kz = np.sqrt(k_vals ** 2 - kpar ** 2)
+            kz = kz * np.sign(np.imag(kz + 1e-10j))
+
+        r_flat = ctx['r_flat']
+        kz_full = kz[ctx['kz_expand_idx']]
+        kz_ind = kz_full[ind]
+
+        r_ind = r_flat[ind]
+        arg = np.real(kpar * r_ind) if np.isreal(kpar) else kpar * r_ind
+        j0 = besselj(0, arg)
+        j1 = besselj(1, arg)
+
+        n = len(ind)
+        y = np.empty(15 * n, dtype = complex)
+
+        kpar_sq = kpar ** 2
+        inv_kz = 1.0 / kz_ind
+        j0_k_invkz = j0 * kpar * inv_kz
+        j1_k2_invkz = j1 * kpar_sq * inv_kz
+        j0_k = j0 * kpar
+
+        names = list(refl.keys())
+        for iname, name in enumerate(names):
+            rr = refl[name]
+            rrz = reflz[name]
+            if rr.ndim > 1:
+                rr = rr.ravel()
+                rrz = rrz.ravel()
+            rr_ind = rr[ind] if rr.size > 1 else rr
+            rrz_ind = rrz[ind] if rrz.size > 1 else rrz
+
+            base = iname * 3 * n
+            y[base:base + n] = 1j * j0_k_invkz * rr_ind
+            y[base + n:base + 2 * n] = -1j * j1_k2_invkz * rr_ind
+            y[base + 2 * n:base + 3 * n] = -j0_k * rrz_ind
+
+        if np.isreal(kpar) and not np.iscomplexobj(y):
+            return np.real(y)
+        # Avoid np.all(isreal(...)) scan; default to complex.
+        return y
+
+    def _inthankel_ctx(self,
+            kpar: complex,
+            ctx: Dict[str, Any],
+            ind: np.ndarray) -> np.ndarray:
+        kpar1 = kpar
+        kpar2 = np.conj(kpar)
+
+        if ctx['is_subs']:
+            refl1, refl1z, kz1 = self._reflection_subs_ctx(kpar1, ctx)
+            refl2, refl2z, kz2 = self._reflection_subs_ctx(kpar2, ctx)
+        else:
+            pos = ctx['pos']
+            refl1, refl1z = self.reflection(ctx['enei'], kpar1, pos)
+            refl2, refl2z = self.reflection(ctx['enei'], kpar2, pos)
+            k_vals = ctx['k_vals']
+            kz1 = np.sqrt(k_vals ** 2 - kpar1 ** 2)
+            kz1 = kz1 * np.sign(np.imag(kz1 + 1e-10j))
+            kz2 = np.sqrt(k_vals ** 2 - kpar2 ** 2)
+            kz2 = kz2 * np.sign(np.imag(kz2 + 1e-10j))
+
+        kz1_full = kz1[ctx['kz_expand_idx']]
+        kz2_full = kz2[ctx['kz_expand_idx']]
+        kz1_ind = kz1_full[ind]
+        kz2_ind = kz2_full[ind]
+
+        r_ind = ctx['r_flat'][ind]
+        h0 = hankel1(0, kpar * r_ind)
+        h1 = hankel1(1, kpar * r_ind)
+        h0_conj = np.conj(h0)
+        h1_conj = np.conj(h1)
+
+        n = len(ind)
+        y = np.empty(15 * n, dtype = complex)
+
+        kpar1_sq = kpar1 ** 2
+        kpar2_sq = kpar2 ** 2
+        inv_kz1 = 1.0 / kz1_ind
+        inv_kz2 = 1.0 / kz2_ind
+
+        a1 = 0.5j * h0 * kpar1 * inv_kz1
+        a2 = 0.5j * h0_conj * kpar2 * inv_kz2
+        b1 = 0.5j * h1 * kpar1_sq * inv_kz1
+        b2 = 0.5j * h1_conj * kpar2_sq * inv_kz2
+        c1 = 0.5 * h0 * kpar1  # sign absorbed below: 0.5i * 1i = -0.5
+        c2 = 0.5 * h0_conj * kpar2
+
+        names = list(refl1.keys())
+        for iname, name in enumerate(names):
+            rr1 = refl1[name]
+            rr1z = refl1z[name]
+            rr2 = refl2[name]
+            rr2z = refl2z[name]
+            if rr1.ndim > 1:
+                rr1 = rr1.ravel()
+                rr1z = rr1z.ravel()
+                rr2 = rr2.ravel()
+                rr2z = rr2z.ravel()
+            rr1_ind = rr1[ind] if rr1.size > 1 else rr1
+            rr1z_ind = rr1z[ind] if rr1z.size > 1 else rr1z
+            rr2_ind = rr2[ind] if rr2.size > 1 else rr2
+            rr2z_ind = rr2z[ind] if rr2z.size > 1 else rr2z
+
+            base = iname * 3 * n
+            y[base:base + n] = a1 * rr1_ind - a2 * rr2_ind
+            y[base + n:base + 2 * n] = -b1 * rr1_ind + b2 * rr2_ind
+            y[base + 2 * n:base + 3 * n] = -c1 * rr1z_ind + c2 * rr2z_ind
+
+        return y
 
     def _intbessel(self,
             enei: float,
             kpar: complex,
             pos: Dict[str, Any],
             ind: Optional[np.ndarray] = None) -> np.ndarray:
-        # MATLAB: private/intbessel.m
-        r_exp = self._mul(pos['r'], self._mul(np.ones_like(pos['z1']), np.ones_like(pos['z2'])))
-        r_flat = r_exp.ravel()
-
+        # Backward-compatible: build context on demand.
+        ctx = self._build_integrate_context(enei, pos)
         if ind is None:
-            ind = np.arange(len(r_flat))
-
-        # Wavenumber in media
-        k_vals = np.empty(len(self.eps), dtype = complex)
-        for i, eps_func in enumerate(self.eps):
-            _, k_vals[i] = eps_func(enei)
-
-        kz = np.sqrt(k_vals ** 2 - kpar ** 2)
-        kz = kz * np.sign(np.imag(kz + 1e-10j))
-
-        ind1 = np.atleast_1d(pos['ind1'])
-        kz_sel = kz[ind1 - 1] if ind1.ndim == 0 else kz[ind1.ravel() - 1]
-
-        # Expand kz to match r shape
-        if len(kz_sel) != len(r_flat):
-            kz_full = np.ones(len(r_flat), dtype = complex)
-            # Replicate kz_sel appropriately
-            n_r = np.atleast_1d(pos['r']).size
-            n_z1 = np.atleast_1d(pos['z1']).size
-            n_z2 = np.atleast_1d(pos['z2']).size
-            kz_full = np.tile(np.repeat(kz_sel, n_z2), n_r)[:len(r_flat)]
-        else:
-            kz_full = kz_sel
-
-        kz_ind = kz_full[ind]
-
-        # Reflection coefficients
-        refl, reflz = self.reflection(enei, kpar, pos)
-
-        # Bessel functions
-        r_ind = r_flat[ind]
-        j0 = besselj(0, np.real(kpar * r_ind) if np.isreal(kpar) else kpar * r_ind)
-        j1 = besselj(1, np.real(kpar * r_ind) if np.isreal(kpar) else kpar * r_ind)
-
-        n = len(ind)
-        y = np.zeros(15 * n, dtype = complex)
-
-        names = list(refl.keys())
-        for iname, name in enumerate(names):
-            rr = np.atleast_1d(refl[name]).ravel()
-            rrz = np.atleast_1d(reflz[name]).ravel()
-
-            rr_ind = rr[ind] if len(rr) > 1 else rr
-            rrz_ind = rrz[ind] if len(rrz) > 1 else rrz
-
-            # G component
-            y[(iname * 3) * n:(iname * 3 + 1) * n] = \
-                1j * j0 * rr_ind * kpar / kz_ind
-            # Fr component
-            y[(iname * 3 + 1) * n:(iname * 3 + 2) * n] = \
-                1j * j1 * rr_ind * (-kpar ** 2) / kz_ind
-            # Fz component
-            y[(iname * 3 + 2) * n:(iname * 3 + 3) * n] = \
-                1j * j0 * 1j * rrz_ind * kpar
-
-        return np.real(y) if np.all(np.isreal(y)) else y
+            ind = np.arange(len(ctx['r_flat']))
+        return self._intbessel_ctx(kpar, ctx, ind)
 
     def _inthankel(self,
             enei: float,
             kpar: complex,
             pos: Dict[str, Any],
             ind: Optional[np.ndarray] = None) -> np.ndarray:
-        # MATLAB: private/inthankel.m
-        r_exp = self._mul(pos['r'], self._mul(np.ones_like(pos['z1']), np.ones_like(pos['z2'])))
-        r_flat = r_exp.ravel()
-
+        ctx = self._build_integrate_context(enei, pos)
         if ind is None:
-            ind = np.arange(len(r_flat))
-
-        k_vals = np.empty(len(self.eps), dtype = complex)
-        for i, eps_func in enumerate(self.eps):
-            _, k_vals[i] = eps_func(enei)
-
-        kpar1 = kpar
-        kpar2 = np.conj(kpar)
-
-        kz1 = np.sqrt(k_vals ** 2 - kpar1 ** 2)
-        kz1 = kz1 * np.sign(np.imag(kz1 + 1e-10j))
-        kz2 = np.sqrt(k_vals ** 2 - kpar2 ** 2)
-        kz2 = kz2 * np.sign(np.imag(kz2 + 1e-10j))
-
-        ind1 = np.atleast_1d(pos['ind1'])
-        kz1_sel = kz1[ind1.ravel() - 1] if ind1.size > 1 else kz1[ind1 - 1]
-        kz2_sel = kz2[ind1.ravel() - 1] if ind1.size > 1 else kz2[ind1 - 1]
-
-        refl1, refl1z = self.reflection(enei, kpar1, pos)
-        refl2, refl2z = self.reflection(enei, kpar2, pos)
-
-        r_ind = r_flat[ind]
-        h0 = hankel1(0, kpar * r_ind)
-        h1 = hankel1(1, kpar * r_ind)
-
-        n = len(ind)
-        y = np.zeros(15 * n, dtype = complex)
-
-        # Expand kz
-        if np.atleast_1d(kz1_sel).size != len(r_flat):
-            kz1_full = np.tile(kz1_sel, max(1, len(r_flat) // len(np.atleast_1d(kz1_sel))))[:len(r_flat)]
-            kz2_full = np.tile(kz2_sel, max(1, len(r_flat) // len(np.atleast_1d(kz2_sel))))[:len(r_flat)]
-        else:
-            kz1_full = kz1_sel
-            kz2_full = kz2_sel
-
-        kz1_ind = np.atleast_1d(kz1_full)[ind] if np.atleast_1d(kz1_full).size > 1 else kz1_full
-        kz2_ind = np.atleast_1d(kz2_full)[ind] if np.atleast_1d(kz2_full).size > 1 else kz2_full
-
-        names = list(refl1.keys())
-        for iname, name in enumerate(names):
-            rr1 = np.atleast_1d(refl1[name]).ravel()
-            rr1z = np.atleast_1d(refl1z[name]).ravel()
-            rr2 = np.atleast_1d(refl2[name]).ravel()
-            rr2z = np.atleast_1d(refl2z[name]).ravel()
-
-            rr1_ind = rr1[ind] if len(rr1) > 1 else rr1
-            rr1z_ind = rr1z[ind] if len(rr1z) > 1 else rr1z
-            rr2_ind = rr2[ind] if len(rr2) > 1 else rr2
-            rr2z_ind = rr2z[ind] if len(rr2z) > 1 else rr2z
-
-            # G component
-            y[(iname * 3) * n:(iname * 3 + 1) * n] = \
-                0.5j * h0 * rr1_ind * kpar1 / kz1_ind - \
-                0.5j * np.conj(h0) * rr2_ind * kpar2 / kz2_ind
-            # Fr component
-            y[(iname * 3 + 1) * n:(iname * 3 + 2) * n] = \
-                0.5j * h1 * rr1_ind * (-kpar1 ** 2) / kz1_ind - \
-                0.5j * np.conj(h1) * rr2_ind * (-kpar2 ** 2) / kz2_ind
-            # Fz component
-            y[(iname * 3 + 2) * n:(iname * 3 + 3) * n] = \
-                0.5j * h0 * 1j * rr1z_ind * kpar1 - \
-                0.5j * np.conj(h0) * 1j * rr2z_ind * kpar2
-
-        return y
+            ind = np.arange(len(ctx['r_flat']))
+        return self._inthankel_ctx(kpar, ctx, ind)
 
     def bemsolve(self,
             enei: float,
