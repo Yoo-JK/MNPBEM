@@ -73,16 +73,17 @@ class QuadFace(object):
         rad_t = 1.0 / np.abs(2 * np.sin(phi_flat))
 
         # three rotated copies
-        n_pts = len(rho_flat)
-        phi_3 = np.empty((n_pts, 3))
-        phi_3[:, 0] = phi_flat
-        phi_3[:, 1] = phi_flat + phi0_t
-        phi_3[:, 2] = phi_flat + 2 * phi0_t
+        # MATLAB uses column-major ravel (phi = [phi, phi+phi0, phi+2*phi0] then x(:)),
+        # so x3/y3 must be concatenated with the three sector copies sequentially
+        # in alignment with w3 = repmat(w(:) .* rho .* rad.^2, 3, 1).
+        phi_3 = np.concatenate([phi_flat, phi_flat + phi0_t, phi_flat + 2 * phi0_t])
+        rho_rep = np.tile(rho_flat, 3)
+        rad_rep = np.tile(rad_t, 3)
 
         # integration points in triangle
-        rho_rad = rho_flat * rad_t
-        x3 = (np.cos(phi_3) * rho_rad[:, np.newaxis]).ravel()
-        y3 = (np.sin(phi_3) * rho_rad[:, np.newaxis]).ravel()
+        rho_rad = rho_rep * rad_rep
+        x3 = np.cos(phi_3) * rho_rad
+        y3 = np.sin(phi_3) * rho_rad
 
         # transform to unit triangle
         x3, y3 = ((1 - np.sqrt(3) * x3 - y3) / 3,
@@ -110,16 +111,19 @@ class QuadFace(object):
 
         rad_q = 1.0 / np.abs(np.sin(phi_flat_q))
 
-        n_pts_q = len(rho_flat_q)
-        phi_4 = np.empty((n_pts_q, 4))
-        phi_4[:, 0] = phi_flat_q
-        phi_4[:, 1] = phi_flat_q + phi0_q
-        phi_4[:, 2] = phi_flat_q + 2 * phi0_q
-        phi_4[:, 3] = phi_flat_q + 3 * phi0_q
+        # four rotated copies (MATLAB column-major ravel convention)
+        phi_4 = np.concatenate([
+            phi_flat_q,
+            phi_flat_q + phi0_q,
+            phi_flat_q + 2 * phi0_q,
+            phi_flat_q + 3 * phi0_q,
+        ])
+        rho_rep_q = np.tile(rho_flat_q, 4)
+        rad_rep_q = np.tile(rad_q, 4)
 
-        rho_rad_q = rho_flat_q * rad_q
-        x4 = (np.cos(phi_4) * rho_rad_q[:, np.newaxis]).ravel()
-        y4 = (np.sin(phi_4) * rho_rad_q[:, np.newaxis]).ravel()
+        rho_rad_q = rho_rep_q * rad_rep_q
+        x4 = np.cos(phi_4) * rho_rad_q
+        y4 = np.sin(phi_4) * rho_rad_q
 
         w_2d_q = np.outer(w1q, w2q).ravel()
         w4 = np.tile(w_2d_q * rho_flat_q * rad_q ** 2, 4)
