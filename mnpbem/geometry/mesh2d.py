@@ -180,9 +180,8 @@ def fixmesh(p: np.ndarray,
     # MATLAB Mesh2d/fixmesh.m - clean up mesh
     TOL = 1.0e-10
 
-    # remove duplicate nodes
-    p_rounded = np.round(p / (TOL * 0.01)) * (TOL * 0.01)
-    _, i_unique, j_map = np.unique(p_rounded, axis = 0, return_index = True, return_inverse = True)
+    # remove duplicate nodes (MATLAB L64: unique(p,'rows') — no rounding)
+    _, i_unique, j_map = np.unique(p, axis = 0, return_index = True, return_inverse = True)
     if pfun is not None:
         pfun = pfun[i_unique]
     p = p[i_unique]
@@ -1464,17 +1463,19 @@ def meshpoly(node: np.ndarray,
             # MATLAB meshpoly.m:173-175
             small_tri = np.where(t_area < smalltri * Ah)[0]
             short_edges = np.where(r < shortedge)[0]
-            # NOTE: MATLAB L174 low-conn removal omitted — empirical testing
-            # showed this hurts some demos (demodipret3 regressed); the
-            # MATLAB pattern `sum(abs(S),2)<2` rarely triggers in practice
-            # for the polygons we handle.
+            # MATLAB L174: k = find(sum(abs(S),2)<2)  -- nodes with <2 edges
+            S_abs_sum = np.asarray(np.abs(S).sum(axis=1)).ravel()
+            low_conn = np.where(S_abs_sum < 2)[0]
 
-            # MATLAB meshpoly.m:176-190 prob array construction (order: edges, triangles)
+            # MATLAB meshpoly.m:176-190 prob array construction
+            # Order matches MATLAB L178-181: j(edges), i(triangles), k(low-conn)
             prob = np.zeros(p.shape[0], dtype = bool)
             if len(short_edges) > 0:
                 prob[e[short_edges].ravel()] = True
             if len(small_tri) > 0:
                 prob[t[small_tri].ravel()] = True
+            if len(low_conn) > 0:
+                prob[low_conn] = True
             prob[fix] = False
 
             pnew = p[~prob]
