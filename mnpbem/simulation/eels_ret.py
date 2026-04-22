@@ -213,7 +213,10 @@ class EELSRet(EELSBase):
 
             phi, phip = self.potinfty(q, gamma[mat_int - 1], ind, mat_int)
 
-            if not np.all(phi == 0):
+            # MATLAB: `if ~all(phi == 0)` evaluates per-column then requires
+            # all entries of the vector to be true. Skip addpotential if ANY
+            # column is all-zero (e.g., far impact with no crossing).
+            if np.all(np.any(phi != 0, axis = 0)):
                 exc = self._add_potential(exc, p_obj, phi, phip, mat_int, eps_arr[mat_int - 1], self.vel)
 
         return exc
