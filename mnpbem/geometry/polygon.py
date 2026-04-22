@@ -503,10 +503,15 @@ class Polygon(object):
         return self._union_parts(*others)
 
     def polymesh2d(self,
+            *others: 'Polygon',
             hdata: Optional[Dict[str, Any]] = None,
             options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, np.ndarray]:
 
         # MATLAB @polygon/polymesh2d.m
+        # When called with extra Polygon arguments, treats them as additional
+        # loops (typically holes inside self). Each polygon becomes one face
+        # in the mesh2d call; mesh2d's face-classification auto-detects
+        # outer / hole topology.
         from .mesh2d import mesh2d
 
         if options is None:
@@ -514,7 +519,7 @@ class Polygon(object):
         elif 'output' not in options:
             options['output'] = False
 
-        pos, cnet, face_list = self.union_faces()
+        pos, cnet, face_list = self.union_faces(*others)
 
         verts, faces = mesh2d(pos, cnet, hdata = hdata, options = options, face = face_list)
         return verts, faces
