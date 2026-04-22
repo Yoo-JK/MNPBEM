@@ -345,8 +345,20 @@ class GreenTabLayer(object):
 
         # Query points
         r_q = np.clip(np.asarray(r, dtype=float).ravel(), self.r[0], self.r[-1])
-        z1_q = np.asarray(z1, dtype=float).ravel()
-        z2_q = np.asarray(z2, dtype=float).ravel()
+        # MATLAB interp2.m:17 / interp3.m:17: [z1, z2] = round(obj.layer, z1, z2)
+        # Push points within zmin of an interface outward by zmin so they
+        # fall inside the tabulation domain. Critical for near-surface
+        # accuracy (demospecret13). Without this, near-layer queries
+        # extrapolate below the grid start (0.999 * zmin) and lose precision.
+        z1_arr = np.asarray(z1, dtype=float).ravel()
+        z2_arr = np.asarray(z2, dtype=float).ravel()
+        try:
+            z1_rounded, z2_rounded = self.layer.round_z(z1_arr, z2_arr)
+            z1_q = np.asarray(z1_rounded, dtype=float).ravel()
+            z2_q = np.asarray(z2_rounded, dtype=float).ravel()
+        except (AttributeError, TypeError):
+            z1_q = z1_arr
+            z2_q = z2_arr
 
         names = list(self._Gsav_comp.keys())
         G_dict = {}
