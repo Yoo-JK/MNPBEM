@@ -531,6 +531,75 @@ class Polygon(object):
         new_poly.sym = self.sym
         return new_poly
 
+    def norm(self) -> np.ndarray:
+        # MATLAB @polygon/norm.m - alias for compute_normals
+        return self.compute_normals()
+
+    def plot(self,
+            line_spec: str = 'b',
+            nvec: bool = False,
+            scale: float = 1.0,
+            ax: Optional[Any] = None) -> Any:
+        # MATLAB @polygon/plot.m - plot polygon (and optional normals)
+        import matplotlib.pyplot as plt
+
+        if ax is None:
+            ax = plt.gca()
+
+        pos = self.pos
+        n = pos.shape[0]
+
+        closed = np.empty((n + 1, 2))
+        closed[:n] = pos
+        closed[n] = pos[0]
+        ax.plot(closed[:, 0], closed[:, 1], line_spec)
+
+        if nvec:
+            nv = self.compute_normals()
+            ax.quiver(pos[:, 0], pos[:, 1], nv[:, 0], nv[:, 1],
+                    angles = 'xy', scale_units = 'xy', scale = 1.0 / scale)
+
+        ax.set_aspect('equal', adjustable = 'datalim')
+        return ax
+
+    def symmetry(self, sym: Optional[str] = None) -> Tuple['Polygon', 'Polygon']:
+        # MATLAB @polygon/symmetry.m
+        # Returns (obj, full): irreducible part and symmetrized full polygon.
+        full = self.copy()
+        if sym is None or sym == '':
+            return self, full
+
+        new_poly = self.copy()
+        new_poly.sym = None
+        new_poly._apply_symmetry(sym)
+
+        # full polygon: mirror irreducible part along symmetry axes
+        full = new_poly.copy()
+        full.sym = None
+
+        if sym == 'xy' and len(full.pos) > 0 and np.all(full.pos[-1] == 0):
+            full.pos = full.pos[:-1]
+
+        if sym in ('x', 'xy') and np.any(full.pos[:, 0] == 0):
+            mid = full.pos[1:-1]
+            flipped = mid[::-1] * np.array([-1.0, 1.0])
+            total = full.pos.shape[0] + flipped.shape[0]
+            out = np.empty((total, 2))
+            out[:full.pos.shape[0]] = full.pos
+            out[full.pos.shape[0]:] = flipped
+            full.pos = out
+
+        if sym in ('y', 'xy') and np.any(full.pos[:, 1] == 0):
+            mid = full.pos[1:-1]
+            flipped = mid[::-1] * np.array([1.0, -1.0])
+            total = full.pos.shape[0] + flipped.shape[0]
+            out = np.empty((total, 2))
+            out[:full.pos.shape[0]] = full.pos
+            out[full.pos.shape[0]:] = flipped
+            full.pos = out
+
+        return new_poly, full
+
     def interp1(self, pos: np.ndarray) -> 'Polygon':
         """
         Make new polygon through given positions using interpolation.
