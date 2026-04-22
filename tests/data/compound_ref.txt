@@ -1,0 +1,34 @@
+size 284 508 116
+n 908
+np 3
+d_in_count 3
+d_in_1 -1.0000000000000000e+01 1.0000000000000000e+00
+d_in_2 2.2500000000000000e+00 0.0000000000000000e+00
+d_in_3 -1.0000000000000000e+01 1.0000000000000000e+00
+d_out_count 3
+d_out_1 1.0000000000000000e+00 0.0000000000000000e+00
+d_out_2 1.0000000000000000e+00 0.0000000000000000e+00
+d_out_3 1.0000000000000000e+00 0.0000000000000000e+00
+idx1_len 284
+idx1_first_last 1 284
+idx2_len 508
+idx2_first_last 285 792
+idx3_len 116
+idx3_first_last 793 908
+idx13_len 400
+ipt 1 1 2 2 3
+rel 1 50 1 100 1
+exp_scalar_len 908
+exp_scalar_first 42
+exp_cell_len 908
+exp_cell_p1_last 10
+exp_cell_p2_last 20
+exp_cell_p3_last 30
+eq 1
+ne 0
+eq_shuffle 0
+masked_n 400
+masked_size 284 116
+masked_idx1_len 284
+masked_idx2_len 116
+masked_idx2_first 285

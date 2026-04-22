@@ -25,6 +25,7 @@ Functions:
 """
 
 from .particle import Particle
+from .compound import Compound
 from .comparticle import ComParticle
 from .comparticle_mirror import ComParticleMirror, CompStructMirror
 from .compoint import Point, ComPoint
@@ -46,6 +47,7 @@ from .layer_structure import LayerStructure
 
 __all__ = [
     "Particle",
+    "Compound",
     "ComParticle",
     "ComParticleMirror",
     "CompStructMirror",
