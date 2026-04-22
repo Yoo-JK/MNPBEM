@@ -232,14 +232,16 @@ class DipoleRetLayer(object):
         r_flat = np.maximum(r.ravel(), rmin)
 
         # Baseline: G, Fr, Fz at (r, z1, z2)
-        # Use direct computation (not interpolation) for accuracy at dipole positions
-        G0, Fr0, Fz0 = self.tab._compute_components(enei, r_flat, z1_r, z2_r)
+        # MATLAB @dipoleretlayer/private/greenderiv.m uses interp(obj.tab, ...) on
+        # tabulated Green functions; use eval_components so tabulation is used when
+        # available (matches MATLAB behavior).
+        G0, Fr0, Fz0 = self.tab.eval_components(enei, r_flat, z1_r, z2_r)
 
         # Perturbed in r: (r+eta, z1, z2)
-        _, Fr_r, Fz_r = self.tab._compute_components(enei, r_flat + eta, z1_r, z2_r)
+        _, Fr_r, Fz_r = self.tab.eval_components(enei, r_flat + eta, z1_r, z2_r)
 
         # Perturbed in z2: (r, z1, z2+eta)
-        G_z, Fr_z, Fz_z = self.tab._compute_components(enei, r_flat, z1_r, z2_r + eta)
+        G_z, Fr_z, Fz_z = self.tab.eval_components(enei, r_flat, z1_r, z2_r + eta)
 
         names = list(G0.keys())
         shape = (n1, n2)
@@ -436,9 +438,12 @@ class DipoleRetLayer(object):
             return g * d[np.newaxis, :, :]
 
         # Surface derivative of vector potential: ap
+        # MATLAB potential.m L75 uses dip(:, 2, :) (column 2 = y) for the deriv('hh', 1)
+        # term — this is inconsistent with a3 (which uses column 3 = z) and appears to
+        # be a MATLAB typo, but we replicate it exactly to match MATLAB reference output.
         a1p = -1j * k0 * fun3(deriv('p', 1), dip[:, 0, :])
         a2p = -1j * k0 * fun3(deriv('p', 1), dip[:, 1, :])
-        a3p = (-1j * k0 * fun3(deriv('hh', 1), dip[:, 2, :])
+        a3p = (-1j * k0 * fun3(deriv('hh', 1), dip[:, 1, :])
               + fun3(deriv('hs', 2), dip2[:, 0, :])
               + fun3(deriv('hs', 3), dip2[:, 1, :])
               + fun3(deriv('hs', 4), dip2[:, 2, :]))
