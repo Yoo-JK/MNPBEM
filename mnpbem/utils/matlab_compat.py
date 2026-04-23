@@ -1,97 +1,175 @@
 """MATLAB-compatible floating-point primitives.
 
-Problem: Python's `np.linspace`, `np.arctan2` output differ from MATLAB's by
-1 ULP due to different FP accumulation order / algorithm. `np.cos/sin` itself
-already matches MATLAB (both routed through Intel MKL on Linux with numpy
-linked against MKL). But 1 ULP differences in theta or linspace propagate
-through `p @ rot` and `np.unique` causing mesh topology divergence.
+Problem: Python's `np.linspace`, `np.arctan2`, `np.exp`, `np.log`, ... output
+differ from MATLAB's by 1 ULP due to different FP accumulation order /
+algorithm. `np.cos/sin` itself already matches MATLAB on Linux with numpy
+linked against MKL, but 1 ULP drift in theta or linspace propagates through
+`p @ rot` and `np.unique` causing mesh topology divergence.
 
-This module provides drop-in replacements that match MATLAB bit-for-bit.
+This module provides drop-in replacements that match MATLAB bit-for-bit by
+calling into MATLAB's own libmwmathutil.so (fdlibm-derived). Falls back to
+numpy equivalents when MATLAB is not installed.
 
 Functions:
-    mlinspace(a, b, n): MATLAB's linspace formula
-    matan2(y, x):       MATLAB's atan2 via libmwmathutil ctypes (bit-identical)
-    mcos(x), msin(x):   pass-through to np.cos/np.sin (already matches MKL)
+    mlinspace(a, b, n):        MATLAB's linspace formula
+    matan2(y, x):              MATLAB's atan2 via libmwmathutil
+    mcos(x), msin(x):          cos/sin
+    mtan(x):                   tan
+    mexp(x), mlog(x):          exp, natural log
+    mlog10(x), mlog2(x):       log10, log2
+    mlog1p(x), mexpm1(x):      log1p, expm1
+    msqrt(x):                  sqrt
+    msinh(x), mcosh(x), mtanh(x):   hyperbolic functions
+    masin(x), macos(x), matan(x):   inverse trig
+    mpow(b, e):                power (a^b)
+    mhypot(a, b):              hypot(a, b) = sqrt(a^2 + b^2)
+    mabs(x):                   abs
+    msign(x):                  sign
+    mround(x):                 round (half-away-from-zero, MATLAB default)
+    mfloor(x), mceil(x), mfix(x):   floor, ceil, fix (truncate toward 0)
 """
 import ctypes
 import os
-from ctypes import c_int, c_double, c_size_t, POINTER
+from ctypes import c_int, c_double, c_size_t, c_ulong, POINTER
 import numpy as np
 
 
-# --- MATLAB libmwmathutil (bit-identical atan2) ---
-# Investigated 2026-04-22: MATLAB R2025b uses its own atan2 in
-# libmwmathutil.so (fdlibm-derived), which differs from np.arctan2 / MKL
-# vdAtan2 at 1 ULP for ~17% of random inputs. Directly calling the
-# vectorized template `mu::Atan2<double,double,double>` gives bit-identical
-# results at ~np.arctan2 speed.
-#
-# Symbol: _ZN2mu5Atan2IdddEEvPT_PT0_PT1_mmmm
-# Signature: void(double* out, double* y, double* x,
-#                 size_t stride_out, size_t stride_y, size_t stride_x,
-#                 size_t count)
-# Scalar variant: muDoubleScalarAtan2(double y, double x) -> double
+# --- MATLAB libmwmathutil loader ---
+# MATLAB R2025b ships its own transcendentals in libmwmathutil.so
+# (fdlibm-derived). These differ from np.<func> / Intel MKL at 1 ULP on certain
+# inputs, and 1-ULP drift propagates through p @ rot / unique and breaks mesh
+# topology. We call both the scalar forms (muDoubleScalar*) and the vector
+# template forms (mu::*<double,...>) via ctypes.
 _MATLAB_LIB_PATH = '/usr/local/MATLAB/R2025b/bin/glnxa64/libmwmathutil.so'
 _mathutil = None
-_matan2_vec = None
-_matan2_scalar = None
-_mcos_vec = None
-_mcos_scalar = None
-_msin_vec = None
-_msin_scalar = None
+
+# Registry populated by _init_matlab_lib(). Maps function name -> (scalar_fn,
+# vec_fn, n_args). scalar_fn takes n_args doubles and returns a double; vec_fn
+# is the raw ctypes function with signature specific to n_args.
+_REG = {}
+
+# Vector template specs: name -> (mangled_symbol, n_args, return_type).
+# n_args = 1 means 1-arg (out, in, stride_out, stride_in, count).
+# n_args = 2 means 2-arg (out, in0, in1, s_out, s0, s1, count).
+# return_type is None (void) or c_ulong (error-count variant).
+_VEC_SPECS = {
+    'cos':   ('_ZN2mu3CosIdEEvPT_S2_mmm',     1, None),
+    'sin':   ('_ZN2mu3SinIdEEvPT_S2_mmm',     1, None),
+    'tan':   ('_ZN2mu3TanIdEEvPT_S2_mmm',     1, None),
+    'exp':   ('_ZN2mu3ExpIdEEvPT_S2_mmm',     1, None),
+    'log':   ('_ZN2mu3LogIdEEmPT_S2_mmm',     1, c_ulong),
+    'log10': ('_ZN2mu5Log10IdEEmPT_S2_mmm',   1, c_ulong),
+    'log2':  ('_ZN2mu4Log2IdEEmPT_S2_mmm',    1, c_ulong),
+    'log1p': ('_ZN2mu5Log1pIdEEmPT_S2_mmm',   1, c_ulong),
+    'expm1': ('_ZN2mu5Expm1IdEEvPT_S2_mmm',   1, None),
+    'sqrt':  ('_ZN2mu4SqrtIdEEmPT_S2_mmm',    1, c_ulong),
+    'sinh':  ('_ZN2mu4SinhIdEEvPT_S2_mmm',    1, None),
+    'cosh':  ('_ZN2mu4CoshIdEEvPT_S2_mmm',    1, None),
+    'tanh':  ('_ZN2mu4TanhIdEEvPT_S2_mmm',    1, None),
+    'asin':  ('_ZN2mu4AsinIdEEmPT_S2_mmm',    1, c_ulong),
+    'acos':  ('_ZN2mu4AcosIdEEmPT_S2_mmm',    1, c_ulong),
+    'atan':  ('_ZN2mu4AtanIdEEvPT_S2_mmm',    1, None),
+    'abs':   ('_ZN2mu3AbsIdEEvPN10mfl_scalar8realTypeIT_E4typeEPS3_mmm', 1, None),
+    'sign':  ('_ZN2mu4SignIdEEvPT_S2_mmm',    1, None),
+    'round': ('_ZN2mu5RoundIdEEvPT_S2_mmm',   1, None),
+    'floor': ('_ZN2mu5FloorIdEEvPT_S2_mmm',   1, None),
+    'ceil':  ('_ZN2mu4CeilIdEEvPT_S2_mmm',    1, None),
+    'fix':   ('_ZN2mu3FixIdEEvPT_S2_mmm',     1, None),
+    'atan2': ('_ZN2mu5Atan2IdddEEvPT_PT0_PT1_mmmm', 2, None),
+    'power': ('_ZN2mu5PowerIdddEEvPT_PT0_PT1_mmmm', 2, None),
+    'hypot': ('_ZN2mu5HypotIdddEEvPT_PT0_PT1_mmmm', 2, None),
+}
+
+# Scalar fast-path symbol names (MATLAB's muDoubleScalar* family).
+_SCALAR_SPECS = {
+    'cos':   ('muDoubleScalarCos',   1),
+    'sin':   ('muDoubleScalarSin',   1),
+    'tan':   ('muDoubleScalarTan',   1),
+    'exp':   ('muDoubleScalarExp',   1),
+    'log':   ('muDoubleScalarLog',   1),
+    'log10': ('muDoubleScalarLog10', 1),
+    'sqrt':  ('muDoubleScalarSqrt',  1),
+    'sinh':  ('muDoubleScalarSinh',  1),
+    'cosh':  ('muDoubleScalarCosh',  1),
+    'tanh':  ('muDoubleScalarTanh',  1),
+    'asin':  ('muDoubleScalarAsin',  1),
+    'acos':  ('muDoubleScalarAcos',  1),
+    'atan':  ('muDoubleScalarAtan',  1),
+    'abs':   ('muDoubleScalarAbs',   1),
+    'sign':  ('muDoubleScalarSign',  1),
+    'round': ('muDoubleScalarRound', 1),
+    'floor': ('muDoubleScalarFloor', 1),
+    'ceil':  ('muDoubleScalarCeil',  1),
+    'fix':   ('muDoubleScalarFix',   1),
+    'atan2': ('muDoubleScalarAtan2', 2),
+    'power': ('muDoubleScalarPower', 2),
+    'hypot': ('muDoubleScalarHypot', 2),
+}
 
 
-def _init_matlab_atan2():
-    """Attempt to load MATLAB's atan2/cos/sin from libmwmathutil.so. Returns
-    True on success, False if MATLAB is not installed — callers then fall
-    back to np.arctan2 / np.cos / np.sin.
+def _init_matlab_lib():
+    """Load libmwmathutil.so and bind every function in _VEC_SPECS /
+    _SCALAR_SPECS. Returns True on success, False if MATLAB is not installed
+    (in which case all wrappers fall back to numpy).
     """
-    global _mathutil, _matan2_vec, _matan2_scalar
-    global _mcos_vec, _mcos_scalar, _msin_vec, _msin_scalar
+    global _mathutil
     if _mathutil is not None:
         return True
     if not os.path.exists(_MATLAB_LIB_PATH):
         return False
     try:
         _mathutil = ctypes.CDLL(_MATLAB_LIB_PATH)
-        _matan2_vec = _mathutil._ZN2mu5Atan2IdddEEvPT_PT0_PT1_mmmm
-        _matan2_vec.argtypes = [
-            POINTER(c_double), POINTER(c_double), POINTER(c_double),
-            c_size_t, c_size_t, c_size_t, c_size_t,
-        ]
-        _matan2_vec.restype = None
-        _matan2_scalar = _mathutil.muDoubleScalarAtan2
-        _matan2_scalar.argtypes = [c_double, c_double]
-        _matan2_scalar.restype = c_double
-        # MATLAB cos/sin — single-argument vector+scalar forms
-        _mcos_vec = _mathutil._ZN2mu3CosIdEEvPT_S2_mmm
-        _mcos_vec.argtypes = [POINTER(c_double), POINTER(c_double),
-                              c_size_t, c_size_t, c_size_t]
-        _mcos_vec.restype = None
-        _mcos_scalar = _mathutil.muDoubleScalarCos
-        _mcos_scalar.argtypes = [c_double]
-        _mcos_scalar.restype = c_double
-        _msin_vec = _mathutil._ZN2mu3SinIdEEvPT_S2_mmm
-        _msin_vec.argtypes = [POINTER(c_double), POINTER(c_double),
-                              c_size_t, c_size_t, c_size_t]
-        _msin_vec.restype = None
-        _msin_scalar = _mathutil.muDoubleScalarSin
-        _msin_scalar.argtypes = [c_double]
-        _msin_scalar.restype = c_double
-        return True
-    except (OSError, AttributeError):
+    except OSError:
         _mathutil = None
-        _matan2_vec = None
-        _matan2_scalar = None
-        _mcos_vec = None
-        _mcos_scalar = None
-        _msin_vec = None
-        _msin_scalar = None
         return False
 
+    for name, (symbol, n_args, rtype) in _VEC_SPECS.items():
+        try:
+            vec = getattr(_mathutil, symbol)
+        except AttributeError:
+            _mathutil = None
+            return False
+        if n_args == 1:
+            vec.argtypes = [POINTER(c_double), POINTER(c_double),
+                            c_size_t, c_size_t, c_size_t]
+        else:
+            vec.argtypes = [POINTER(c_double), POINTER(c_double),
+                            POINTER(c_double),
+                            c_size_t, c_size_t, c_size_t, c_size_t]
+        vec.restype = rtype
+        _REG[name + '_vec'] = vec
+        _REG[name + '_nargs'] = n_args
 
-# Eagerly initialise so tests can query availability.
-_MATLAB_ATAN2_AVAILABLE = _init_matlab_atan2()
+    for name, (symbol, n_args) in _SCALAR_SPECS.items():
+        try:
+            scalar = getattr(_mathutil, symbol)
+        except AttributeError:
+            continue
+        scalar.argtypes = [c_double] * n_args
+        scalar.restype = c_double
+        _REG[name + '_scalar'] = scalar
+
+    return True
+
+
+_MATLAB_ATAN2_AVAILABLE = _init_matlab_lib()
+
+
+# --- backwards-compatible module-level aliases (used by tests) ---
+if _MATLAB_ATAN2_AVAILABLE:
+    _matan2_vec    = _REG['atan2_vec']
+    _matan2_scalar = _REG['atan2_scalar']
+    _mcos_vec      = _REG['cos_vec']
+    _mcos_scalar   = _REG['cos_scalar']
+    _msin_vec      = _REG['sin_vec']
+    _msin_scalar   = _REG['sin_scalar']
+else:
+    _matan2_vec = None
+    _matan2_scalar = None
+    _mcos_vec = None
+    _mcos_scalar = None
+    _msin_vec = None
+    _msin_scalar = None
 
 
 def mlinspace(a, b, n):
@@ -113,55 +191,159 @@ def mlinspace(a, b, n):
     return y
 
 
-def mcos(x):
-    """MATLAB-compatible cos.
+# --- Generic 1-arg / 2-arg dispatchers (shared by every wrapper below) ---
 
-    MATLAB ships its own cos in libmwmathutil (fdlibm-derived) that differs
-    from np.cos / Intel MKL at 1 ULP on certain inputs (e.g.
-    sin(2*pi/3) = 0.866025403784438486 via MKL vs 0.866025403784438597 via
-    MATLAB). 1-ULP drift in sin/cos propagates through p @ rot and breaks
-    quadtree/meshpoly topology. Falls back to np.cos when MATLAB is not
-    available.
+def _call_unary(name, x, np_fn):
+    """Scalar-or-array dispatcher for unary MATLAB transcendentals."""
+    if not globals().get('_MATLAB_ATAN2_AVAILABLE', False):
+        return np_fn(x)
+    scalar = _REG.get(name + '_scalar')
+    is_py_scalar = np.isscalar(x)
+    if is_py_scalar and scalar is not None:
+        return scalar(float(x))
+    x_raw = np.asarray(x, dtype=np.float64)
+    scalar_shape = is_py_scalar or x_raw.ndim == 0
+    if scalar_shape and scalar is not None:
+        return np.float64(scalar(float(x_raw)))
+    # Either no scalar symbol exported (log2/log1p/expm1) or a real array.
+    if scalar_shape:
+        in_buf = np.array([float(x_raw)], dtype=np.float64)
+        out = np.empty(1, dtype=np.float64)
+    else:
+        x_arr = np.ascontiguousarray(x_raw)
+        if x_arr.size == 0:
+            return np.empty_like(x_arr)
+        in_buf = x_arr
+        out = np.empty_like(x_arr)
+    vec = _REG[name + '_vec']
+    vec(
+        out.ctypes.data_as(POINTER(c_double)),
+        in_buf.ctypes.data_as(POINTER(c_double)),
+        c_size_t(1), c_size_t(1), c_size_t(in_buf.size),
+    )
+    if scalar_shape:
+        if is_py_scalar:
+            return float(out[0])
+        return np.float64(out[0])
+    return out
+
+
+def _call_binary(name, a, b, np_fn):
+    """Scalar-or-array dispatcher for binary MATLAB transcendentals (atan2,
+    power, hypot). Accepts broadcastable inputs like np.<fn>."""
+    if not globals().get('_MATLAB_ATAN2_AVAILABLE', False):
+        return np_fn(a, b)
+    scalar = _REG.get(name + '_scalar')
+    is_py_scalar = np.isscalar(a) and np.isscalar(b)
+    if is_py_scalar and scalar is not None:
+        return scalar(float(a), float(b))
+    a_raw = np.asarray(a, dtype=np.float64)
+    b_raw = np.asarray(b, dtype=np.float64)
+    if a_raw.shape != b_raw.shape:
+        a_raw, b_raw = np.broadcast_arrays(a_raw, b_raw)
+    scalar_shape = (is_py_scalar or (a_raw.ndim == 0 and b_raw.ndim == 0))
+    if scalar_shape and scalar is not None:
+        return np.float64(scalar(float(a_raw), float(b_raw)))
+    if scalar_shape:
+        a_buf = np.array([float(a_raw)], dtype=np.float64)
+        b_buf = np.array([float(b_raw)], dtype=np.float64)
+        out = np.empty(1, dtype=np.float64)
+    else:
+        a_arr = np.ascontiguousarray(a_raw)
+        b_arr = np.ascontiguousarray(b_raw)
+        if a_arr.size == 0:
+            return np.empty_like(a_arr)
+        a_buf = a_arr
+        b_buf = b_arr
+        out = np.empty_like(a_arr)
+    vec = _REG[name + '_vec']
+    vec(
+        out.ctypes.data_as(POINTER(c_double)),
+        a_buf.ctypes.data_as(POINTER(c_double)),
+        b_buf.ctypes.data_as(POINTER(c_double)),
+        c_size_t(1), c_size_t(1), c_size_t(1), c_size_t(a_buf.size),
+    )
+    if scalar_shape:
+        if is_py_scalar:
+            return float(out[0])
+        return np.float64(out[0])
+    return out
+
+
+# --- Public wrappers: unary ---
+
+def mcos(x):   return _call_unary('cos',   x, np.cos)
+def msin(x):   return _call_unary('sin',   x, np.sin)
+def mtan(x):   return _call_unary('tan',   x, np.tan)
+def mexp(x):   return _call_unary('exp',   x, np.exp)
+def mlog(x):   return _call_unary('log',   x, np.log)
+def mlog10(x): return _call_unary('log10', x, np.log10)
+def mlog2(x):  return _call_unary('log2',  x, np.log2)
+def mlog1p(x): return _call_unary('log1p', x, np.log1p)
+def mexpm1(x): return _call_unary('expm1', x, np.expm1)
+def msqrt(x):  return _call_unary('sqrt',  x, np.sqrt)
+def msinh(x):  return _call_unary('sinh',  x, np.sinh)
+def mcosh(x):  return _call_unary('cosh',  x, np.cosh)
+def mtanh(x):  return _call_unary('tanh',  x, np.tanh)
+def masin(x):  return _call_unary('asin',  x, np.arcsin)
+def macos(x):  return _call_unary('acos',  x, np.arccos)
+def matan(x):  return _call_unary('atan',  x, np.arctan)
+def mabs(x):   return _call_unary('abs',   x, np.abs)
+def msign(x):  return _call_unary('sign',  x, np.sign)
+
+
+def mfloor(x): return _call_unary('floor', x, np.floor)
+def mceil(x):  return _call_unary('ceil',  x, np.ceil)
+def mfix(x):   return _call_unary('fix',   x, np.trunc)
+
+
+def mround(x, n=0):
+    """MATLAB-compatible round.
+
+    MATLAB's round uses half-away-from-zero tie-breaking, unlike numpy which
+    uses banker's rounding. With n given (digits), matches MATLAB's
+    `round(x, n)` = round(x * 10^n) / 10^n using MATLAB's round semantics.
     """
-    if not _MATLAB_ATAN2_AVAILABLE:
-        return np.cos(x)
-    if np.isscalar(x):
-        return _mcos_scalar(float(x))
-    x_arr = np.ascontiguousarray(np.asarray(x, dtype=np.float64))
-    if x_arr.ndim == 0:
-        return np.float64(_mcos_scalar(float(x_arr)))
-    out = np.empty_like(x_arr)
-    _mcos_vec(
-        out.ctypes.data_as(POINTER(c_double)),
-        x_arr.ctypes.data_as(POINTER(c_double)),
-        c_size_t(1), c_size_t(1), c_size_t(x_arr.size),
-    )
-    return out
+    if n == 0:
+        if not globals().get('_MATLAB_ATAN2_AVAILABLE', False):
+            return np.trunc(np.asarray(x, dtype=np.float64)
+                            + np.copysign(0.5, np.asarray(x, dtype=np.float64)))
+        return _call_unary('round', x, lambda a: np.trunc(
+            np.asarray(a, dtype=np.float64)
+            + np.copysign(0.5, np.asarray(a, dtype=np.float64))))
+    scale = 10.0 ** n
+    x_arr = np.asarray(x, dtype=np.float64)
+    scaled = x_arr * scale
+    rounded = mround(scaled, 0)
+    return rounded / scale
 
 
-def msin(x):
-    """MATLAB-compatible sin. See mcos() for rationale."""
-    if not _MATLAB_ATAN2_AVAILABLE:
-        return np.sin(x)
-    if np.isscalar(x):
-        return _msin_scalar(float(x))
-    x_arr = np.ascontiguousarray(np.asarray(x, dtype=np.float64))
-    if x_arr.ndim == 0:
-        return np.float64(_msin_scalar(float(x_arr)))
-    out = np.empty_like(x_arr)
-    _msin_vec(
-        out.ctypes.data_as(POINTER(c_double)),
-        x_arr.ctypes.data_as(POINTER(c_double)),
-        c_size_t(1), c_size_t(1), c_size_t(x_arr.size),
-    )
-    return out
+# --- Public wrappers: binary ---
+
+def matan2(y, x):
+    """MATLAB-compatible atan2.
+
+    Loads MATLAB's own atan2 from libmwmathutil.so when available; otherwise
+    falls back to np.arctan2. Bit-identical with MATLAB `atan2(y, x)` on the
+    full domain including signed zeros, inf, and NaN.
+    """
+    return _call_binary('atan2', y, x, np.arctan2)
 
 
+def mpow(base, exponent):
+    """MATLAB-compatible power (a .^ b)."""
+    return _call_binary('power', base, exponent, np.power)
+
+
+def mhypot(a, b):
+    """MATLAB-compatible hypot: sqrt(a^2 + b^2), avoids over/underflow."""
+    return _call_binary('hypot', a, b, np.hypot)
+
+
+# --- Legacy-shaped internal for test_matan2.py ---
 def _matan2_impl(y_arr, x_arr):
-    """Core vectorized call: y_arr, x_arr are contiguous float64 numpy arrays
-    of the same shape. Returns a new array of atan2 values computed by
-    MATLAB's libmwmathutil.
-    """
+    """Vectorized call used by the legacy atan2 test. y_arr, x_arr must be
+    contiguous float64 arrays of the same shape."""
     out = np.empty_like(y_arr)
     n = y_arr.size
     if n == 0:
@@ -173,39 +355,3 @@ def _matan2_impl(y_arr, x_arr):
         c_size_t(1), c_size_t(1), c_size_t(1), c_size_t(n),
     )
     return out
-
-
-def matan2(y, x):
-    """MATLAB-compatible atan2.
-
-    Loads MATLAB's own atan2 from libmwmathutil.so when available; otherwise
-    falls back to np.arctan2. Bit-identical with MATLAB `atan2(y, x)` on the
-    full domain including signed zeros, inf, and NaN (verified on 40k
-    random + edge-case samples).
-
-    Accepts scalars, numpy arrays, or broadcastable pairs; mirrors
-    np.arctan2 return semantics (scalar in -> scalar out).
-    """
-    if not _MATLAB_ATAN2_AVAILABLE:
-        return np.arctan2(y, x)
-
-    # Scalar fast path (mirrors np.arctan2 returning a Python float for
-    # 0-dim inputs).
-    if np.isscalar(y) and np.isscalar(x):
-        return _matan2_scalar(float(y), float(x))
-
-    y_arr = np.asarray(y, dtype=np.float64)
-    x_arr = np.asarray(x, dtype=np.float64)
-
-    # Broadcast and contiguify
-    if y_arr.shape != x_arr.shape:
-        y_arr, x_arr = np.broadcast_arrays(y_arr, x_arr)
-    y_arr = np.ascontiguousarray(y_arr, dtype=np.float64)
-    x_arr = np.ascontiguousarray(x_arr, dtype=np.float64)
-
-    # 0-dim inputs: use scalar routine to match np.arctan2's scalar-out
-    # behaviour, matching MATLAB bit-for-bit.
-    if y_arr.ndim == 0:
-        return np.float64(_matan2_scalar(float(y_arr), float(x_arr)))
-
-    return _matan2_impl(y_arr, x_arr)
