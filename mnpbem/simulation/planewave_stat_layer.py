@@ -16,9 +16,28 @@ class PlaneWaveStatLayer(object):
 
     def __init__(self,
             pol: np.ndarray,
-            layer: Any,
+            *args: Any,
             medium: int = 1,
             **options: Any) -> None:
+
+        # Support call signatures:
+        #   PlaneWaveStatLayer(pol, layer, ...)                  (legacy)
+        #   PlaneWaveStatLayer(pol, dir, layer=layer, ...)       (MATLAB style)
+        layer = options.pop('layer', None)
+        dir = options.pop('dir', None)
+        for a in args:
+            if a is None:
+                continue
+            # A direction is a 3-vector (shape (3,) or (N,3)); anything else
+            # with an `eps` attribute is treated as the layer structure.
+            if hasattr(a, 'eps'):
+                layer = a
+                continue
+            arr = np.asarray(a)
+            if arr.ndim in (1, 2) and arr.shape[-1] == 3 and np.issubdtype(arr.dtype, np.number):
+                dir = arr
+            else:
+                layer = a
 
         self.pol = np.asarray(pol, dtype = float)
         if self.pol.ndim == 1:
@@ -27,11 +46,17 @@ class PlaneWaveStatLayer(object):
         self.layer = layer
         self.medium = options.get('medium', medium)
 
-        # Propagation direction: normal incidence downward by default
-        # MATLAB: planewavestatlayer stores dir as (npol, 3)
+        # Propagation direction. MATLAB: planewavestatlayer stores dir as
+        # (npol, 3). Default to normal incidence (downward) if not supplied.
         npol = self.pol.shape[0]
-        self.dir = np.zeros((npol, 3))
-        self.dir[:, 2] = -1.0  # downward propagation
+        if dir is None:
+            self.dir = np.zeros((npol, 3))
+            self.dir[:, 2] = -1.0
+        else:
+            dir_arr = np.asarray(dir, dtype = float)
+            if dir_arr.ndim == 1:
+                dir_arr = np.tile(dir_arr.reshape(1, -1), (npol, 1))
+            self.dir = dir_arr
 
         # Initialize spectrum object for far-field calculations
         pinfty = options.get('pinfty', None)
