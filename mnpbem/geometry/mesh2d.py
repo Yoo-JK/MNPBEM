@@ -1529,7 +1529,11 @@ def meshpoly(node: np.ndarray,
                 ok = np.zeros(len(cc_points), dtype = bool)
                 ok[:len(i_large)] = True
 
-                # MATLAB:205-223 skip new centres inside an already-accepted circle
+                # MATLAB:205-223 skip new centres inside an already-accepted
+                # circle. Note: `cc_radii` IS radius^2 (column 3 of
+                # circumcircle, MATLAB `cc(:,3) = sum((p1-cc).^2)`).
+                # MATLAB L215 `dx<cc(kk,3) && (dx+(y-cc(kk,2))^2)<cc(kk,3)`
+                # compares squared-distances to squared-radius — NOT r^4.
                 for ii in range(len(i_large), len(cc_points)):
                     x = cc_points[ii, 0]
                     y = cc_points[ii, 1]
@@ -1537,7 +1541,7 @@ def meshpoly(node: np.ndarray,
                     # MATLAB:211 j = find(ok) - recompute each iteration (accept set grows)
                     for kk in np.where(ok)[0]:
                         dx2 = (x - cc_points[kk, 0]) ** 2
-                        r2 = cc_radii[kk] ** 2
+                        r2 = cc_radii[kk]
                         if dx2 < r2:
                             if dx2 + (y - cc_points[kk, 1]) ** 2 < r2:
                                 is_inside = True
