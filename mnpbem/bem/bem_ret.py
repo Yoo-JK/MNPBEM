@@ -202,12 +202,12 @@ class BEMRet(object):
         H2_mat = H22 - H12 if not (isinstance(H12, int) and H12 == 0) else H22
 
         # LU factorizations of Green functions
-        self.G1_lu = lu_factor(G1)
-        self.G2_lu = lu_factor(G2)
+        self.G1_lu = lu_factor(G1, check_finite=False)
+        self.G2_lu = lu_factor(G2, check_finite=False)
 
         # Compute inverses for intermediate matrix construction
-        G1i = lu_solve(self.G1_lu, np.eye(G1.shape[0]))
-        G2i = lu_solve(self.G2_lu, np.eye(G2.shape[0]))
+        G1i = lu_solve(self.G1_lu, np.eye(G1.shape[0]), check_finite=False)
+        G2i = lu_solve(self.G2_lu, np.eye(G2.shape[0]), check_finite=False)
 
         # L matrices [Eq. (22)]
         # MATLAB: if all(obj.g.con{1,2} == 0), L1 = eps1; L2 = eps2
@@ -234,8 +234,8 @@ class BEMRet(object):
 
         # LU factorization of Delta matrix
         Delta = self.Sigma1 - Sigma2
-        self.Delta_lu = lu_factor(Delta)
-        Deltai = lu_solve(self.Delta_lu, np.eye(Delta.shape[0]))
+        self.Delta_lu = lu_factor(Delta, check_finite=False, overwrite_a=True)
+        Deltai = lu_solve(self.Delta_lu, np.eye(Delta.shape[0]), check_finite=False)
 
         # Combined Sigma matrix [Eq. (21,22)]
         # Sigma = Sigma1*L1 - Sigma2*L2 + k²*(L*Deltai)*(nvec*nvec')*L
@@ -253,7 +253,7 @@ class BEMRet(object):
             Sigma = (self.Sigma1 @ self.L1 - Sigma2 @ self.L2 +
                      self.k**2 * ((L @ Deltai) * nvec_outer) @ L)
 
-        self.Sigma_lu = lu_factor(Sigma)
+        self.Sigma_lu = lu_factor(Sigma, check_finite=False, overwrite_a=True)
 
         return self
 
@@ -537,8 +537,8 @@ class BEMRet(object):
 
         def _ls(lu_piv, b):
             if b.ndim == 1:
-                return lu_solve(lu_piv, b)
-            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
+                return lu_solve(lu_piv, b, check_finite=False)
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(b.shape)
 
         # Ensure phi, a have proper shapes
         if not isinstance(phi, np.ndarray) or phi.ndim == 0 or (isinstance(phi, np.ndarray) and phi.size == 1 and phi == 0):

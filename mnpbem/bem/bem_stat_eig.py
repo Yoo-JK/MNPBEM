@@ -12,6 +12,7 @@ Reference:
 """
 
 import numpy as np
+from scipy.linalg import solve as scipy_solve
 from typing import Optional, Tuple, Any
 
 from ..greenfun import CompGreenStat, CompStruct
@@ -188,7 +189,7 @@ class BEMStatEig(object):
         resolvent = unit_lambda_mat + self.ene  # (nev, nev)
 
         # mat = -ur @ inv(resolvent) @ ul
-        self.mat = -self.ur @ np.linalg.solve(resolvent, self.ul)
+        self.mat = -self.ur @ scipy_solve(resolvent, self.ul, check_finite=False, overwrite_a=True, overwrite_b=True)
 
         self.enei = enei
         return self

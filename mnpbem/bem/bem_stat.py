@@ -150,7 +150,7 @@ class BEMStat(object):
             # BEM resolvent matrix
             # MATLAB: obj.mat = -inv(diag(lambda) + obj.F)
             Lambda = np.diag(lambda_diag)
-            self.mat_lu = lu_factor(-(Lambda + self.F))
+            self.mat_lu = lu_factor(-(Lambda + self.F), check_finite=False, overwrite_a=True)
 
             # Save energy
             # MATLAB: obj.enei = enei
@@ -398,9 +398,9 @@ class BEMStat(object):
     @staticmethod
     def _lu_solve(lu_piv, b):
         if b.ndim == 1:
-            return lu_solve(lu_piv, b)
+            return lu_solve(lu_piv, b, check_finite=False)
         else:
-            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(b.shape)
 
     def _matmul(self, a, x):
         """

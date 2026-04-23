@@ -194,11 +194,11 @@ class BEMRetLayer(object):
 
         # ---- Auxiliary matrices (MATLAB initmat.m lines 51-68) ----
         # Inverse of G1 and of parallel component G2.p
-        self._G1_lu = lu_factor(G1)
-        G1i = lu_solve(self._G1_lu, np.eye(G1.shape[0]))
+        self._G1_lu = lu_factor(G1, check_finite=False)
+        G1i = lu_solve(self._G1_lu, np.eye(G1.shape[0]), check_finite=False)
 
-        self._G2p_lu = lu_factor(G2['p'])
-        G2pi = lu_solve(self._G2p_lu, np.eye(G2['p'].shape[0]))
+        self._G2p_lu = lu_factor(G2['p'], check_finite=False)
+        G2pi = lu_solve(self._G2p_lu, np.eye(G2['p'].shape[0]), check_finite=False)
 
         # Sigma matrices [Eq.(21)]
         Sigma1 = H1 @ G1i
@@ -210,8 +210,8 @@ class BEMRetLayer(object):
         L2p = G2e['p'] @ G2pi
 
         # Gamma matrix
-        self._Gamma_lu = lu_factor(Sigma1 - Sigma2p)
-        Gamma = lu_solve(self._Gamma_lu, np.eye(Sigma1.shape[0]))
+        self._Gamma_lu = lu_factor(Sigma1 - Sigma2p, check_finite=False, overwrite_a=True)
+        Gamma = lu_solve(self._Gamma_lu, np.eye(Sigma1.shape[0]), check_finite=False)
 
         # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
         # Element-wise multiply with outer product of parallel normals
@@ -242,7 +242,7 @@ class BEMRetLayer(object):
         m_full[:n, n:] = m12
         m_full[n:, :n] = m21
         m_full[n:, n:] = m22
-        self.m_lu = lu_factor(m_full)
+        self.m_lu = lu_factor(m_full, check_finite=False, overwrite_a=True)
 
         # Store all needed matrices
         self.G1i = G1i
@@ -574,7 +574,7 @@ class BEMRetLayer(object):
         rhs[:n] = De
         rhs[n:] = alphaperp
 
-        xi2 = lu_solve(m_lu, rhs)
+        xi2 = lu_solve(m_lu, rhs, check_finite=False, overwrite_b=True)
         sig2 = xi2[:n]
         h2perp = xi2[n:]
 
