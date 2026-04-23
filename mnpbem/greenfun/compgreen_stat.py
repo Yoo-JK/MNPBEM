@@ -87,8 +87,17 @@ class CompGreenStat(object):
         self._enei_cache = None
         self._mat_cache = None
 
+        # Optional user-supplied refinement hook (e.g. coverlayer.refine).
+        # Signature: fun(obj, G, F) -> (G, F). Applied after Green function
+        # matrices have been built so that cover-layer / nonlocal-layer
+        # geometries can inject additional polar-integration corrections.
+        self._refun = options.pop('refun', None)
+
         # Initialize Green function
         self._init(p1, p2, **options)
+
+        if self._refun is not None:
+            self.G, self.F = self._refun(self, self.G, self.F)
 
     def _init(self, p1, p2, **options):
         """

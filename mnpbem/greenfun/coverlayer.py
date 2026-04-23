@@ -1,98 +1,435 @@
-import os
-import sys
+"""
+Coverlayer module: boundary shift and Green function refinement.
 
-from typing import List, Dict, Tuple, Optional, Union, Any, Callable
+MATLAB reference: Greenfun/+coverlayer/
+  shift.m, refine.m, refineret.m, refinestat.m
+
+This module implements:
+  1. shift(p1, d, **options): shift particle vertices along outward normals to
+     create a thin cover-layer boundary (used for nonlocal effective-layer
+     models like Luo et al., PRL 111, 093901 (2013)).
+  2. refine(p, ind): return a refinement callable that the BEM solver can use
+     when initializing the Green function to recompute entries for neighbour
+     cover-layer elements via polar integration.
+  3. refineret(obj, g, f, p, ind), refinestat(obj, g, f, p, ind): the actual
+     polar-integration refinement of Green function matrices g, f.
+"""
+
+import math
+
+from typing import Any, Callable, List, Tuple
 
 import numpy as np
 
 
-def refine(p: Any,
-        layer: Any,
-        **options: Any) -> Dict[str, Any]:
+def shift(p1: Any,
+        d: Any,
+        **options: Any) -> Any:
+    """
+    Shift boundary for creation of cover layer structure.
 
-    pos = p.pos
-    z = pos[:, 2]
+    MATLAB: p2 = coverlayer.shift(p1, d, op, PropertyPairs)
 
-    # Find faces close to layer interface
-    zmin, ind = layer.mindist(z)
+    Parameters
+    ----------
+    p1 : Particle
+        Source particle whose vertices will be shifted along outward normals.
+    d : float or array_like
+        Shift distance. Scalar: uniform shift. Array (nverts,): per-vertex.
+    **options : dict
+        nvec : ndarray, optional
+            Precomputed vertex-space normal vectors (nverts x 3). If absent,
+            face-normals are interpolated to vertices via interp_values.
+        Any remaining options are forwarded to the new Particle constructor.
 
-    # Mask for faces close to the layer
-    close_mask = zmin < layer.ztol * 3
+    Returns
+    -------
+    p2 : Particle
+        Particle with shifted vertices and identical face topology.
+    """
+    from ..geometry.particle import Particle
 
-    return {
-        'close_mask': close_mask,
-        'zmin': zmin,
-        'ind': ind
-    }
+    d = np.asarray(d, dtype = float)
+    if d.size == 1:
+        d = np.full(p1.nverts, float(d))
 
+    nvec = options.pop('nvec', None)
 
-def refineret(p1: Any,
-        p2: Any,
-        layer: Any,
-        **options: Any) -> Dict[str, Any]:
+    if p1.verts2 is None:
+        if nvec is None:
+            nvec, _ = p1.interp_values(p1.nvec)
 
-    pos1 = p1.pos
-    pos2 = p2.pos
-    z1 = pos1[:, 2]
-    z2 = pos2[:, 2]
+        verts_round = np.round(p1.verts, 4)
+        _, i1, i2 = _unique_rows(verts_round)
 
-    # Find faces close to layer interface
-    zmin1, ind1 = layer.mindist(z1)
-    zmin2, ind2 = layer.mindist(z2)
+        nvec_verts = nvec[i1[i2], :]
+        new_verts = p1.verts + nvec_verts * d[:, np.newaxis]
 
-    n1 = pos1.shape[0]
-    n2 = pos2.shape[0]
+        return Particle(new_verts, p1.faces, interp = p1.interp, **options)
 
-    # Radial distance
-    dx = pos1[:, 0:1] - pos2[:, 0:1].T
-    dy = pos1[:, 1:2] - pos2[:, 1:2].T
-    r = np.sqrt(dx ** 2 + dy ** 2)
-
-    # Distance to layer for face pairs
-    zmin_pair = np.minimum(
-        np.tile(zmin1[:, np.newaxis], (1, n2)),
-        np.tile(zmin2[np.newaxis, :], (n1, 1)))
-
-    # Mask: face pairs that need refinement (close to layer and small r)
-    refine_mask = (zmin_pair < layer.ztol * 3) & (r < layer.ztol * 5)
-
-    return {
-        'refine_mask': refine_mask,
-        'r': r,
-        'zmin1': zmin1,
-        'zmin2': zmin2,
-        'ind1': ind1,
-        'ind2': ind2
-    }
-
-
-def refinestat(p1: Any,
-        p2: Any,
-        layer: Any,
-        **options: Any) -> Dict[str, Any]:
-
-    return refineret(p1, p2, layer, **options)
-
-
-def shift(pos: np.ndarray,
-        layer: Any,
-        direction: str = 'up') -> np.ndarray:
-
-    pos = pos.copy()
-    z = pos[:, 2]
-
-    zmin, ind = layer.mindist(z)
-
-    # Shift faces that are too close to the boundary
-    close_mask = zmin < layer.zmin
-
-    if direction == 'up':
-        z_layer = layer.z[ind[close_mask] - 1]
-        pos[close_mask, 2] = z_layer + layer.zmin
-    elif direction == 'down':
-        z_layer = layer.z[ind[close_mask] - 1]
-        pos[close_mask, 2] = z_layer - layer.zmin
     else:
-        raise ValueError('[error] Invalid <direction>: {}'.format(direction))
+        d2 = _interp2(p1, d.reshape(-1, 1)).ravel()
+        if nvec is None:
+            nvec, _ = p1.interp_values(p1.nvec)
+        if nvec.shape[0] != p1.verts2.shape[0]:
+            nvec = _interp2(p1, nvec)
 
-    return pos
+        new_verts2 = p1.verts2 + nvec * d2[:, np.newaxis]
+        return Particle(new_verts2, p1.faces2, interp = p1.interp, **options)
+
+
+def _unique_rows(a: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    MATLAB-compatible `[~, i1, i2] = unique(a, 'rows')`.
+
+    Returns
+    -------
+    u : ndarray
+        Unique rows (sorted).
+    i1 : ndarray
+        Indices such that a[i1] == u.
+    i2 : ndarray
+        Indices such that u[i2] == a.
+    """
+    u, i1, i2 = np.unique(a, axis = 0, return_index = True, return_inverse = True)
+    return u, i1, i2
+
+
+def _interp2(p: Any, v: np.ndarray) -> np.ndarray:
+    """
+    Interpolate vertex-space values from p.verts to p.verts2 (curved boundary).
+
+    MATLAB: Greenfun/+coverlayer/shift.m/interp2
+    """
+    ind3, ind4 = p.index34()
+
+    n_verts2 = p.verts2.shape[0]
+    if v.ndim == 1:
+        v = v.reshape(-1, 1)
+        squeeze_out = True
+    else:
+        squeeze_out = False
+    v2 = np.zeros((n_verts2, v.shape[1]))
+
+    if len(ind3) > 0:
+        # Triangular rows: only columns {0..2, 4..6} of faces2 / {0..2} of
+        # faces are valid. Pull those out before casting to int so we do not
+        # trip over NaN fillers in the quad columns.
+        f2_tri = p.faces2[ind3][:, [0, 1, 2, 4, 5, 6]].astype(int)
+        f_tri = p.faces[ind3][:, [0, 1, 2]].astype(int)
+
+        i1, i2, i3 = f2_tri[:, 0], f2_tri[:, 1], f2_tri[:, 2]
+        i4, i5, i6 = f2_tri[:, 3], f2_tri[:, 4], f2_tri[:, 5]
+        i10, i20, i30 = f_tri[:, 0], f_tri[:, 1], f_tri[:, 2]
+
+        v2[i1, :] = v[i10, :]
+        v2[i2, :] = v[i20, :]
+        v2[i3, :] = v[i30, :]
+        v2[i4, :] = 0.5 * (v[i10, :] + v[i20, :])
+        v2[i5, :] = 0.5 * (v[i20, :] + v[i30, :])
+        v2[i6, :] = 0.5 * (v[i30, :] + v[i10, :])
+
+    if len(ind4) > 0:
+        f2 = p.faces2[ind4].astype(int)
+        f = p.faces[ind4].astype(int)
+
+        i1, i2, i3, i4 = f2[:, 0], f2[:, 1], f2[:, 2], f2[:, 3]
+        i5, i6, i7, i8, i9 = f2[:, 4], f2[:, 5], f2[:, 6], f2[:, 7], f2[:, 8]
+        i10, i20, i30, i40 = f[:, 0], f[:, 1], f[:, 2], f[:, 3]
+
+        v2[i1, :] = v[i10, :]
+        v2[i2, :] = v[i20, :]
+        v2[i3, :] = v[i30, :]
+        v2[i4, :] = v[i40, :]
+        v2[i5, :] = 0.5 * (v[i10, :] + v[i20, :])
+        v2[i6, :] = 0.5 * (v[i20, :] + v[i30, :])
+        v2[i7, :] = 0.5 * (v[i30, :] + v[i40, :])
+        v2[i8, :] = 0.5 * (v[i40, :] + v[i10, :])
+        v2[i9, :] = 0.25 * (v[i10, :] + v[i20, :] + v[i30, :] + v[i40, :])
+
+    verts2_round = np.round(p.verts2, 4)
+    _, i1u, i2u = _unique_rows(verts2_round)
+    v2 = v2[i1u[i2u], :]
+
+    if squeeze_out:
+        return v2.ravel()
+    return v2
+
+
+def refine(p: Any, ind: np.ndarray) -> Callable:
+    """
+    Build refinement callable for Green function initialization.
+
+    MATLAB: fun = coverlayer.refine(p, ind)
+
+    Green function elements for neighbour cover layer elements are refined
+    through polar integration.
+
+    Parameters
+    ----------
+    p : ComParticle
+        Composite particle containing all sub-particles.
+    ind : array_like, shape (k, 2)
+        Pairs of particle indices identifying cover-layer sub-particle pairs.
+
+    Returns
+    -------
+    fun : callable
+        Signature: fun(obj, g, f) -> (g, f). `obj` is a greenstat or greenret
+        instance; (g, f) are the Green function matrices to be refined in-place.
+    """
+    ind = np.asarray(ind)
+    if ind.ndim == 1:
+        ind = ind.reshape(1, -1)
+
+    pairs = np.vstack([ind, ind[:, ::-1]])
+    pairs = np.unique(pairs, axis = 0)
+
+    def refun(obj: Any, g: np.ndarray, f: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        cls_name = type(obj).__name__.lower()
+        if 'stat' in cls_name:
+            return refinestat(obj, g, f, p, pairs)
+        elif 'ret' in cls_name:
+            return refineret(obj, g, f, p, pairs)
+        else:
+            raise ValueError('[error] Unknown Green function class: {}'.format(type(obj).__name__))
+
+    return refun
+
+
+def _select_pair_elements(p: Any,
+        obj: Any,
+        ind_pairs: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Convert particle-index pairs into face indices and a mapping into obj.ind.
+
+    MATLAB: lines 16-20 of refineret.m / refinestat.m.
+
+    Returns
+    -------
+    i1, i2 : ndarray
+        Global face indices for rows / columns.
+    ind : ndarray
+        Row positions into obj.ind (linear indices) for the retained pairs.
+    """
+    face_idx_of = _particle_face_indices(p)
+
+    i1_all: List[np.ndarray] = []
+    i2_all: List[np.ndarray] = []
+    for pa, pb in ind_pairs:
+        fa = face_idx_of[int(pa) - 1]
+        fb = face_idx_of[int(pb) - 1]
+        grid_a, grid_b = np.meshgrid(fa, fb, indexing = 'ij')
+        i1_all.append(grid_a.ravel())
+        i2_all.append(grid_b.ravel())
+
+    if not i1_all:
+        return (np.array([], dtype = int),
+                np.array([], dtype = int),
+                np.array([], dtype = int))
+
+    i1 = np.concatenate(i1_all)
+    i2 = np.concatenate(i2_all)
+
+    n = p.n if hasattr(p, 'n') else p.nfaces
+    lin = i1 * n + i2
+
+    obj_ind = np.asarray(getattr(obj, 'ind', np.array([], dtype = int)))
+    if obj_ind.size == 0:
+        mapping = -np.ones_like(lin)
+    elif obj_ind.ndim == 2 and obj_ind.shape[1] == 2:
+        lin_obj = obj_ind[:, 0].astype(int) * n + obj_ind[:, 1].astype(int)
+        lookup = {int(v): k for k, v in enumerate(lin_obj)}
+        mapping = np.array([lookup.get(int(x), -1) for x in lin])
+    else:
+        lookup = {int(v): k for k, v in enumerate(obj_ind.ravel())}
+        mapping = np.array([lookup.get(int(x), -1) for x in lin])
+
+    keep = mapping >= 0
+    return i1[keep], i2[keep], mapping[keep]
+
+
+def _particle_face_indices(p: Any) -> List[np.ndarray]:
+    """
+    Return list of global face-index arrays, one per sub-particle.
+
+    MATLAB: i = index(p, k) returns the face indices of sub-particle k in the
+    concatenated COMPARTICLE numbering.
+    """
+    if hasattr(p, 'index'):
+        n_parts = len(getattr(p, 'p', []))
+        try:
+            return [np.atleast_1d(p.index(k + 1)).astype(int).ravel()
+                    for k in range(n_parts)]
+        except Exception:
+            pass
+
+    face_idx_of: List[np.ndarray] = []
+    offset = 0
+    for part in getattr(p, 'p', []):
+        n_part = part.n if hasattr(part, 'n') else part.nfaces
+        face_idx_of.append(np.arange(offset, offset + n_part))
+        offset += n_part
+    return face_idx_of
+
+
+def refineret(obj: Any,
+        g: np.ndarray,
+        f: np.ndarray,
+        p: Any,
+        ind_pairs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Refine retarded Green function matrices via polar integration.
+
+    MATLAB: Greenfun/+coverlayer/refineret.m
+
+    The Python port differs from MATLAB in storage layout: here `g` and `f`
+    are full (n1, n2) matrices (rather than per-refined-element arrays of
+    Taylor coefficients) and refinement is written directly into matrix
+    cells. For order > 0 we accumulate the Taylor series weighted by
+    (ik)^ord -- the same summation that MATLAB's eval1.m performs when
+    expanding `obj.g(:, ord+1)`.
+    """
+    i1, i2, _ = _select_pair_elements(p, obj, ind_pairs)
+    if i1.size == 0:
+        return g, f
+
+    pc = getattr(p, 'pc', p)
+
+    # Unique-column optimization (see refinestat for details)
+    unique_i2, inv_i2 = np.unique(i2, return_inverse = True)
+    pos_u, weight_u, row_u = pc.quadpol(unique_i2)
+    counts = np.bincount(row_u, minlength = len(unique_i2))
+    offsets = np.concatenate([[0], np.cumsum(counts)])
+
+    pair_counts = counts[inv_i2]
+    total = int(pair_counts.sum())
+    if total == 0:
+        return g, f
+
+    pair_key = np.repeat(np.arange(len(i2)), pair_counts)
+    pos_idx = np.empty(total, dtype = int)
+    cursor = 0
+    for uidx in inv_i2:
+        n_pts = counts[uidx]
+        pos_idx[cursor:cursor + n_pts] = np.arange(offsets[uidx], offsets[uidx + 1])
+        cursor += n_pts
+
+    pos_all = pos_u[pos_idx]
+    weight_all = weight_u[pos_idx]
+
+    ind1 = i1[pair_key]
+    pos_src = pc.pos[ind1]
+    x = pos_src[:, 0] - pos_all[:, 0]
+    y = pos_src[:, 1] - pos_all[:, 1]
+    z = pos_src[:, 2] - pos_all[:, 2]
+    r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+
+    vec0 = -(pc.pos[ind1, :] - pc.pos[i2[pair_key], :])
+    r0 = np.sqrt(np.sum(vec0 * vec0, axis = 1))
+
+    def quad(vals: np.ndarray) -> np.ndarray:
+        return np.bincount(pair_key, weights = weight_all * vals, minlength = len(i1))
+
+    k = getattr(obj, 'k', getattr(obj, '_k', 0.0))
+    order = getattr(obj, 'order', 0)
+
+    g_accum = np.zeros(len(i1), dtype = complex)
+    for ordv in range(order + 1):
+        g_accum += (1j * k) ** ordv * quad((r - r0) ** ordv / (r * math.factorial(ordv)))
+    g[i1, i2] = g_accum
+
+    nvec = pc.nvec
+    inp = (x * nvec[ind1, 0] + y * nvec[ind1, 1] + z * nvec[ind1, 2])
+    f_accum = -quad(inp / r ** 3).astype(complex)
+    for ordv in range(1, order + 1):
+        term = inp * ((r - r0) ** ordv / (r ** 3 * math.factorial(ordv))
+                      + (r - r0) ** (ordv - 1) / (r ** 2 * math.factorial(ordv - 1)))
+        f_accum += (1j * k) ** ordv * quad(term)
+    f[i1, i2] = f_accum
+
+    return g, f
+
+
+def refinestat(obj: Any,
+        g: np.ndarray,
+        f: np.ndarray,
+        p: Any,
+        ind_pairs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Refine quasistatic Green function matrices via polar integration.
+
+    MATLAB: Greenfun/+coverlayer/refinestat.m
+
+    Python storage: `g` and `f` are full (n1, n2) matrices -- refinement is
+    written directly via g[i1, i2] / f[i1, i2].
+    """
+    i1, i2, _ = _select_pair_elements(p, obj, ind_pairs)
+    if i1.size == 0:
+        return g, f
+
+    pc = getattr(p, 'pc', p)
+
+    # Call quadpol once per unique column face and expand to all pairs
+    # sharing that column. This avoids regenerating the same integration
+    # points when i2 contains many duplicates (as happens with cover-layer
+    # pairs where every face in p1 pairs with every face in p2).
+    unique_i2, inv_i2 = np.unique(i2, return_inverse = True)
+    pos_u, weight_u, row_u = pc.quadpol(unique_i2)
+
+    # Expand: pair k contributes integration points of unique_i2[inv_i2[k]]
+    # For each pair index k, pick up the block of points belonging to
+    # unique_i2[inv_i2[k]]. We build flat arrays pair_pos, pair_weight, and
+    # pair_key by concatenating per-unique blocks in the order of `i2`.
+    starts = np.flatnonzero(np.diff(np.concatenate([[-1], row_u]))) if len(row_u) > 0 else np.array([], dtype = int)
+    # row_u is non-decreasing by construction (quadpol loops over unique_i2
+    # in order), so we can split by counting occurrences.
+    counts = np.bincount(row_u, minlength = len(unique_i2))
+    offsets = np.concatenate([[0], np.cumsum(counts)])
+
+    # For each pair k, block = slice(offsets[inv_i2[k]], offsets[inv_i2[k]+1])
+    # Build flat concatenation:
+    pair_counts = counts[inv_i2]
+    total = int(pair_counts.sum())
+
+    if total == 0:
+        return g, f
+
+    pair_key = np.repeat(np.arange(len(i2)), pair_counts)
+    # pos / weight per integration point for each pair:
+    pos_idx = np.empty(total, dtype = int)
+    cursor = 0
+    for k, u in enumerate(inv_i2):
+        n_pts = counts[u]
+        pos_idx[cursor:cursor + n_pts] = np.arange(offsets[u], offsets[u + 1])
+        cursor += n_pts
+
+    pos_all = pos_u[pos_idx]
+    weight_all = weight_u[pos_idx]
+
+    # Source (i1) for each integration point
+    pos_src = pc.pos[i1[pair_key]]
+    x = pos_src[:, 0] - pos_all[:, 0]
+    y = pos_src[:, 1] - pos_all[:, 1]
+    z = pos_src[:, 2] - pos_all[:, 2]
+    r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+
+    def quad(vals: np.ndarray) -> np.ndarray:
+        return np.bincount(pair_key, weights = weight_all * vals, minlength = len(i1))
+
+    g[i1, i2] = quad(1.0 / r)
+
+    fx = -quad(x / r ** 3)
+    fy = -quad(y / r ** 3)
+    fz = -quad(z / r ** 3)
+
+    nvec = pc.nvec
+    # Python CompGreenStat stores F as a (n1, n2) normal-derivative matrix
+    # regardless of deriv mode; Cartesian derivatives live in a separate
+    # _Gp_raw matrix. We therefore always collapse fx / fy / fz onto the
+    # receiver's normal vector here. (MATLAB refinestat.m lines 42-44 have
+    # a typo -- fx appears twice in the normal-mode fallback -- but we use
+    # the corrected formula because this path always feeds the F matrix.)
+    f[i1, i2] = (fx * nvec[i1, 0] + fy * nvec[i1, 1] + fz * nvec[i1, 2])
+
+    return g, f
