@@ -293,7 +293,8 @@ class MeshField(object):
                 e_shape = (npts,) + f_sub.e.shape[1:]
                 e_all = np.zeros(e_shape, dtype=f_sub.e.dtype)
                 if hasattr(f_sub, 'val') and 'h' in f_sub.val:
-                    h_all = np.zeros(e_shape, dtype=f_sub.h.dtype)
+                    h_shape = (npts,) + f_sub.h.shape[1:]
+                    h_all = np.zeros(h_shape, dtype=f_sub.h.dtype)
 
             e_all[start:end] = f_sub.e
             if h_all is not None and hasattr(f_sub, 'val') and 'h' in f_sub.val:

@@ -201,12 +201,26 @@ class PlaneWaveRetLayer(object):
         layer = self.layer
         k0 = 2 * np.pi / enei
 
-        # Inside and outside medium of particle
-        inout_arr = p.inout_faces  # (nfaces, 2)
+        # Inside and outside medium per point. ComParticle exposes a
+        # (nfaces, 2) inout_faces array; ComPoint (used when evaluating fields
+        # at arbitrary positions) exposes per-group medium via `inout`. MATLAB
+        # unifies these via `p.expand`; we emulate that here.
+        if hasattr(p, 'inout_faces'):
+            inout_arr = p.inout_faces  # (n, 2)
+            npts = p.nfaces
+        else:
+            group_inout = np.atleast_1d(np.asarray(p.inout, dtype = int)).ravel()
+            expanded = np.zeros(p.n, dtype = int)
+            offset = 0
+            for gi, grp in enumerate(p.p):
+                expanded[offset:offset + grp.n] = group_inout[gi]
+                offset += grp.n
+            inout_arr = np.column_stack([expanded, expanded])
+            npts = p.n
 
         # Find boundary elements connected to layer structure
-        ind1 = np.zeros(p.nfaces, dtype = bool)
-        ind2 = np.zeros(p.nfaces, dtype = bool)
+        ind1 = np.zeros(npts, dtype = bool)
+        ind2 = np.zeros(npts, dtype = bool)
         for li in layer.ind:
             ind1 |= (inout_arr[:, 0] == li)
             ind2 |= (inout_arr[:, 1] == li)
@@ -215,7 +229,7 @@ class PlaneWaveRetLayer(object):
         eta = 1e-8
         pos_all = p.pos
         npol = self.dir.shape[0]
-        nfaces = p.nfaces
+        nfaces = npts
 
         # 4D arrays: (nfaces, 3, npol, 4) for undisplaced + 3 displaced
         phi = np.zeros((nfaces, npol, 4), dtype = complex)

@@ -847,6 +847,241 @@ class LayerStructure(object):
 
         return r_out, rz_out, kz
 
+    def _bemsolve_batch(self,
+            enei: float,
+            kpar_arr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        # Vectorized bemsolve over array of kpar values.
+        # Returns par shape (M, 2n, 2n) and perp shape (M, 4n, 4n).
+        kpar_arr = np.asarray(kpar_arr)
+        M = kpar_arr.size
+        k0 = 2 * np.pi / enei
+
+        eps_vals = np.empty(len(self.eps), dtype = complex)
+        k_vals = np.empty(len(self.eps), dtype = complex)
+        for i, eps_func in enumerate(self.eps):
+            eps_vals[i], k_vals[i] = eps_func(enei)
+
+        # kz shape (M, neps)
+        kz = np.sqrt(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2)
+        kz = kz * np.sign(np.imag(kz + 1e-10j))
+
+        n = len(self.z)
+        G0 = 2j * np.pi / kz  # (M, neps)
+
+        if n > 1:
+            dz = np.abs(np.diff(self.z))  # (n-1,)
+            G = 2j * np.pi / kz[:, 1:-1] * np.exp(1j * kz[:, 1:-1] * dz[np.newaxis, :])  # (M, n-1)
+        else:
+            G = np.zeros((M, 0), dtype = complex)
+
+        # Parallel surface current
+        siz = 2 * n
+        lhs = np.zeros((M, siz, siz), dtype = complex)
+        rhs_mat = np.zeros((M, siz, siz), dtype = complex)
+
+        i1 = np.arange(1, 2 * n, 2)
+        i2 = np.arange(0, 2 * n, 2)
+        eq1 = np.arange(0, 2 * n, 2)
+        eq2 = np.arange(1, 2 * n, 2)
+
+        for idx in range(n):
+            lhs[:, eq1[idx], i1[idx]] = G0[:, idx + 1]
+            lhs[:, eq1[idx], i2[idx]] = -G0[:, idx]
+            rhs_mat[:, eq1[idx], i1[idx]] = -1
+            rhs_mat[:, eq1[idx], i2[idx]] = 1
+
+        if n > 1:
+            for idx in range(n - 1):
+                lhs[:, eq1[idx + 1], i1[idx]] = -G[:, idx]
+                lhs[:, eq1[idx], i2[idx + 1]] = G[:, idx]
+
+        for idx in range(n):
+            lhs[:, eq2[idx], i1[idx]] = 2j * np.pi
+            lhs[:, eq2[idx], i2[idx]] = 2j * np.pi
+            rhs_mat[:, eq2[idx], i1[idx]] = kz[:, idx + 1]
+            rhs_mat[:, eq2[idx], i2[idx]] = kz[:, idx]
+
+        if n > 1:
+            for idx in range(n - 1):
+                lhs[:, eq2[idx + 1], i1[idx]] = -kz[:, idx + 1] * G[:, idx]
+                lhs[:, eq2[idx], i2[idx + 1]] = -kz[:, idx + 1] * G[:, idx]
+
+        par = np.linalg.solve(lhs, rhs_mat)  # (M, 2n, 2n)
+
+        # Perpendicular surface current and surface charge
+        siz = 4 * n
+        lhs = np.zeros((M, siz, siz), dtype = complex)
+        rhs_mat = np.zeros((M, siz, siz), dtype = complex)
+
+        i1 = np.arange(2, 4 * n, 4)
+        i2 = np.arange(0, 4 * n, 4)
+        j1 = np.arange(3, 4 * n, 4)
+        j2 = np.arange(1, 4 * n, 4)
+
+        eq1 = np.arange(0, 4 * n, 4)
+        eq2 = np.arange(1, 4 * n, 4)
+        eq3 = np.arange(2, 4 * n, 4)
+        eq4 = np.arange(3, 4 * n, 4)
+
+        for idx in range(n):
+            lhs[:, eq1[idx], i1[idx]] = G0[:, idx + 1]
+            lhs[:, eq1[idx], i2[idx]] = -G0[:, idx]
+            rhs_mat[:, eq1[idx], i1[idx]] = -1
+            rhs_mat[:, eq1[idx], i2[idx]] = 1
+
+            lhs[:, eq2[idx], j1[idx]] = G0[:, idx + 1]
+            lhs[:, eq2[idx], j2[idx]] = -G0[:, idx]
+            rhs_mat[:, eq2[idx], j1[idx]] = -1
+            rhs_mat[:, eq2[idx], j2[idx]] = 1
+
+            lhs[:, eq3[idx], i1[idx]] = 2j * np.pi * eps_vals[idx + 1]
+            lhs[:, eq3[idx], i2[idx]] = 2j * np.pi * eps_vals[idx]
+            lhs[:, eq3[idx], j1[idx]] = k0 * G0[:, idx + 1] * eps_vals[idx + 1]
+            lhs[:, eq3[idx], j2[idx]] = -k0 * G0[:, idx] * eps_vals[idx]
+            rhs_mat[:, eq3[idx], i1[idx]] = kz[:, idx + 1] * eps_vals[idx + 1]
+            rhs_mat[:, eq3[idx], i2[idx]] = kz[:, idx] * eps_vals[idx]
+            rhs_mat[:, eq3[idx], j1[idx]] = -k0 * eps_vals[idx + 1]
+            rhs_mat[:, eq3[idx], j2[idx]] = k0 * eps_vals[idx]
+
+            lhs[:, eq4[idx], j1[idx]] = 2j * np.pi
+            lhs[:, eq4[idx], j2[idx]] = 2j * np.pi
+            lhs[:, eq4[idx], i1[idx]] = k0 * G0[:, idx + 1] * eps_vals[idx + 1]
+            lhs[:, eq4[idx], i2[idx]] = -k0 * G0[:, idx] * eps_vals[idx]
+            rhs_mat[:, eq4[idx], j1[idx]] = kz[:, idx + 1]
+            rhs_mat[:, eq4[idx], j2[idx]] = kz[:, idx]
+            rhs_mat[:, eq4[idx], i1[idx]] = -k0 * eps_vals[idx + 1]
+            rhs_mat[:, eq4[idx], i2[idx]] = k0 * eps_vals[idx]
+
+        if n > 1:
+            for idx in range(n - 1):
+                lhs[:, eq1[idx + 1], i1[idx]] = -G[:, idx]
+                lhs[:, eq1[idx], i2[idx + 1]] = G[:, idx]
+
+                lhs[:, eq2[idx + 1], j1[idx]] = -G[:, idx]
+                lhs[:, eq2[idx], j2[idx + 1]] = G[:, idx]
+
+                lhs[:, eq3[idx + 1], i1[idx]] = -kz[:, idx + 1] * eps_vals[idx + 1] * G[:, idx]
+                lhs[:, eq3[idx], i2[idx + 1]] = -kz[:, idx + 1] * eps_vals[idx + 1] * G[:, idx]
+                lhs[:, eq3[idx + 1], j1[idx]] = -k0 * eps_vals[idx + 1] * G[:, idx]
+                lhs[:, eq3[idx], j2[idx + 1]] = k0 * eps_vals[idx + 1] * G[:, idx]
+
+                lhs[:, eq4[idx + 1], j1[idx]] = -kz[:, idx + 1] * G[:, idx]
+                lhs[:, eq4[idx], j2[idx + 1]] = -kz[:, idx + 1] * G[:, idx]
+                lhs[:, eq4[idx + 1], i1[idx]] = -k0 * eps_vals[idx + 1] * G[:, idx]
+                lhs[:, eq4[idx], i2[idx + 1]] = k0 * eps_vals[idx + 1] * G[:, idx]
+
+        perp = np.linalg.solve(lhs, rhs_mat)  # (M, 4n, 4n)
+
+        return par, perp
+
+    def _reflection_full_batch(self,
+            kpar_arr: np.ndarray,
+            ctx: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray]:
+        # Vectorized multi-layer reflection over array of kpar.
+        # Returns refl[name], reflz[name] shape (M, n_pos), and kz shape (M, neps).
+        # Only supports the same_size (ind1.shape==ind2.shape) case used by
+        # _intbessel_batch / _inthankel_batch in the Green integral loop.
+        enei = ctx['enei']
+        k_vals = ctx['k_vals']
+        ind1 = ctx['ind1']
+        ind2 = ctx['ind2']
+        z1 = ctx['z1']
+        z2 = ctx['z2']
+
+        kpar_arr = np.asarray(kpar_arr)
+        M = kpar_arr.size
+
+        kz = np.sqrt(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2) + 1e-10j
+        kz = kz * np.sign(np.imag(kz))  # (M, neps)
+
+        k1z = kz[:, ind1 - 1]  # (M, n_pos)
+        k2z = kz[:, ind2 - 1]  # (M, n_pos)
+
+        n_pos = len(ind2)
+        n_z = len(self.z)
+
+        z_lower = np.append(self.z, -1e100)
+        z_upper = np.append(1e100, self.z)
+        dn1 = np.abs(z1 - z_lower[ind1 - 1])  # (n_pos,)
+        dn2 = np.abs(z2 - z_lower[ind2 - 1])
+        up1 = np.abs(z1 - z_upper[ind1 - 1])
+        up2 = np.abs(z2 - z_upper[ind2 - 1])
+
+        # Build excitation matrix (M, 2*n_z + 2, n_pos), then drop endpoints.
+        exc = np.zeros((M, 2 * n_z + 2, n_pos), dtype = complex)
+        fac = 2j * np.pi / k2z  # (M, n_pos)
+        pos_idx = np.arange(n_pos)
+        exp_dn2 = np.exp(1j * k2z * dn2[np.newaxis, :])
+        exp_up2 = np.exp(1j * k2z * up2[np.newaxis, :])
+        for j in range(n_pos):
+            exc[:, 2 * ind2[j] - 1, j] += fac[:, j] * exp_dn2[:, j]
+            exc[:, 2 * ind2[j] - 2, j] += fac[:, j] * exp_up2[:, j]
+        exc = exc[:, 1:-1, :]  # (M, 2n_z, n_pos)
+
+        par, perp = self._bemsolve_batch(enei, kpar_arr)  # par (M, 2n, 2n), perp (M, 4n, 4n)
+
+        exp_dn1 = np.exp(1j * k1z * dn1[np.newaxis, :])  # (M, n_pos)
+        exp_up1 = np.exp(1j * k1z * up1[np.newaxis, :])
+
+        # Helper: evaluate h2[ind1-1, pos] + h1[ind1-1, pos] where h1/h2 are (M, n_z+1, n_pos)
+        # and select the row per-position using ind1.
+        def _combine(h1_arr, h2_arr, sign):
+            i1_idx = ind1 - 1  # (n_pos,)
+            # advanced indexing: pick (M, n_pos) by h[M, i1[j], j]
+            h2_sel = h2_arr[:, i1_idx, pos_idx]  # (M, n_pos)
+            h1_sel = h1_arr[:, i1_idx, pos_idx]
+            return h2_sel * exp_dn1 + sign * h1_sel * exp_up1
+
+        r: Dict[str, np.ndarray] = {}
+        rz: Dict[str, np.ndarray] = {}
+
+        # Parallel current
+        y = par @ exc  # (M, 2n, n_pos)
+        h1_p = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        h2_p = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        h1_p[:, 1:, :] = y[:, 1::2, :]
+        h2_p[:, :-1, :] = y[:, 0::2, :]
+        r['p'] = _combine(h1_p, h2_p, +1)
+        rz['p'] = _combine(h1_p, h2_p, -1)
+
+        # Surface charge
+        exc2 = np.zeros((M, 2 * exc.shape[1], n_pos), dtype = complex)
+        exc2[:, 0::2, :] = exc
+        y = perp @ exc2  # (M, 4n, n_pos)
+        sig1 = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        sig2 = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        sig1[:, 1:, :] = y[:, 2::4, :]
+        sig2[:, :-1, :] = y[:, 0::4, :]
+        r['ss'] = _combine(sig1, sig2, +1)
+        rz['ss'] = _combine(sig1, sig2, -1)
+
+        h1_s = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        h2_s = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        h1_s[:, 1:, :] = y[:, 3::4, :]
+        h2_s[:, :-1, :] = y[:, 1::4, :]
+        r['hs'] = _combine(h1_s, h2_s, +1)
+        rz['hs'] = _combine(h1_s, h2_s, -1)
+
+        # Perpendicular current
+        exc2 = np.zeros((M, 2 * exc.shape[1], n_pos), dtype = complex)
+        exc2[:, 1::2, :] = exc
+        y = perp @ exc2
+        sig1 = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        sig2 = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        sig1[:, 1:, :] = y[:, 2::4, :]
+        sig2[:, :-1, :] = y[:, 0::4, :]
+        r['sh'] = _combine(sig1, sig2, +1)
+        rz['sh'] = _combine(sig1, sig2, -1)
+
+        h1_h = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        h2_h = np.zeros((M, n_z + 1, n_pos), dtype = complex)
+        h1_h[:, 1:, :] = y[:, 3::4, :]
+        h2_h[:, :-1, :] = y[:, 1::4, :]
+        r['hh'] = _combine(h1_h, h2_h, +1)
+        rz['hh'] = _combine(h1_h, h2_h, -1)
+
+        return r, rz, kz
+
     def _reflection_subs_batch(self,
             kpar_arr: np.ndarray,
             ctx: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray]:
@@ -973,8 +1208,11 @@ class LayerStructure(object):
 
         if ctx['is_subs']:
             refl, reflz, kz = self._reflection_subs_batch(kpar_arr, ctx)
+        elif ctx.get('same_size_refl', False):
+            # Batched multi-layer reflection (same_size case only).
+            refl, reflz, kz = self._reflection_full_batch(kpar_arr, ctx)
         else:
-            # Fallback: scalar loop (multi-layer case, rarely hit in demos).
+            # Fallback: scalar loop (not-same-size case in multi-layer).
             y = np.empty((M, 15 * n), dtype = complex)
             for m in range(M):
                 y[m, :] = self._intbessel_ctx(kpar_arr[m], ctx, ind)
@@ -1031,6 +1269,9 @@ class LayerStructure(object):
         if ctx['is_subs']:
             refl1, refl1z, kz1 = self._reflection_subs_batch(kpar1, ctx)
             refl2, refl2z, kz2 = self._reflection_subs_batch(kpar2, ctx)
+        elif ctx.get('same_size_refl', False):
+            refl1, refl1z, kz1 = self._reflection_full_batch(kpar1, ctx)
+            refl2, refl2z, kz2 = self._reflection_full_batch(kpar2, ctx)
         else:
             y = np.empty((M, 15 * n), dtype = complex)
             for m in range(M):
