@@ -8,7 +8,7 @@ import numpy as np
 from scipy.linalg import expm
 from scipy.sparse import csr_matrix, diags
 from ..utils.quadface import QuadFace as QuadFaceNew
-from ..utils.matlab_compat import mcos, msin, matan2
+from ..utils.matlab_compat import mcos, msin, matan2, msqrt
 from ..geometry.shape_functions import TriangleShape, QuadShape
 
 
@@ -926,12 +926,12 @@ class Particle(object):
             idx = np.where(carfun(x, y, z))[0]
         elif polfun is not None:
             phi = matan2(y, x)
-            r = np.sqrt(x**2 + y**2)
+            r = msqrt(x**2 + y**2)
             idx = np.where(polfun(phi, r, z))[0]
         elif sphfun is not None:
             phi = matan2(y, x)
-            r = np.sqrt(x**2 + y**2 + z**2)
-            theta = matan2(np.sqrt(x**2 + y**2), z)
+            r = msqrt(x**2 + y**2 + z**2)
+            theta = matan2(msqrt(x**2 + y**2), z)
             idx = np.where(sphfun(phi, np.pi/2 - theta, r))[0]
         else:
             raise ValueError("Must specify index, carfun, polfun, or sphfun")

@@ -2,7 +2,7 @@ import numpy as np
 from typing import Tuple, Optional, Union, List, Any, Dict
 from matplotlib.path import Path
 
-from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, macos
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, macos, msqrt
 
 
 class Polygon(object):
@@ -88,7 +88,7 @@ class Polygon(object):
             edge = np.arange(n)
 
         def _norm_vec(v: np.ndarray) -> np.ndarray:
-            lengths = np.sqrt(np.sum(v ** 2, axis = 1, keepdims = True))
+            lengths = msqrt(np.sum(v ** 2, axis = 1, keepdims = True))
             lengths[lengths < np.finfo(float).eps] = 1.0
             return v / lengths
 
@@ -215,7 +215,7 @@ class Polygon(object):
 
         # arc length of polygon segments
         diffs = pos_closed[1:] - pos_closed[:-1]
-        seg_len = np.sqrt(np.sum(diffs ** 2, axis = 1))
+        seg_len = msqrt(np.sum(diffs ** 2, axis = 1))
 
         # cumulative arc length
         x = np.empty(n + 1)
@@ -248,7 +248,7 @@ class Polygon(object):
         pos = self.pos
 
         def _unit(v: np.ndarray) -> np.ndarray:
-            lengths = np.sqrt(np.sum(v ** 2, axis = 1, keepdims = True))
+            lengths = msqrt(np.sum(v ** 2, axis = 1, keepdims = True))
             lengths[lengths < np.finfo(float).eps] = 1.0
             return v / lengths
 
@@ -309,7 +309,7 @@ class Polygon(object):
                   ((xb - xa) ** 2 + (yb - ya) ** 2 + np.finfo(float).eps)
             lam = np.clip(lam, 0, 1)
 
-            d = np.sqrt((xa + lam * (xb - xa) - x) ** 2 +
+            d = msqrt((xa + lam * (xb - xa) - x) ** 2 +
                         (ya + lam * (yb - ya) - y) ** 2)
             idx = np.argmin(d)
             if d[idx] < dmin[j]:

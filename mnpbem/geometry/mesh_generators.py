@@ -7,7 +7,7 @@ import os
 from scipy.spatial import Delaunay, ConvexHull
 # scipy.io.loadmat no longer needed — sphere data stored as .bin
 from .particle import Particle
-from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, macos
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, macos, msqrt
 
 
 def trisphere(n, diameter=1.0, **kwargs):
@@ -561,7 +561,7 @@ def trispheresegment(phi: np.ndarray,
     p = _add_midpoints_flat(p)
 
     # Rescale vertices to sphere surface
-    norms = np.sqrt(np.sum(p.verts2 ** 2, axis = 1, keepdims = True))
+    norms = msqrt(np.sum(p.verts2 ** 2, axis = 1, keepdims = True))
     # Avoid division by zero for points at origin
     norms = np.maximum(norms, 1e-30)
     verts2 = 0.5 * diameter * (p.verts2 / norms)
@@ -692,7 +692,7 @@ def tricube(n: int,
 def _cart2sph(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> tuple:
     # MATLAB cart2sph equivalent
     # Returns (azimuth, elevation) -- note MATLAB convention
-    hxy = np.sqrt(x ** 2 + y ** 2)
+    hxy = msqrt(x ** 2 + y ** 2)
     phi = matan2(y, x)  # azimuth
     theta = matan2(z, hxy)  # elevation
     return phi, theta

@@ -2,7 +2,7 @@ import numpy as np
 from typing import Tuple, Optional, Dict, Any, Callable, List
 from scipy.spatial import Delaunay, ConvexHull
 
-from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, mround
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, mround, msqrt
 
 
 def inpoly(p: np.ndarray,
@@ -259,7 +259,7 @@ def smoothmesh(p: np.ndarray,
     # unique edges for length computation
     unique_edges = np.unique(edge_sorted, axis = 0)
 
-    L = np.maximum(np.sqrt(np.sum((p[unique_edges[:, 0]] - p[unique_edges[:, 1]]) ** 2, axis = 1)), np.finfo(float).eps)
+    L = np.maximum(msqrt(np.sum((p[unique_edges[:, 0]] - p[unique_edges[:, 1]]) ** 2, axis = 1)), np.finfo(float).eps)
 
     for it in range(maxit):
         pnew = np.zeros_like(p)
@@ -269,7 +269,7 @@ def smoothmesh(p: np.ndarray,
         pnew[bnd_nodes] = p[bnd_nodes]
         p = pnew
 
-        Lnew = np.maximum(np.sqrt(np.sum((p[unique_edges[:, 0]] - p[unique_edges[:, 1]]) ** 2, axis = 1)), np.finfo(float).eps)
+        Lnew = np.maximum(msqrt(np.sum((p[unique_edges[:, 0]] - p[unique_edges[:, 1]]) ** 2, axis = 1)), np.finfo(float).eps)
         move = np.max(np.abs((Lnew - L) / Lnew))
         if move < tol:
             break
@@ -542,7 +542,7 @@ def dist2poly(p: np.ndarray,
 
             dj = (x1 + r * x2mx1 - x_pt) ** 2 + (y1 + r * y2my1 - y_pt) ** 2
             if dj < d ** 2 and dj > tol:
-                d = np.sqrt(dj)
+                d = msqrt(dj)
 
         L[k] = d
 
@@ -592,7 +592,7 @@ def _longest(p: np.ndarray,
     d1 = np.sum((p[t[:, 1]] - p[t[:, 0]]) ** 2, axis = 1)
     d2 = np.sum((p[t[:, 2]] - p[t[:, 1]]) ** 2, axis = 1)
     d3 = np.sum((p[t[:, 0]] - p[t[:, 2]]) ** 2, axis = 1)
-    return np.sqrt(np.maximum(np.maximum(d1, d2), d3))
+    return msqrt(np.maximum(np.maximum(d1, d2), d3))
 
 
 def _getedges(t: np.ndarray,
@@ -861,7 +861,7 @@ def quadtree(node: np.ndarray,
 
     # test points along edges
     wm = 0.5 * (edgexy[:, :2] + edgexy[:, 2:])
-    edge_len = np.sqrt(np.sum((edgexy[:, 2:] - edgexy[:, :2]) ** 2, axis = 1))
+    edge_len = msqrt(np.sum((edgexy[:, 2:] - edgexy[:, :2]) ** 2, axis = 1))
     L = 2.0 * dist2poly(wm, edgexy, 2.0 * edge_len)
 
     # add more points where edges are close
@@ -1044,7 +1044,7 @@ def quadtree(node: np.ndarray,
         h_out = h_arr_np
         return p_out, t_out, h_out
 
-    L_edges = np.sqrt(np.sum((p_arr[edges[:, 0]] - p_arr[edges[:, 1]]) ** 2, axis = 1))
+    L_edges = msqrt(np.sum((p_arr[edges[:, 0]] - p_arr[edges[:, 1]]) ** 2, axis = 1))
 
     for k in range(len(edges)):
         lk = L_edges[k]
@@ -1241,7 +1241,7 @@ def _boundarynodes(ph: np.ndarray,
 
     for _iter in range(100):
         dxy = p[e[:, 1]] - p[e[:, 0]]
-        L = np.sqrt(np.sum(dxy ** 2, axis = 1))
+        L = msqrt(np.sum(dxy ** 2, axis = 1))
         he = 0.5 * (h[e[:, 0]] + h[e[:, 1]])
 
         ratio = L / he
@@ -1297,7 +1297,7 @@ def _boundarynodes(ph: np.ndarray,
     S = _csr((vals_s, (rows_s, cols_s)), shape = (p.shape[0], ne))
 
     dxy = p[e[:, 1]] - p[e[:, 0]]
-    L = np.sqrt(np.sum(dxy ** 2, axis = 1))
+    L = msqrt(np.sum(dxy ** 2, axis = 1))
     he = 0.5 * (h[e[:, 0]] + h[e[:, 1]])
 
     delta = 0.0
@@ -1314,7 +1314,7 @@ def _boundarynodes(ph: np.ndarray,
         p = p + 0.2 * Fp
 
         dxy = p[e[:, 1]] - p[e[:, 0]]
-        Lnew = np.sqrt(np.sum(dxy ** 2, axis = 1))
+        Lnew = msqrt(np.sum(dxy ** 2, axis = 1))
         delta = np.max(np.abs((Lnew - L) / Lnew))
         if delta < 0.02:
             break
@@ -1418,13 +1418,13 @@ def meshpoly(node: np.ndarray,
         h = 0.5 * (hn[e[:, 0]] + hn[e[:, 1]])
 
         edgev = p[e[:, 0]] - p[e[:, 1]]
-        L = np.maximum(np.sqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
+        L = np.maximum(msqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
 
         # inner smoothing
         # MATLAB meshpoly.m:110 uses `for subiter = 1:(iter-1)`, i.e. skip on iteration=0
         done = False
         for subiter in range(iteration):
-            L0_target = h * np.sqrt(np.sum(L ** 2) / np.sum(h ** 2))
+            L0_target = h * msqrt(np.sum(L ** 2) / np.sum(h ** 2))
             F = np.maximum(L0_target / L - 1.0, -0.1)
             Fxy = edgev * F[:, np.newaxis]
             Fp = S.dot(Fxy)
@@ -1433,7 +1433,7 @@ def meshpoly(node: np.ndarray,
             p = p + dt * Fp
 
             edgev = p[e[:, 0]] - p[e[:, 1]]
-            L0_new = np.maximum(np.sqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
+            L0_new = np.maximum(msqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
             move = np.max(np.abs((L0_new - L) / L))
             L = L0_new
 
@@ -1449,7 +1449,7 @@ def meshpoly(node: np.ndarray,
 
         e = _getedges(t, p.shape[0])
         edgev = p[e[:, 0]] - p[e[:, 1]]
-        L = np.maximum(np.sqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
+        L = np.maximum(msqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
 
         tndx_full = _mytsearch(qtree['p'][:, 0], qtree['p'][:, 1], qtree['t'], p[:, 0], p[:, 1])
         hn = _tinterp(qtree['p'], qtree['t'], qtree['h'], p, tndx_full)
