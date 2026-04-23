@@ -522,7 +522,7 @@ class CompGreenRetLayer(object):
         self.g = CompGreenRet(p1, p2, **options)
 
         # Reflected Green function
-        tab = options.get('tab', None)
+        tab = options.pop('tab', None)
         greentab_obj = options.pop('greentab_obj', None)
         if greentab_obj is not None:
             # Use pre-tabulated GreenTabLayer directly
