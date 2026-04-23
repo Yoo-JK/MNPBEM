@@ -27,6 +27,9 @@ Functions:
     msign(x):                  sign
     mround(x):                 round (half-away-from-zero, MATLAB default)
     mfloor(x), mceil(x), mfix(x):   floor, ceil, fix (truncate toward 0)
+    m_exp_c(z):                complex exp via Euler (bit-identical parts)
+    m_sqrt_c(z):               complex sqrt via mhypot / msqrt
+    m_unique(arr, ...):        MATLAB unique (stable sort, first-occurrence)
 """
 import ctypes
 import os
@@ -338,6 +341,137 @@ def mpow(base, exponent):
 def mhypot(a, b):
     """MATLAB-compatible hypot: sqrt(a^2 + b^2), avoids over/underflow."""
     return _call_binary('hypot', a, b, np.hypot)
+
+
+# --- Complex wrappers (Euler composition over real MATLAB primitives) ---
+
+def m_exp_c(z):
+    """MATLAB-compatible complex exp via Euler formula.
+
+    exp(a + b*j) = exp(a) * (cos(b) + j*sin(b)).  Uses mexp / mcos / msin so
+    real and imaginary parts are each bit-identical to MATLAB.  Real input
+    falls through to mexp directly.
+    """
+    z_arr = np.asarray(z)
+    if not np.iscomplexobj(z_arr):
+        return mexp(z_arr)
+    a = z_arr.real
+    b = z_arr.imag
+    ea = mexp(a)
+    return ea * mcos(b) + 1j * ea * msin(b)
+
+
+def m_sqrt_c(z):
+    """MATLAB-compatible complex sqrt via mhypot / msqrt.
+
+    For z = x + y*j, sqrt(z) = sqrt((|z| + x) / 2) + sign(y) * j *
+    sqrt((|z| - x) / 2).  Real non-negative input goes through msqrt; real
+    negative input returns a pure-imaginary sqrt.  When y == 0 exactly we
+    preserve the sign of the imaginary zero via the MATLAB convention
+    sign(+0) = +1.
+    """
+    z_arr = np.asarray(z)
+    if not np.iscomplexobj(z_arr):
+        x = z_arr
+        if np.isscalar(x) or x.ndim == 0:
+            xv = float(x)
+            if xv >= 0:
+                return msqrt(xv)
+            return 1j * msqrt(-xv)
+        x = np.asarray(x, dtype = np.float64)
+        out = np.empty_like(x, dtype = np.complex128)
+        pos = x >= 0
+        neg = ~pos
+        out[pos] = msqrt(x[pos])
+        out[neg] = 1j * msqrt(-x[neg])
+        return out
+    x = z_arr.real
+    y = z_arr.imag
+    r = mhypot(x, y)
+    # (r + x) / 2 and (r - x) / 2 are both >= 0 for any finite z
+    re = msqrt((r + x) / 2.0)
+    im_mag = msqrt((r - x) / 2.0)
+    sgn = np.where(y >= 0, 1.0, -1.0)
+    return re + 1j * sgn * im_mag
+
+
+def m_unique(arr, axis = None, return_index = False, return_inverse = False):
+    """MATLAB-compatible unique.
+
+    MATLAB `[C, ia, ic] = unique(A)` uses stable sort and returns the FIRST
+    occurrence index for each unique element, whereas `np.unique` returns the
+    LAST occurrence when there are duplicates (numpy uses a sort that then
+    picks values at sorted positions).  For mesh topology the index choice
+    matters because downstream code uses `ia` to reference original rows.
+
+    This implementation:
+      - uses numpy stable sort to group equal entries
+      - selects the smallest original index within each group (= first
+        occurrence) for `return_index`
+      - reproduces `return_inverse` using the same grouping
+
+    Supports 1-D input (axis=None) and 2-D row-unique (axis=0), which is all
+    MATLAB's unique(A, 'rows') needs.
+    """
+    a = np.asarray(arr)
+    if axis is None:
+        flat = a.ravel()
+        order = np.argsort(flat, kind = 'stable')
+        sorted_vals = flat[order]
+        if sorted_vals.size == 0:
+            uniq = sorted_vals.copy()
+            ia = np.array([], dtype = np.intp)
+            ic = np.array([], dtype = np.intp)
+        else:
+            diff_mask = np.concatenate(
+                ([True], sorted_vals[1:] != sorted_vals[:-1]))
+            group_ids = np.cumsum(diff_mask) - 1
+            n_groups = int(group_ids[-1]) + 1
+            uniq = sorted_vals[diff_mask]
+            # first-occurrence: within each group pick min of original index
+            ia = np.full(n_groups, np.iinfo(np.intp).max, dtype = np.intp)
+            for gid, orig_idx in zip(group_ids, order):
+                if orig_idx < ia[gid]:
+                    ia[gid] = orig_idx
+            ic = np.empty(flat.size, dtype = np.intp)
+            ic[order] = group_ids
+        result = [uniq]
+        if return_index:
+            result.append(ia)
+        if return_inverse:
+            result.append(ic)
+        return tuple(result) if len(result) > 1 else uniq
+    if axis == 0:
+        if a.ndim != 2:
+            raise ValueError("m_unique(axis=0) expects 2-D input")
+        # Lexicographic stable sort over rows
+        keys = tuple(a[:, c] for c in range(a.shape[1] - 1, -1, -1))
+        order = np.lexsort(keys)
+        sorted_rows = a[order]
+        if sorted_rows.shape[0] == 0:
+            uniq = sorted_rows.copy()
+            ia = np.array([], dtype = np.intp)
+            ic = np.array([], dtype = np.intp)
+        else:
+            diff_mask = np.concatenate(
+                ([True],
+                 np.any(sorted_rows[1:] != sorted_rows[:-1], axis = 1)))
+            group_ids = np.cumsum(diff_mask) - 1
+            n_groups = int(group_ids[-1]) + 1
+            uniq = sorted_rows[diff_mask]
+            ia = np.full(n_groups, np.iinfo(np.intp).max, dtype = np.intp)
+            for gid, orig_idx in zip(group_ids, order):
+                if orig_idx < ia[gid]:
+                    ia[gid] = orig_idx
+            ic = np.empty(a.shape[0], dtype = np.intp)
+            ic[order] = group_ids
+        result = [uniq]
+        if return_index:
+            result.append(ia)
+        if return_inverse:
+            result.append(ic)
+        return tuple(result) if len(result) > 1 else uniq
+    raise ValueError(f"m_unique: unsupported axis={axis}")
 
 
 # --- Legacy-shaped internal for test_matan2.py ---
