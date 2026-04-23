@@ -2,7 +2,7 @@ import numpy as np
 from typing import Tuple, Optional, Dict, Any, Callable, List
 from scipy.spatial import Delaunay, ConvexHull
 
-from ..utils.matlab_compat import mlinspace, mcos, msin, matan2
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, mround
 
 
 def inpoly(p: np.ndarray,
@@ -866,7 +866,7 @@ def quadtree(node: np.ndarray,
 
     # add more points where edges are close
     r = 2.0 * edge_len / np.maximum(L, np.finfo(float).eps)
-    r = np.round((r - 2.0) / 2.0).astype(int)
+    r = mround((r - 2.0) / 2.0).astype(int)
     r = np.maximum(r, 0)
     add = np.where(r > 0)[0]
 

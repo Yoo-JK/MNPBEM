@@ -2,7 +2,7 @@ import numpy as np
 from typing import Tuple, Optional, Union, List, Any, Dict
 from matplotlib.path import Path
 
-from ..utils.matlab_compat import mlinspace, mcos, msin, matan2
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, macos
 
 
 class Polygon(object):
@@ -101,7 +101,7 @@ class Polygon(object):
         # half angle between consecutive edges
         dot_prod = np.sum(prev_vec * vec, axis = 1)
         dot_prod = np.clip(dot_prod, -1.0, 1.0)
-        beta = np.arccos(dot_prod) / 2.0
+        beta = macos(dot_prod) / 2.0
 
         # center of rounding circles
         cos_beta = mcos(beta)

@@ -7,7 +7,7 @@ import os
 from scipy.spatial import Delaunay, ConvexHull
 # scipy.io.loadmat no longer needed — sphere data stored as .bin
 from .particle import Particle
-from ..utils.matlab_compat import mlinspace, mcos, msin, matan2
+from ..utils.matlab_compat import mlinspace, mcos, msin, matan2, macos
 
 
 def trisphere(n, diameter=1.0, **kwargs):
@@ -343,7 +343,7 @@ def _fibonacci_sphere(n):
     """
     indices = np.arange(0, n, dtype=float) + 0.5
 
-    phi = np.arccos(1 - 2 * indices / n)  # Latitude
+    phi = macos(1 - 2 * indices / n)  # Latitude
     theta = np.pi * (1 + 5**0.5) * indices  # Golden angle spiral
 
     x = msin(phi) * mcos(theta)

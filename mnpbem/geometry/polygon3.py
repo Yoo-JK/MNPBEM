@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Tuple, Optional, Union, List, Any
+from ..utils.matlab_compat import mround
 from .polygon import Polygon
 from .edgeprofile import EdgeProfile
 from .particle import Particle
@@ -91,7 +92,7 @@ class Polygon3(object):
 
         # MATLAB L20: assert identical z across all entries.
         z_vals = np.array([o.z for o in obj_list])
-        z_round = np.round(z_vals, 8)
+        z_round = mround(z_vals, 8)
         assert np.all(z_round == z_round[0]), '[error] plate: z-values must match'
         z_plate = float(z_round[0])
 
