@@ -206,7 +206,9 @@ class ComParticleMirror(object):
         """
         n_sym_cols = self.symtable.shape[1]
         n_full = len(self.pfull.p)
-        ind = np.arange(1, n_full + 1).reshape(-1, n_sym_cols)
+        # MATLAB reshape is column-major, so use Fortran order here so that
+        # particle k's mirror copies occupy row k-1 of `ind`.
+        ind = np.arange(1, n_full + 1).reshape(-1, n_sym_cols, order='F')
 
         if self.pfull.closed is None:
             self.pfull.closed = [None] * n_full

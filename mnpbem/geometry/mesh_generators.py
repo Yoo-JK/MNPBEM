@@ -858,6 +858,10 @@ def _tripolygon_sharp_lower(polys, edge, **kwargs):
     # MATLAB tripolygon.m -- case: sharp lower edge (NaN at start)
     from .polygon3 import Polygon3
 
+    # Extract sym option (used for mirror symmetry); MATLAB passes sym through
+    # plate/vribbon via varargin just like the both-rounded branch.
+    sym = kwargs.pop('sym', None)
+
     # polygon3 objects at zmax
     polys3 = [Polygon3(p, edge.zmax) for p in polys]
 
@@ -865,7 +869,7 @@ def _tripolygon_sharp_lower(polys, edge, **kwargs):
     polys_out = []
     plates1 = []
     for p3 in polys3:
-        plate, p3_out = p3.plate(dir = 1, edge = edge, **kwargs)
+        plate, p3_out = p3.plate(dir = 1, edge = edge, sym = sym, **kwargs)
         plates1.append(plate)
         polys_out.append(p3_out)
 
@@ -873,7 +877,7 @@ def _tripolygon_sharp_lower(polys, edge, **kwargs):
     ribbons = []
     lo_polys = []
     for p3_out in polys_out:
-        ribbon, _, lo = p3_out.vribbon(edge = edge)
+        ribbon, _, lo = p3_out.vribbon(edge = edge, sym = sym)
         ribbons.append(ribbon)
         lo_polys.append(lo)
 
@@ -881,7 +885,7 @@ def _tripolygon_sharp_lower(polys, edge, **kwargs):
     plates2 = []
     for lo_p3 in lo_polys:
         lo_p3.z = edge.zmin
-        plate, _ = lo_p3.plate(dir = -1, edge = edge, **kwargs)
+        plate, _ = lo_p3.plate(dir = -1, edge = edge, sym = sym, **kwargs)
         plates2.append(plate)
 
     # combine
@@ -899,6 +903,10 @@ def _tripolygon_sharp_upper(polys, edge, **kwargs):
     # MATLAB tripolygon.m -- case: sharp upper edge (NaN at end)
     from .polygon3 import Polygon3
 
+    # Extract sym option (used for mirror symmetry); MATLAB passes sym through
+    # plate/vribbon via varargin just like the both-rounded branch.
+    sym = kwargs.pop('sym', None)
+
     # polygon3 objects at zmin
     polys3 = [Polygon3(p, edge.zmin) for p in polys]
 
@@ -906,7 +914,7 @@ def _tripolygon_sharp_upper(polys, edge, **kwargs):
     polys_out = []
     plates1 = []
     for p3 in polys3:
-        plate, p3_out = p3.plate(dir = -1, edge = edge, **kwargs)
+        plate, p3_out = p3.plate(dir = -1, edge = edge, sym = sym, **kwargs)
         plates1.append(plate)
         polys_out.append(p3_out)
 
@@ -914,7 +922,7 @@ def _tripolygon_sharp_upper(polys, edge, **kwargs):
     ribbons = []
     up_polys = []
     for p3_out in polys_out:
-        ribbon, up, _ = p3_out.vribbon(edge = edge)
+        ribbon, up, _ = p3_out.vribbon(edge = edge, sym = sym)
         ribbons.append(ribbon)
         up_polys.append(up)
 
@@ -922,7 +930,7 @@ def _tripolygon_sharp_upper(polys, edge, **kwargs):
     plates2 = []
     for up_p3 in up_polys:
         up_p3.z = edge.zmax
-        plate, _ = up_p3.plate(dir = 1, edge = edge, **kwargs)
+        plate, _ = up_p3.plate(dir = 1, edge = edge, sym = sym, **kwargs)
         plates2.append(plate)
 
     # combine
