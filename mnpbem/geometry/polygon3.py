@@ -62,104 +62,194 @@ class Polygon3(object):
             options: Optional[dict] = None,
             refun: Optional[Any] = None,
             sym: Optional[str] = None) -> Tuple[Particle, 'Polygon3']:
-        # MATLAB: @polygon3/plate.m
+        # MATLAB: @polygon3/plate.m -- single Polygon3 entry point.
+        # Delegates to plate_from_list so the single- and multi-polygon paths
+        # share one implementation (MATLAB plate.m always takes an obj array).
+        p, obj_list = Polygon3.plate_from_list(
+            [self], dir = dir, edge = edge,
+            hdata = hdata, options = options, refun = refun, sym = sym)
+        return p, obj_list[0]
+
+    @staticmethod
+    def plate_from_list(
+            obj_list: List['Polygon3'],
+            dir: int = 1,
+            edge: Optional[EdgeProfile] = None,
+            hdata: Optional[dict] = None,
+            options: Optional[dict] = None,
+            refun: Optional[Any] = None,
+            sym: Optional[str] = None) -> Tuple[Particle, List['Polygon3']]:
+        # MATLAB: @polygon3/plate.m (full porting, including multi-polygon /
+        # plate-with-hole path used by e.g. demoeelsret7 (outer square +
+        # inner triangle) and demospecstat6 (inner ring + outer square).
+
+        if len(obj_list) == 0:
+            raise ValueError('[error] plate_from_list: empty obj_list')
+
+        # Work on local copies so we do not mutate caller state.
+        obj_list = [o.copy() for o in obj_list]
+
+        # MATLAB L20: assert identical z across all entries.
+        z_vals = np.array([o.z for o in obj_list])
+        z_round = np.round(z_vals, 8)
+        assert np.all(z_round == z_round[0]), '[error] plate: z-values must match'
+        z_plate = float(z_round[0])
+
+        # MATLAB L24-25: override edge profile if passed in.
         if edge is not None:
-            self.edge = edge
+            for o in obj_list:
+                o.edge = edge
 
         if options is None:
             options = {'output': False}
         if hdata is None:
             hdata = {}
+        else:
+            hdata = dict(hdata)
 
-        # triangulate the 2D polygon
-        poly_for_mesh = self.poly.copy()
-
-        # Apply symmetry reduction (MATLAB: poly1 = close(symmetry(poly, op.sym)))
-        if sym is not None:
-            poly_for_mesh._apply_symmetry(sym)
-            poly_for_mesh = poly_for_mesh.close()
-
-        # get polygon for meshing (use reduced polygon if sym applied)
-        mesh_pos = poly_for_mesh.pos.copy()
-        mesh_poly = Polygon(mesh_pos)
-        mesh_poly.sym = poly_for_mesh.sym
-
-        # Build refine function for mesh2d if refun provided.
-        # MATLAB: plate.m wraps user's refun via op.hdata.fun = refun(obj, x, y, fun).
+        # MATLAB L27-30: gather per-obj refine functions.
         fun_list = []
-        if self._refun is not None:
-            fun_list.append(self._refun)
-        if refun is not None:
-            fun_list.append(refun)
+        poly_list_for_refun: List[Polygon] = []
+        for o in obj_list:
+            if o._refun is not None:
+                fun_list.append(o._refun)
+                poly_list_for_refun.append(o.poly)
+        global_refun = refun
 
-        if len(fun_list) > 0:
-            z_plate = self.z
-            poly_for_dist = self.poly
+        # MATLAB L36-38: install combined refine function if any present.
+        if len(fun_list) > 0 or global_refun is not None:
+            _fl = list(fun_list)
+            _polys = list(poly_list_for_refun)
+            _gf = global_refun
+            _z = z_plate
+            _poly0 = obj_list[0].poly
 
-            def _plate_refun(x, y, *args, _fun_list = fun_list,
-                             _poly = poly_for_dist, _z = z_plate):
+            def _plate_refun(x, y, *args,
+                             _fl = _fl, _polys = _polys, _gf = _gf,
+                             _z = _z, _poly0 = _poly0):
                 x = np.atleast_1d(x).ravel()
                 y = np.atleast_1d(y).ravel()
                 pos = np.column_stack([x, y, np.full_like(x, _z)])
-                d, _ = _poly.dist(np.column_stack([x, y]))
-                d = np.asarray(d).ravel()
                 h_vals = None
-                for fun in _fun_list:
-                    hi = np.asarray(fun(pos, d)).ravel()
-                    if h_vals is None:
-                        h_vals = hi
-                    else:
-                        h_vals = np.minimum(h_vals, hi)
+                for fun, poly_i in zip(_fl, _polys):
+                    d_i, _ = poly_i.dist(np.column_stack([x, y]))
+                    hi = np.asarray(fun(pos, np.asarray(d_i).ravel())).ravel()
+                    h_vals = hi if h_vals is None else np.minimum(h_vals, hi)
+                if _gf is not None:
+                    d0, _ = _poly0.dist(np.column_stack([x, y]))
+                    hg = np.asarray(_gf(pos, np.asarray(d0).ravel())).ravel()
+                    h_vals = hg if h_vals is None else np.minimum(h_vals, hg)
                 return h_vals
 
-            hdata = dict(hdata)
             hdata['fun'] = _plate_refun
 
-        verts_2d, faces_2d = mesh_poly.polymesh2d(hdata = hdata, options = options)
+        # MATLAB L43-45: gather per-obj polygons, symmetrize+close combined.
+        polys_for_mesh: List[Polygon] = [o.poly.copy() for o in obj_list]
+        if sym is not None:
+            for pm in polys_for_mesh:
+                pm._apply_symmetry(sym)
+            polys_for_mesh = [pm.close() for pm in polys_for_mesh]
 
-        # create 3D vertices at the plate z-level
+        # MATLAB L47-48: polymesh2d(poly1, hdata, options).
+        if len(polys_for_mesh) == 1:
+            verts_2d, faces_2d = polys_for_mesh[0].polymesh2d(
+                hdata = hdata, options = options)
+        else:
+            verts_2d, faces_2d = polys_for_mesh[0].polymesh2d(
+                *polys_for_mesh[1:], hdata = hdata, options = options)
+
+        # Build initial particle at the plate z-level.
         verts_3d = np.empty((verts_2d.shape[0], 3))
         verts_3d[:, :2] = verts_2d
-        verts_3d[:, 2] = self.z
+        verts_3d[:, 2] = z_plate
 
-        # create particle
-        p = Particle(verts_3d, faces_2d)
+        # mesh2d returns tri faces; pad to 4 columns with NaN (quad marker).
+        if faces_2d.shape[1] == 3:
+            faces_padded = np.full((faces_2d.shape[0], 4), np.nan)
+            faces_padded[:, :3] = faces_2d
+        else:
+            faces_padded = faces_2d
 
-        # add midpoints (flat)
+        p = Particle(verts_3d, faces_padded)
         p = _add_midpoints_flat(p)
 
-        # check normal direction and flip if needed
-        # MATLAB plate.m L62: flip BEFORE edge-profile vshift and final curved
-        # particle construction. Applying vshift first can perturb the summed
-        # normal-z sign (boundary faces tilt) and invert the flip decision.
+        # MATLAB L60-62: flip to respect requested normal direction.
         nvec_sum = np.sum(p.nvec[:, 2])
         if np.sign(nvec_sum) != dir:
             p = p.flipfaces()
 
-        # MATLAB: obj(i).poly = interp1(obj(i).poly, verts)
-        #         [~, obj(i).poly] = symmetry(obj(i).poly, op.sym)
-        # Enrich polygon with mesh boundary vertices, return FULL polygon
-        result_poly3 = self.copy()
-        enriched_poly = result_poly3.poly.interp1(verts_2d)
-        if sym is not None:
-            # MATLAB returns the second output of symmetry() = full (expanded) polygon
-            enriched_poly._apply_symmetry(sym)
-            full_pos = enriched_poly.get_full_polygon()
-            enriched_poly.pos = full_pos
-            enriched_poly.sym = None
-        result_poly3.poly = enriched_poly
+        # MATLAB L65-67: per-polygon dmin tracking for vshift.
+        dmin = np.full(p.verts2.shape[0], np.inf)
 
-        # apply edge profile vertical shift to boundary vertices
-        if self.edge is not None and self.edge.pos is not None:
-            d_vals, _ = self.poly.dist(p.verts2[:, :2])
-            vshift_vals = self.edge.vshift(self.z, d_vals)
-            if not np.isscalar(vshift_vals) or vshift_vals != 0.0:
-                p.verts2[:, 2] = p.verts2[:, 2] + vshift_vals
+        # MATLAB L70-90: per-polygon boundary smoothing + edge vshift.
+        result_objs: List['Polygon3'] = []
+        for i, o in enumerate(obj_list):
+            # MATLAB L51-53: enrich each input polygon with new boundary
+            # vertices and return the full (symmetry-expanded) polygon.
+            enriched = o.poly.copy().interp1(verts_2d)
+            if sym is not None:
+                enriched._apply_symmetry(sym)
+                enriched.pos = enriched.get_full_polygon()
+                enriched.sym = None
+            result_o = o.copy()
+            result_o.poly = enriched.copy()
+            result_objs.append(result_o)
 
-        # create final particle with midpoints
-        p = Particle(p.verts2, p.faces2)
+            # MATLAB L72-73: enrich against verts2 (mid-edges included).
+            poly_i = o.poly.copy().interp1(p.verts2[:, :2])
+            if sym is not None:
+                poly_i._apply_symmetry(sym)
+                poly_i.pos = poly_i.get_full_polygon()
+                poly_i.sym = None
 
-        return p, result_poly3
+            # MATLAB L75-77: locate mesh verts2 rows on poly_i (col-major
+            # ordering matches MATLAB find()).
+            if poly_i.pos.shape[0] > 0:
+                pp = poly_i.pos
+                vv = p.verts2[:, :2]
+                eqx = (vv[:, 0:1] == pp[:, 0][None, :])
+                eqy = (vv[:, 1:2] == pp[:, 1][None, :])
+                mask = eqx & eqy
+                rows: List[int] = []
+                cols: List[int] = []
+                for c in range(mask.shape[1]):
+                    rr = np.where(mask[:, c])[0]
+                    for r in rr:
+                        rows.append(int(r))
+                        cols.append(int(c))
+                row = np.asarray(rows, dtype = int)
+                col = np.asarray(cols, dtype = int)
+            else:
+                row = np.empty(0, dtype = int)
+                col = np.empty(0, dtype = int)
+
+            # MATLAB L81-82: smooth boundary with midpoints('same') and
+            # overwrite the x,y of the matching verts2 rows.
+            if poly_i.pos.shape[0] >= 4 and poly_i.pos.shape[0] % 2 == 0 \
+                    and len(row) > 0:
+                poly_smooth = poly_i.copy().midpoints(mode = 'same')
+                p.verts2[row, 0:2] = poly_smooth.pos[col, :]
+
+            # MATLAB L84-89: distance to polygon, update dmin, apply vshift
+            # at boundary vertices whose distance improved.
+            d, _ = o.poly.dist(p.verts2[:, :2])
+            d = np.asarray(d).ravel()
+            ind = d < dmin
+            dmin[ind] = d[ind]
+
+            if o.edge is not None and o.edge.pos is not None:
+                v = o.edge.vshift(o.z, d[ind])
+                if np.isscalar(v):
+                    if v != 0.0:
+                        p.verts2[ind, 2] = z_plate + v
+                else:
+                    v = np.asarray(v).ravel()
+                    p.verts2[ind, 2] = z_plate + v
+
+        # MATLAB L95: final curved particle from updated verts2/faces2.
+        p_final = Particle(p.verts2.copy(), p.faces2.copy())
+
+        return p_final, result_objs
 
     def vribbon(self,
             z: Optional[np.ndarray] = None,

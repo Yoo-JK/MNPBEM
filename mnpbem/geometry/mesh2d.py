@@ -551,7 +551,13 @@ def dist2poly(p: np.ndarray,
 
 def _mydelaunayn(p: np.ndarray) -> np.ndarray:
 
-    # MATLAB Mesh2d/mydelaunayn.m - Delaunay triangulation with scaling
+    # MATLAB Mesh2d/mydelaunayn.m - Delaunay triangulation with scaling.
+    # MATLAB's `delaunayn` in 2D uses qhull options 'Qt Qbb Qc' (triangulated
+    # output, bounding-box scaling, max-coord output). scipy's default is
+    # 'Qbb Qc Qz' which adds a 'Qz' cosphere point and gives a different
+    # tie-break for cocircular input groups. Passing 'Qt Qbb Qc' reproduces
+    # MATLAB's triangulation set bit-identically (vertex order within each
+    # row may still differ — qhull facet ordering is wrapper-specific).
     maxxy = np.max(p, axis = 0)
     minxy = np.min(p, axis = 0)
     center = 0.5 * (minxy + maxxy)
@@ -562,13 +568,13 @@ def _mydelaunayn(p: np.ndarray) -> np.ndarray:
     ps = (p - center) / scale
 
     try:
-        tri = Delaunay(ps)
+        tri = Delaunay(ps, qhull_options = 'Qt Qbb Qc')
         t = tri.simplices
     except Exception:
         # add small jitter and retry (seeded for determinism)
         rng = np.random.default_rng(0)
         jitter = rng.standard_normal(ps.shape) * 1e-10
-        tri = Delaunay(ps + jitter)
+        tri = Delaunay(ps + jitter, qhull_options = 'Qt Qbb Qc')
         t = tri.simplices
 
     return t
