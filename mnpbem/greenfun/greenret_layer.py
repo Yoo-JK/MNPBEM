@@ -5,6 +5,8 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
 
+from mnpbem.utils.matlab_compat import mlinspace, msqrt
+
 from .greentab_layer import GreenTabLayer
 from .refine_utils import refinematrixlayer
 
@@ -56,7 +58,7 @@ class GreenRetLayer(object):
         dx = pos1[:, 0:1] - pos2[:, 0:1].T  # (n1, n2)
         dy = pos1[:, 1:2] - pos2[:, 1:2].T  # (n1, n2)
 
-        self._r = np.sqrt(dx ** 2 + dy ** 2)  # (n1, n2)
+        self._r = msqrt(dx ** 2 + dy ** 2)  # (n1, n2)
         self._z1 = pos1[:, 2]  # (n1,)
         self._z2 = pos2[:, 2]  # (n2,)
         self._dx = dx
@@ -169,7 +171,7 @@ class GreenRetLayer(object):
         _, _, Fz0_dict, r0, zmin0 = self._interp_components_with_pos(
             r_zero, z_probe, z_probe)
 
-        d0 = np.sqrt(r0 ** 2 + zmin0 ** 2)
+        d0 = msqrt(r0 ** 2 + zmin0 ** 2)
 
         f_dict = {}
         for name in Fz0_dict:
@@ -207,7 +209,7 @@ class GreenRetLayer(object):
         # Difference vectors
         dx = pos_quad[:, 0] - pos_centroid[:, 0]
         dy = pos_quad[:, 1] - pos_centroid[:, 1]
-        r_quad = np.sqrt(dx ** 2 + dy ** 2)
+        r_quad = msqrt(dx ** 2 + dy ** 2)
         z1_quad = pos_quad[:, 2]
         z2_quad = pos_centroid[:, 2]
 
@@ -219,7 +221,7 @@ class GreenRetLayer(object):
         # Interpolate Green function at quadrature points
         g_dict, fr_dict, fz_dict, r_rounded, zmin_quad = \
             self._interp_components_with_pos(r_quad, z1_quad, z2_quad)
-        rr_quad = np.sqrt(r_rounded ** 2 + zmin_quad ** 2)
+        rr_quad = msqrt(r_rounded ** 2 + zmin_quad ** 2)
 
         # Identify faces located in the layer (close to interface)
         _, lin = self.layer.indlayer(p.pos[id_faces, 2])
@@ -300,13 +302,13 @@ class GreenRetLayer(object):
 
         dx = pos_quad[:, 0] - pos_centroid[:, 0]
         dy = pos_quad[:, 1] - pos_centroid[:, 1]
-        r_quad = np.sqrt(dx ** 2 + dy ** 2)
+        r_quad = msqrt(dx ** 2 + dy ** 2)
         z1_quad = pos_quad[:, 2]
         z2_quad = pos_centroid[:, 2]
 
         _, fr_dict, fz_dict, r_rounded, zmin_quad = \
             self._interp_components_with_pos(r_quad, z1_quad, z2_quad)
-        rr_quad = np.sqrt(r_rounded ** 2 + zmin_quad ** 2)
+        rr_quad = msqrt(r_rounded ** 2 + zmin_quad ** 2)
         r_safe = np.maximum(r_rounded, 1e-10)
 
         _, lin = self.layer.indlayer(p.pos[id_faces, 2])
@@ -394,7 +396,7 @@ class GreenRetLayer(object):
 
             x = pos1[:, 0:1] - pos2[:, 0].T
             y = pos1[:, 1:2] - pos2[:, 1].T
-            r = np.sqrt(x ** 2 + y ** 2)
+            r = msqrt(x ** 2 + y ** 2)
 
             z1 = np.tile(pos1[:, 2:3], (1, len(w)))
             z2 = np.tile(pos2[:, 2].T, (len(rows), 1))
@@ -624,8 +626,8 @@ class GreenRetLayer(object):
         z_min, z_max = z_all.min(), z_all.max()
         if np.isclose(z_min, z_max):
             z_max = z_min + 1.0
-        z1_grid = np.linspace(z_min, z_max, nz)
-        z2_grid = np.linspace(z_min, z_max, nz)
+        z1_grid = mlinspace(z_min, z_max, nz)
+        z2_grid = mlinspace(z_min, z_max, nz)
 
         self.tab.setup_grid(r_grid, z1_grid, z2_grid)
 

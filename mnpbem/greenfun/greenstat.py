@@ -7,6 +7,8 @@ MATLAB: Greenfun/@greenstat/
 import numpy as np
 from typing import Optional, Tuple, Any, List, Union
 
+from mnpbem.utils.matlab_compat import msqrt
+
 
 class GreenStat(object):
     """
@@ -287,7 +289,7 @@ class GreenStat(object):
         x = pos1[:, 0:1] - pos2[:, 0:1].T  # (n1, n2)
         y = pos1[:, 1:2] - pos2[:, 1:2].T
         z = pos1[:, 2:3] - pos2[:, 2:3].T
-        d = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+        d = msqrt(x ** 2 + y ** 2 + z ** 2)
         d = np.maximum(d, np.finfo(float).eps)
 
         # Precompute needed quantities

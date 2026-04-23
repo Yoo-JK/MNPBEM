@@ -6,6 +6,8 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
 
+from mnpbem.utils.matlab_compat import msqrt
+
 from .compgreen_stat import CompGreenStat, CompStruct
 
 
@@ -484,7 +486,7 @@ class _ReflectedGreenStat(object):
             y = pos1[nb, 1:2] - pos[:, 1:2].T
             z = pos1[nb, 2:3] - pos[:, 2:3].T
 
-            r_dist = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+            r_dist = msqrt(x ** 2 + y ** 2 + z ** 2)
             r_dist = np.maximum(r_dist, np.finfo(float).eps)
 
             # G

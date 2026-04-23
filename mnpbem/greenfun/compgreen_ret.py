@@ -8,6 +8,8 @@ MATLAB: Greenfun/@compgreenret/
 import numpy as np
 from typing import Optional, Tuple, Any, List
 
+from mnpbem.utils.matlab_compat import msqrt
+
 
 class CompGreenRet(object):
     """
@@ -1346,7 +1348,7 @@ class GreenRetBlock(object):
         x = pos1[:, 0:1] - pos2[:, 0]  # Broadcasting: (n1,1) - (n2,) -> (n1,n2)
         y = pos1[:, 1:2] - pos2[:, 1]
         z = pos1[:, 2:3] - pos2[:, 2]
-        d = np.sqrt(x**2 + y**2 + z**2)
+        d = msqrt(x**2 + y**2 + z**2)
         d = np.maximum(d, np.finfo(float).eps)
 
         # Evaluate based on key
@@ -1460,7 +1462,7 @@ class GreenRetBlock(object):
         pos1 = self.p1.pos[rows]   # (n_ind, 3)
         pos2 = self.p2.pos[cols]   # (n_ind, 3)
         diff = pos1 - pos2         # (n_ind, 3)
-        d = np.sqrt(np.sum(diff ** 2, axis=1))
+        d = msqrt(np.sum(diff ** 2, axis=1))
         d = np.maximum(d, np.finfo(float).eps)
         area2 = self.p2.area[cols]
 
