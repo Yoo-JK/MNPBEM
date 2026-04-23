@@ -214,14 +214,18 @@ def _select_pair_elements(p: Any,
     """
     face_idx_of = _particle_face_indices(p)
 
+    # MATLAB `index(p, ind(:, 1).')` concatenates sub-particle face indices
+    # for each requested particle. Paired with `index(p, ind(:, 2).')`,
+    # sub2ind is applied element-wise, so only (fa[k], fb[k]) pairs enter
+    # the refinement -- NOT the full cross product (see refinestat.m line 16-20).
     i1_all: List[np.ndarray] = []
     i2_all: List[np.ndarray] = []
     for pa, pb in ind_pairs:
         fa = face_idx_of[int(pa) - 1]
         fb = face_idx_of[int(pb) - 1]
-        grid_a, grid_b = np.meshgrid(fa, fb, indexing = 'ij')
-        i1_all.append(grid_a.ravel())
-        i2_all.append(grid_b.ravel())
+        n_pair = min(len(fa), len(fb))
+        i1_all.append(np.asarray(fa[:n_pair]).ravel())
+        i2_all.append(np.asarray(fb[:n_pair]).ravel())
 
     if not i1_all:
         return (np.array([], dtype = int),
