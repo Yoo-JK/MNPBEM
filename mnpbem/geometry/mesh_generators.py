@@ -773,15 +773,21 @@ def trispherescale(p: 'Particle',
 
 def tripolygon(poly, edge, **kwargs):
     # MATLAB: Particles/particleshapes/tripolygon.m
-    # Creates 3D nanostructure from 2D polygon cross-section + edge profile
+    # Creates 3D nanostructure from 2D polygon cross-section + edge profile.
+    # If return_poly=True, also returns the enriched edge polygon(s)
+    # produced during mesh refinement (MATLAB's second output).
     from .polygon3 import Polygon3
     from .edgeprofile import EdgeProfile
+
+    return_poly = kwargs.pop('return_poly', False)
 
     # handle single polygon or list of polygons
     if not isinstance(poly, (list, tuple)):
         polys = [poly]
+        single_input = True
     else:
         polys = list(poly)
+        single_input = False
 
     # check edge profile type: rounded or sharp edges
     has_nan = np.any(np.isnan(edge.pos[:, 0]))
@@ -790,15 +796,20 @@ def tripolygon(poly, edge, **kwargs):
 
     if all_not_nan or (has_nan and nan_count_at_zero != 1):
         # both edges rounded (or both sharp -- mode '11')
-        p = _tripolygon_both_rounded(polys, edge, **kwargs)
+        p, enriched = _tripolygon_both_rounded(polys, edge, **kwargs)
     elif np.isnan(edge.pos[0, 0]):
         # sharp lower edge
-        p = _tripolygon_sharp_lower(polys, edge, **kwargs)
+        p, enriched = _tripolygon_sharp_lower(polys, edge, **kwargs)
     else:
         # sharp upper edge
-        p = _tripolygon_sharp_upper(polys, edge, **kwargs)
+        p, enriched = _tripolygon_sharp_upper(polys, edge, **kwargs)
 
-    return p
+    if not return_poly:
+        return p
+
+    if single_input:
+        return p, enriched[0]
+    return p, enriched
 
 
 def _tripolygon_both_rounded(polys, edge, **kwargs):
@@ -839,7 +850,8 @@ def _tripolygon_both_rounded(polys, edge, **kwargs):
         p = p + part
 
     p = p.clean()
-    return p
+    # enriched poly = upper plate's output (MATLAB tripolygon.m L25)
+    return p, polys_out
 
 
 def _tripolygon_sharp_lower(polys, edge, **kwargs):
@@ -879,7 +891,8 @@ def _tripolygon_sharp_lower(polys, edge, **kwargs):
         p = p + part
 
     p = p.clean()
-    return p
+    # enriched poly = lower ribbon boundary (MATLAB tripolygon.m L36)
+    return p, lo_polys
 
 
 def _tripolygon_sharp_upper(polys, edge, **kwargs):
@@ -919,4 +932,5 @@ def _tripolygon_sharp_upper(polys, edge, **kwargs):
         p = p + part
 
     p = p.clean()
-    return p
+    # enriched poly = upper ribbon boundary (MATLAB tripolygon.m L47)
+    return p, up_polys
