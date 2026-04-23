@@ -229,10 +229,14 @@ class Polygon3(object):
                     and len(row) > 0:
                 poly_smooth = poly_i.copy().midpoints(mode = 'same')
                 p.verts2[row, 0:2] = poly_smooth.pos[col, :]
+                poly_for_dist = poly_smooth
+            else:
+                poly_for_dist = poly_i
 
             # MATLAB L84-89: distance to polygon, update dmin, apply vshift
-            # at boundary vertices whose distance improved.
-            d, _ = o.poly.dist(p.verts2[:, :2])
+            # at boundary vertices whose distance improved. MATLAB plate.m
+            # L85 uses the smoothed polygon for dist, not the original.
+            d, _ = poly_for_dist.dist(p.verts2[:, :2])
             d = np.asarray(d).ravel()
             ind = d < dmin
             dmin[ind] = d[ind]
