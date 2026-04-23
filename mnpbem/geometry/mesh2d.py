@@ -760,7 +760,10 @@ def _mytsearch(x: np.ndarray,
     ni = len(xi)
     result = np.full(ni, -1, dtype = int)
 
-    # check initial guess if provided
+    # check initial guess if provided (MATLAB mytsearch.m L48 treats `i>0`
+    # as valid. Python is 0-indexed; the caller should pass -1 for "no
+    # initial guess". We still accept 0 as a valid guess, matching MATLAB's
+    # 1-indexed value 1 == Python's 0-indexed value 0.)
     if i_guess is not None and len(i_guess) == ni:
         valid_guess = (i_guess >= 0) & (i_guess < t.shape[0])
         if np.any(valid_guess):
@@ -1298,7 +1301,9 @@ def _boundarynodes(ph: np.ndarray,
     he = 0.5 * (h[e[:, 0]] + h[e[:, 1]])
 
     delta = 0.0
-    i_search = np.zeros(p.shape[0], dtype = int)
+    # MATLAB meshfaces.boundarynodes L251 `i = zeros(size(p,1),1)` — 0 is
+    # "no guess" in 1-indexed MATLAB. Use -1 for 0-indexed Python.
+    i_search = np.full(p.shape[0], -1, dtype = int)
     for _iter in range(50):
         delta_old = delta
 
@@ -1368,7 +1373,12 @@ def meshpoly(node: np.ndarray,
     p_combined[p.shape[0]:] = qtree['p'][internal]
     p = p_combined
 
-    tndx = np.zeros(p.shape[0], dtype = int)
+    # MATLAB meshpoly.m L70: `tndx = zeros(...,1)` where 0 is MATLAB's
+    # "no guess" sentinel. In Python 0-indexed, 0 is a real triangle;
+    # use -1 instead so _mytsearch's `valid_guess = (i_guess >= 0)` skips
+    # the initial-guess path and falls back to the inpolygon-loop (which
+    # matches MATLAB's `i>0` check that always fails at initialisation).
+    tndx = np.full(p.shape[0], -1, dtype = int)
 
     for iteration in range(options.get('maxit', 20)):
         # ensure unique node list (MATLAB: exact unique, no rounding)
