@@ -24,6 +24,7 @@ from scipy.integrate import solve_ivp, quad_vec
 
 from ..utils.matlab_compat import (
     mcos, msin, msqrt, mlinspace, mlog10, mtanh, matan,
+    m_exp_c, m_sqrt_c,
 )
 
 
@@ -239,7 +240,7 @@ class LayerStructure(object):
             eps_vals[i], k_vals[i] = eps_func(enei)
 
         # z-component of wavevector
-        kz = np.sqrt(k_vals ** 2 - kpar ** 2)
+        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2)
         kz = kz * np.sign(np.imag(kz + 1e-10j))
 
         # Dielectric functions and wavenumbers
@@ -303,8 +304,8 @@ class LayerStructure(object):
 
         abs_z1 = np.abs(z1[:, np.newaxis] - self.z) if z1.ndim == 1 else np.abs(z1 - self.z)
         abs_z2 = np.abs(z2[:, np.newaxis] - self.z) if z2.ndim == 1 else np.abs(z2 - self.z)
-        g1 = np.exp(1j * kz[ind1 - 1][:, np.newaxis] * abs_z1)
-        g2 = np.exp(1j * kz[ind2 - 1][:, np.newaxis] * abs_z2)
+        g1 = m_exp_c(1j * kz[ind1 - 1][:, np.newaxis] * abs_z1)
+        g2 = m_exp_c(1j * kz[ind2 - 1][:, np.newaxis] * abs_z2)
         # Derivative of Green function wrt z-value
         sign_z1 = np.sign(z1[:, np.newaxis] - self.z) if z1.ndim == 1 else np.sign(z1 - self.z)
         g1z = g1 * sign_z1
@@ -339,7 +340,7 @@ class LayerStructure(object):
             _, k_vals[i] = eps_func(enei)
 
         # Perpendicular component of wavevector
-        kz = np.sqrt(k_vals ** 2 - kpar ** 2) + 1e-10j
+        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2) + 1e-10j
         kz = kz * np.sign(np.imag(kz))
 
         ind1 = np.atleast_1d(pos['ind1'])
@@ -366,8 +367,8 @@ class LayerStructure(object):
 
         exc = np.zeros(siz, dtype = complex)
         for j in range(n_ind2):
-            exc[2 * ind2[j] - 1, j] += fac[j] * np.exp(1j * k2z[j] * dn2[j])
-            exc[2 * ind2[j] - 2, j] += fac[j] * np.exp(1j * k2z[j] * up2[j])
+            exc[2 * ind2[j] - 1, j] += fac[j] * m_exp_c(1j * k2z[j] * dn2[j])
+            exc[2 * ind2[j] - 2, j] += fac[j] * m_exp_c(1j * k2z[j] * up2[j])
 
         # Remove layers at infinity
         exc = exc[1:-1, :]
@@ -402,10 +403,10 @@ class LayerStructure(object):
         h2_p[:-1, :] = y[0::2, :]
         h2_p[-1, :] = 0
 
-        r['p'] = self._layer_multiply(pos, h2_p, np.exp(1j * k1z * dn1), ind1) + \
-                 self._layer_multiply(pos, h1_p, np.exp(1j * k1z * up1), ind1)
-        rz['p'] = self._layer_multiply(pos, h2_p, np.exp(1j * k1z * dn1), ind1) - \
-                  self._layer_multiply(pos, h1_p, np.exp(1j * k1z * up1), ind1)
+        r['p'] = self._layer_multiply(pos, h2_p, m_exp_c(1j * k1z * dn1), ind1) + \
+                 self._layer_multiply(pos, h1_p, m_exp_c(1j * k1z * up1), ind1)
+        rz['p'] = self._layer_multiply(pos, h2_p, m_exp_c(1j * k1z * dn1), ind1) - \
+                  self._layer_multiply(pos, h1_p, m_exp_c(1j * k1z * up1), ind1)
 
         # Surface charge
         exc2 = np.zeros((2 * exc.shape[0], exc.shape[1]), dtype = complex)
@@ -421,10 +422,10 @@ class LayerStructure(object):
         sig2[:-1, :] = y[0::4, :]
         sig2[-1, :] = 0
 
-        r['ss'] = self._layer_multiply(pos, sig2, np.exp(1j * k1z * dn1), ind1) + \
-                  self._layer_multiply(pos, sig1, np.exp(1j * k1z * up1), ind1)
-        rz['ss'] = self._layer_multiply(pos, sig2, np.exp(1j * k1z * dn1), ind1) - \
-                   self._layer_multiply(pos, sig1, np.exp(1j * k1z * up1), ind1)
+        r['ss'] = self._layer_multiply(pos, sig2, m_exp_c(1j * k1z * dn1), ind1) + \
+                  self._layer_multiply(pos, sig1, m_exp_c(1j * k1z * up1), ind1)
+        rz['ss'] = self._layer_multiply(pos, sig2, m_exp_c(1j * k1z * dn1), ind1) - \
+                   self._layer_multiply(pos, sig1, m_exp_c(1j * k1z * up1), ind1)
 
         h1_s = np.empty((n_z + 1, y.shape[1]), dtype = complex)
         h1_s[0, :] = 0
@@ -434,10 +435,10 @@ class LayerStructure(object):
         h2_s[:-1, :] = y[1::4, :]
         h2_s[-1, :] = 0
 
-        r['hs'] = self._layer_multiply(pos, h2_s, np.exp(1j * k1z * dn1), ind1) + \
-                  self._layer_multiply(pos, h1_s, np.exp(1j * k1z * up1), ind1)
-        rz['hs'] = self._layer_multiply(pos, h2_s, np.exp(1j * k1z * dn1), ind1) - \
-                   self._layer_multiply(pos, h1_s, np.exp(1j * k1z * up1), ind1)
+        r['hs'] = self._layer_multiply(pos, h2_s, m_exp_c(1j * k1z * dn1), ind1) + \
+                  self._layer_multiply(pos, h1_s, m_exp_c(1j * k1z * up1), ind1)
+        rz['hs'] = self._layer_multiply(pos, h2_s, m_exp_c(1j * k1z * dn1), ind1) - \
+                   self._layer_multiply(pos, h1_s, m_exp_c(1j * k1z * up1), ind1)
 
         # Perpendicular surface current
         exc2 = np.zeros((2 * exc.shape[0], exc.shape[1]), dtype = complex)
@@ -453,10 +454,10 @@ class LayerStructure(object):
         sig2[:-1, :] = y[0::4, :]
         sig2[-1, :] = 0
 
-        r['sh'] = self._layer_multiply(pos, sig2, np.exp(1j * k1z * dn1), ind1) + \
-                  self._layer_multiply(pos, sig1, np.exp(1j * k1z * up1), ind1)
-        rz['sh'] = self._layer_multiply(pos, sig2, np.exp(1j * k1z * dn1), ind1) - \
-                   self._layer_multiply(pos, sig1, np.exp(1j * k1z * up1), ind1)
+        r['sh'] = self._layer_multiply(pos, sig2, m_exp_c(1j * k1z * dn1), ind1) + \
+                  self._layer_multiply(pos, sig1, m_exp_c(1j * k1z * up1), ind1)
+        rz['sh'] = self._layer_multiply(pos, sig2, m_exp_c(1j * k1z * dn1), ind1) - \
+                   self._layer_multiply(pos, sig1, m_exp_c(1j * k1z * up1), ind1)
 
         h1_h = np.empty((n_z + 1, y.shape[1]), dtype = complex)
         h1_h[0, :] = 0
@@ -466,10 +467,10 @@ class LayerStructure(object):
         h2_h[:-1, :] = y[1::4, :]
         h2_h[-1, :] = 0
 
-        r['hh'] = self._layer_multiply(pos, h2_h, np.exp(1j * k1z * dn1), ind1) + \
-                  self._layer_multiply(pos, h1_h, np.exp(1j * k1z * up1), ind1)
-        rz['hh'] = self._layer_multiply(pos, h2_h, np.exp(1j * k1z * dn1), ind1) - \
-                   self._layer_multiply(pos, h1_h, np.exp(1j * k1z * up1), ind1)
+        r['hh'] = self._layer_multiply(pos, h2_h, m_exp_c(1j * k1z * dn1), ind1) + \
+                  self._layer_multiply(pos, h1_h, m_exp_c(1j * k1z * up1), ind1)
+        rz['hh'] = self._layer_multiply(pos, h2_h, m_exp_c(1j * k1z * dn1), ind1) - \
+                   self._layer_multiply(pos, h1_h, m_exp_c(1j * k1z * up1), ind1)
 
         return r, rz
 
@@ -501,7 +502,7 @@ class LayerStructure(object):
             _, k_vals[i] = eps_func(enei)
 
         # Perpendicular component of wavevector
-        kz = np.sqrt(k_vals ** 2 - kpar ** 2) + 1e-10j
+        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2) + 1e-10j
         kz = kz * np.sign(np.imag(kz))
 
         # Perpendicular components
@@ -565,11 +566,11 @@ class LayerStructure(object):
                 post = {'r': 0, 'z1': z1_val, 'ind1': ind1, 'z2': z2_val, 'ind2': ind2}
 
             kpar_vec = k_vals[post['ind2'] - 1] * dir[i, 0:2]
-            kpar_mag = np.sqrt(np.sum(kpar_vec ** 2))
+            kpar_mag = m_sqrt_c(np.sum(kpar_vec ** 2))
 
-            kzr = np.sqrt(k_vals[posr['ind1'] - 1] ** 2 - kpar_mag ** 2)
+            kzr = m_sqrt_c(k_vals[posr['ind1'] - 1] ** 2 - kpar_mag ** 2)
             kzr = kzr * np.sign(np.imag(kzr + 1e-10j))
-            kzt = np.sqrt(k_vals[post['ind1'] - 1] ** 2 - kpar_mag ** 2)
+            kzt = m_sqrt_c(k_vals[post['ind1'] - 1] ** 2 - kpar_mag ** 2)
             kzt = kzt * np.sign(np.imag(kzt + 1e-10j))
 
             ki[i, :] = np.array([kpar_vec[0], kpar_vec[1],
@@ -602,8 +603,8 @@ class LayerStructure(object):
             et[i, :] = et[i, :] - kt[i, :] / k0 * t_sh * pol[i, 2]
 
             # Phase factors
-            er[i, :] *= np.exp(-1j * kr[i, 2] * posr['z2'] - 1j * kr[i, 2] * posr['z1'])
-            et[i, :] *= np.exp(-1j * kr[i, 2] * post['z2'] - 1j * kt[i, 2] * post['z1'])
+            er[i, :] *= m_exp_c(-1j * kr[i, 2] * posr['z2'] - 1j * kr[i, 2] * posr['z1'])
+            et[i, :] *= m_exp_c(-1j * kr[i, 2] * post['z2'] - 1j * kt[i, 2] * post['z1'])
 
         e = {'i': ei, 'r': er, 't': et}
         k = {'i': ki, 'r': kr, 't': kt}
@@ -770,7 +771,7 @@ class LayerStructure(object):
         k_vals = ctx['k_vals']
         k0 = ctx['k0']
 
-        kz = np.sqrt(k_vals ** 2 - kpar ** 2)
+        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2)
         kz = kz * np.sign(np.imag(kz + 1e-10j))
 
         eps1 = eps_vals[0]
@@ -820,11 +821,11 @@ class LayerStructure(object):
         kz_ind2 = kz[ind2 - 1]
         # Propagation factors
         if abs_z1.ndim == 2:
-            g1 = np.exp(1j * kz_ind1[:, np.newaxis] * abs_z1)
-            g2 = np.exp(1j * kz_ind2[:, np.newaxis] * abs_z2)
+            g1 = m_exp_c(1j * kz_ind1[:, np.newaxis] * abs_z1)
+            g2 = m_exp_c(1j * kz_ind2[:, np.newaxis] * abs_z2)
         else:
-            g1 = np.exp(1j * kz_ind1 * abs_z1)
-            g2 = np.exp(1j * kz_ind2 * abs_z2)
+            g1 = m_exp_c(1j * kz_ind1 * abs_z1)
+            g2 = m_exp_c(1j * kz_ind2 * abs_z2)
         g1z = g1 * sign_z1
 
         r_out: Dict[str, np.ndarray] = {}
@@ -866,7 +867,7 @@ class LayerStructure(object):
             eps_vals[i], k_vals[i] = eps_func(enei)
 
         # kz shape (M, neps)
-        kz = np.sqrt(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2)
+        kz = m_sqrt_c(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2)
         kz = kz * np.sign(np.imag(kz + 1e-10j))
 
         n = len(self.z)
@@ -874,7 +875,7 @@ class LayerStructure(object):
 
         if n > 1:
             dz = np.abs(np.diff(self.z))  # (n-1,)
-            G = 2j * np.pi / kz[:, 1:-1] * np.exp(1j * kz[:, 1:-1] * dz[np.newaxis, :])  # (M, n-1)
+            G = 2j * np.pi / kz[:, 1:-1] * m_exp_c(1j * kz[:, 1:-1] * dz[np.newaxis, :])  # (M, n-1)
         else:
             G = np.zeros((M, 0), dtype = complex)
 
@@ -995,7 +996,7 @@ class LayerStructure(object):
         kpar_arr = np.asarray(kpar_arr)
         M = kpar_arr.size
 
-        kz = np.sqrt(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2) + 1e-10j
+        kz = m_sqrt_c(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2) + 1e-10j
         kz = kz * np.sign(np.imag(kz))  # (M, neps)
 
         k1z = kz[:, ind1 - 1]  # (M, n_pos)
@@ -1015,8 +1016,8 @@ class LayerStructure(object):
         exc = np.zeros((M, 2 * n_z + 2, n_pos), dtype = complex)
         fac = 2j * np.pi / k2z  # (M, n_pos)
         pos_idx = np.arange(n_pos)
-        exp_dn2 = np.exp(1j * k2z * dn2[np.newaxis, :])
-        exp_up2 = np.exp(1j * k2z * up2[np.newaxis, :])
+        exp_dn2 = m_exp_c(1j * k2z * dn2[np.newaxis, :])
+        exp_up2 = m_exp_c(1j * k2z * up2[np.newaxis, :])
         for j in range(n_pos):
             exc[:, 2 * ind2[j] - 1, j] += fac[:, j] * exp_dn2[:, j]
             exc[:, 2 * ind2[j] - 2, j] += fac[:, j] * exp_up2[:, j]
@@ -1024,8 +1025,8 @@ class LayerStructure(object):
 
         par, perp = self._bemsolve_batch(enei, kpar_arr)  # par (M, 2n, 2n), perp (M, 4n, 4n)
 
-        exp_dn1 = np.exp(1j * k1z * dn1[np.newaxis, :])  # (M, n_pos)
-        exp_up1 = np.exp(1j * k1z * up1[np.newaxis, :])
+        exp_dn1 = m_exp_c(1j * k1z * dn1[np.newaxis, :])  # (M, n_pos)
+        exp_up1 = m_exp_c(1j * k1z * up1[np.newaxis, :])
 
         # Helper: evaluate h2[ind1-1, pos] + h1[ind1-1, pos] where h1/h2 are (M, n_z+1, n_pos)
         # and select the row per-position using ind1.
@@ -1107,7 +1108,7 @@ class LayerStructure(object):
         M = kpar_arr.size
 
         # kz shape (M, 2)
-        kz = np.sqrt(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2)
+        kz = m_sqrt_c(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2)
         kz = kz * np.sign(np.imag(kz + 1e-10j))
 
         k1z = kz[:, 0]
@@ -1177,8 +1178,8 @@ class LayerStructure(object):
             abs_z2f = abs_z2
             sign_z1f = sign_z1
 
-        g1 = np.exp(1j * kz_i1 * abs_z1f)  # (M, n1)
-        g2 = np.exp(1j * kz_i2 * abs_z2f)  # (M, n2)
+        g1 = m_exp_c(1j * kz_i1 * abs_z1f)  # (M, n1)
+        g2 = m_exp_c(1j * kz_i2 * abs_z2f)  # (M, n2)
         g1z = g1 * sign_z1f
 
         refl_out: Dict[str, np.ndarray] = {}
@@ -1446,7 +1447,7 @@ class LayerStructure(object):
             pos = ctx['pos']
             refl, reflz = self.reflection(ctx['enei'], kpar, pos)
             k_vals = ctx['k_vals']
-            kz = np.sqrt(k_vals ** 2 - kpar ** 2)
+            kz = m_sqrt_c(k_vals ** 2 - kpar ** 2)
             kz = kz * np.sign(np.imag(kz + 1e-10j))
 
         r_flat = ctx['r_flat']
@@ -1502,9 +1503,9 @@ class LayerStructure(object):
             refl1, refl1z = self.reflection(ctx['enei'], kpar1, pos)
             refl2, refl2z = self.reflection(ctx['enei'], kpar2, pos)
             k_vals = ctx['k_vals']
-            kz1 = np.sqrt(k_vals ** 2 - kpar1 ** 2)
+            kz1 = m_sqrt_c(k_vals ** 2 - kpar1 ** 2)
             kz1 = kz1 * np.sign(np.imag(kz1 + 1e-10j))
-            kz2 = np.sqrt(k_vals ** 2 - kpar2 ** 2)
+            kz2 = m_sqrt_c(k_vals ** 2 - kpar2 ** 2)
             kz2 = kz2 * np.sign(np.imag(kz2 + 1e-10j))
 
         kz1_full = kz1[ctx['kz_expand_idx']]
@@ -1589,7 +1590,7 @@ class LayerStructure(object):
         for i, eps_func in enumerate(self.eps):
             eps_vals[i], k_vals[i] = eps_func(enei)
 
-        kz = np.sqrt(k_vals ** 2 - kpar ** 2)
+        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2)
         kz = kz * np.sign(np.imag(kz + 1e-10j))
 
         n = len(self.z)
@@ -1597,7 +1598,7 @@ class LayerStructure(object):
 
         # Interlayer Green function
         if n > 1:
-            G = 2j * np.pi / kz[1:-1] * np.exp(1j * kz[1:-1] * np.abs(np.diff(self.z)))
+            G = 2j * np.pi / kz[1:-1] * m_exp_c(1j * kz[1:-1] * np.abs(np.diff(self.z)))
         else:
             G = np.array([], dtype = complex)
 
