@@ -22,9 +22,31 @@ class GreenTabLayer(object):
             # Handle list of tabs (from tabspace with particle argument)
             if isinstance(tab, list):
                 tab = self._merge_tabs(tab)
-            self.r = tab.get('r', None)
-            self.z1 = tab.get('z1', None)
-            self.z2 = tab.get('z2', None)
+            r_in = tab.get('r', None)
+            z1_in = tab.get('z1', None)
+            z2_in = tab.get('z2', None)
+            # MATLAB @greentablayer/private/init.m L12-L15:
+            #   r  = unique(sort(max(layer.rmin, tab.r)))
+            #   z1 = unique(sort(round(layer, tab.z1)))
+            #   z2 = unique(sort(round(layer, tab.z2)))
+            if r_in is not None:
+                r_arr = np.atleast_1d(np.asarray(r_in, dtype=float)).ravel()
+                r_arr = np.maximum(layer.rmin, r_arr)
+                self.r = np.unique(np.sort(r_arr))
+            else:
+                self.r = None
+            if z1_in is not None:
+                z1_arr = np.atleast_1d(np.asarray(z1_in, dtype=float)).ravel()
+                z1_rounded, = layer.round_z(z1_arr)
+                self.z1 = np.unique(np.sort(np.asarray(z1_rounded).ravel()))
+            else:
+                self.z1 = None
+            if z2_in is not None:
+                z2_arr = np.atleast_1d(np.asarray(z2_in, dtype=float)).ravel()
+                z2_rounded, = layer.round_z(z2_arr)
+                self.z2 = np.unique(np.sort(np.asarray(z2_rounded).ravel()))
+            else:
+                self.z2 = None
         else:
             self.r = None
             self.z1 = None
