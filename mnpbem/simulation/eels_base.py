@@ -210,20 +210,6 @@ class EELSBase(object):
             neg_nvec = p.nvec[face_idx, 2] < 0
             mat[neg_nvec, 0], mat[neg_nvec, 1] = mat[neg_nvec, 1].copy(), mat[neg_nvec, 0].copy()
 
-            # Deduplicate near-identical crossings that arise when an electron
-            # beam grazes a mesh vertex shared by multiple faces. Keep only one
-            # representative per cluster; this is essential for convex meshes
-            # such as trisphere where the north pole vertex is shared by many
-            # triangles.
-            if len(zz) > 2:
-                dedup_tol = max(1e-2 * float(rad), 1e-3)
-                keep = np.ones(len(zz), dtype = bool)
-                for k in range(1, len(zz)):
-                    if keep[k] and (zz[k] - zz[k - 1]) < dedup_tol:
-                        keep[k] = False
-                zz = zz[keep]
-                mat = mat[keep, :]
-
             if len(zz) > 1:
                 for k in range(len(zz) - 1):
                     zcut_list.append([zz[k], zz[k + 1]])

@@ -449,9 +449,13 @@ class EELSRet(EELSBase):
 
         # MATLAB: bulkloss.m lines 30-33
         # Bulk losses [Eq. (18)]
+        # MATLAB's log of negative real returns +iπ; numpy gives -iπ for
+        # values carrying a -0j imaginary part (e.g. positive/negative
+        # division). Force MATLAB's branch by flipping -0j to +0j imag.
+        ratio = (qc ** 2 - k_arr ** 2) / (q ** 2 - k_arr ** 2)
+        ratio = np.where(ratio.imag == 0, ratio.real + 0.0j, ratio)
         pbulk = (FINE ** 2 / (BOHR * HARTREE * np.pi * self.vel ** 2)
-                 * np.imag((self.vel ** 2 - 1.0 / eps_arr)
-                           * np.log((qc ** 2 - k_arr ** 2) / (q ** 2 - k_arr ** 2)))
+                 * np.imag((self.vel ** 2 - 1.0 / eps_arr) * np.log(ratio))
                  @ self.path())
 
         return pbulk
