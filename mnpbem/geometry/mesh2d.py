@@ -1042,9 +1042,9 @@ def quadtree(node: np.ndarray,
         if not changed:
             break
 
-    # remove duplicate nodes
-    p_rounded = np.round(p_arr * 1e10) / 1e10
-    _, unique_idx, remap = np.unique(p_rounded, axis = 0, return_index = True, return_inverse = True)
+    # remove duplicate nodes (MATLAB quadtree.m L279: unique(p,'rows') — no
+    # rounding)
+    _, unique_idx, remap = np.unique(p_arr, axis = 0, return_index = True, return_inverse = True)
     p_arr = p_arr[unique_idx]
     h_arr_np = np.array(h_arr)[unique_idx]
 
@@ -1587,8 +1587,9 @@ def _checkgeometry(node: np.ndarray,
     if face is None:
         face = [np.arange(edge.shape[0])]
 
-    # remove duplicate nodes
-    _, unique_idx, remap = np.unique(np.round(node * 1e10) / 1e10, axis = 0, return_index = True, return_inverse = True)
+    # remove duplicate nodes (MATLAB checkgeometry.m L85: unique(node,'rows')
+    # — no rounding)
+    _, unique_idx, remap = np.unique(node, axis = 0, return_index = True, return_inverse = True)
     if len(unique_idx) < nnode:
         node = node[unique_idx]
         edge = remap[edge]
