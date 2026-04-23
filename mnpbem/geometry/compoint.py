@@ -5,7 +5,7 @@ import copy
 import numpy as np
 from typing import Optional, List, Tuple, Any, Union
 
-from ..utils.matlab_compat import matan2
+from ..utils.matlab_compat import matan2, msqrt, macos
 
 
 class Point(object):
@@ -66,16 +66,16 @@ class Point(object):
         if polfun is not None:
             x, y, z = self.pos[:, 0], self.pos[:, 1], self.pos[:, 2]
             phi = matan2(y, x)
-            r = np.sqrt(x ** 2 + y ** 2)
+            r = msqrt(x ** 2 + y ** 2)
             mask = polfun(phi, r, z)
             mask = np.asarray(mask, dtype = bool)
             return Point(self.pos[mask], self.nvec[mask], self.area[mask])
 
         if sphfun is not None:
             x, y, z = self.pos[:, 0], self.pos[:, 1], self.pos[:, 2]
-            r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+            r = msqrt(x ** 2 + y ** 2 + z ** 2)
             phi = matan2(y, x)
-            theta = np.arccos(np.clip(z / np.maximum(r, 1e-30), -1, 1))
+            theta = macos(np.clip(z / np.maximum(r, 1e-30), -1, 1))
             mask = sphfun(phi, theta, r)
             mask = np.asarray(mask, dtype = bool)
             return Point(self.pos[mask], self.nvec[mask], self.area[mask])
@@ -255,7 +255,7 @@ class ComPoint(object):
             face_pos = particle.pos  # (nfaces, 3)
             for j in range(npts):
                 diff = face_pos - pos[j]
-                dists = np.sqrt(np.sum(diff ** 2, axis = 1))
+                dists = msqrt(np.sum(diff ** 2, axis = 1))
                 imin = np.argmin(dists)
                 r = dists[imin]
 

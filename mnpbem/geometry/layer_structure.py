@@ -22,6 +22,10 @@ from scipy.special import jv as besselj
 from scipy.special import hankel1
 from scipy.integrate import solve_ivp, quad_vec
 
+from ..utils.matlab_compat import (
+    mcos, msin, msqrt, mlinspace, mlog10, mtanh, matan,
+)
+
 
 class LayerStructure(object):
     """
@@ -1342,7 +1346,7 @@ class LayerStructure(object):
         # Composite Gauss-Legendre nodes/weights over [a, b] split into n_panels
         # equal sub-intervals, each with `order`-point GL rule.
         nodes_ref, weights_ref = LayerStructure._gl_nodes_weights(order)
-        edges = np.linspace(a, b, n_panels + 1)
+        edges = mlinspace(a, b, n_panels + 1)
         xs_all = np.empty(n_panels * order)
         ws_all = np.empty(n_panels * order)
         for i in range(n_panels):
@@ -1367,8 +1371,8 @@ class LayerStructure(object):
         # semi-ellipse integrand is smooth; 4 panels x 40 order = 160 pts suffice.
         xs, ws = self._gl_panels(0.0, np.pi, 4, 40)
 
-        kr_arr = k1max * (1 - np.cos(xs) - 1j * semi * np.sin(xs))
-        dkr_arr = k1max * (np.sin(xs) - 1j * semi * np.cos(xs))
+        kr_arr = k1max * (1 - mcos(xs) - 1j * semi * msin(xs))
+        dkr_arr = k1max * (msin(xs) - 1j * semi * mcos(xs))
 
         y_batch = self._intbessel_batch(kr_arr, ctx, ind_full)
         weighted = (ws * dkr_arr)[:, np.newaxis] * y_batch
@@ -1891,7 +1895,7 @@ class LayerStructure(object):
             pos2: np.ndarray) -> Tuple[list, list, list]:
         # Radial distance between points
         diff_xy = pos1[:, 0:2][:, np.newaxis, :] - pos2[:, 0:2][np.newaxis, :, :]
-        r = np.sqrt(np.sum(diff_xy ** 2, axis = 2))
+        r = msqrt(np.sum(diff_xy ** 2, axis = 2))
 
         z1 = pos1[:, 2]
         ind1, _ = self.indlayer(z1)
@@ -1922,9 +1926,9 @@ class LayerStructure(object):
             key: str,
             x0: float = 0.0) -> np.ndarray:
         if key == 'lin':
-            return np.linspace(xmin, xmax, n)
+            return mlinspace(xmin, xmax, n)
         else:
-            return x0 + np.logspace(np.log10(xmin - x0), np.log10(xmax - x0), n)
+            return x0 + np.logspace(mlog10(xmin - x0), mlog10(xmax - x0), n)
 
     def _zlinlogspace(self,
             zmin: float,
@@ -1932,7 +1936,7 @@ class LayerStructure(object):
             n: int,
             key: str) -> np.ndarray:
         if key == 'lin':
-            return np.linspace(zmin, zmax, n)
+            return mlinspace(zmin, zmax, n)
 
         medium, _ = self.indlayer(np.array([zmin]))
         medium = int(np.atleast_1d(medium).ravel()[0])
@@ -1940,13 +1944,13 @@ class LayerStructure(object):
         if medium == 1:
             # Upper layer
             return self.z[0] + np.logspace(
-                np.log10(zmin - self.z[0]),
-                np.log10(zmax - self.z[0]), n)
+                mlog10(zmin - self.z[0]),
+                mlog10(zmax - self.z[0]), n)
         elif medium == len(self.z) + 1:
             # Lower layer
             z = self.z[-1] - np.logspace(
-                np.log10(self.z[-1] - zmax),
-                np.log10(self.z[-1] - zmin), n)
+                mlog10(self.z[-1] - zmax),
+                mlog10(self.z[-1] - zmin), n)
             return z[::-1]
         else:
             # Intermediate layer
@@ -1954,7 +1958,7 @@ class LayerStructure(object):
             zlo = self.z[medium - 1]
             zmin_scaled = 2 * (zmin - zlo) / (zup - zlo) - 1
             zmax_scaled = 2 * (zmax - zlo) / (zup - zlo) - 1
-            z_scaled = np.tanh(np.linspace(np.arctanh(zmin_scaled), np.arctanh(zmax_scaled), n))
+            z_scaled = mtanh(mlinspace(np.arctanh(zmin_scaled), np.arctanh(zmax_scaled), n))
             return 0.5 * (zup + zlo) + 0.5 * z_scaled * (zup - zlo)
 
     @staticmethod

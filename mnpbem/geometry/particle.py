@@ -8,7 +8,7 @@ import numpy as np
 from scipy.linalg import expm
 from scipy.sparse import csr_matrix, diags
 from ..utils.quadface import QuadFace as QuadFaceNew
-from ..utils.matlab_compat import mcos, msin, matan2, msqrt
+from ..utils.matlab_compat import mcos, msin, matan2, msqrt, masin, macos, mfloor, mceil, mround
 from ..geometry.shape_functions import TriangleShape, QuadShape
 
 
@@ -140,8 +140,8 @@ class QuadFace(object):
 
         # Transform to unit triangle coordinates
         # MATLAB: (1 - sqrt(3)*x - y)/3, (1 + sqrt(3)*x - y)/3
-        x_tri = (1 - np.sqrt(3) * x - y) / 3
-        y_tri = (1 + np.sqrt(3) * x - y) / 3
+        x_tri = (1 - msqrt(3) * x - y) / 3
+        y_tri = (1 + msqrt(3) * x - y) / 3
 
         # Integration weights
         w = np.outer(w1, w2).flatten()  # Tensor product of 1D weights
@@ -2016,8 +2016,8 @@ class Particle(object):
                 else:
                     # Odd number - interpolate
                     opp = k + n_neigh / 2
-                    idx1 = int(np.floor(opp)) % n_neigh
-                    idx2 = int(np.ceil(opp)) % n_neigh
+                    idx1 = int(mfloor(opp)) % n_neigh
+                    idx2 = int(mceil(opp)) % n_neigh
                     Pnop[k] = 0.5 * (self.verts[Pneig_idx[idx1]] +
                                      self.verts[Pneig_idx[idx2]])
 
@@ -2030,7 +2030,7 @@ class Particle(object):
 
                 # Triangle area using Heron's formula
                 s = (Ea + Eb + Ec) / 2
-                h = (2 / Ea) * np.sqrt(s * (s - Ea) * (s - Eb) * (s - Ec)) + 1e-14
+                h = (2 / Ea) * msqrt(s * (s - Ea) * (s - Eb) * (s - Ec)) + 1e-14
                 x = (Ea**2 - Eb**2 + Ec**2) / (2 * Ea)
 
                 # 2D triangle tangent
@@ -2276,7 +2276,7 @@ class Particle(object):
                     if len_j > 1e-10:
                         edge_j = edge_j / len_j
                         # Angle with normal (for mean curvature)
-                        angle = np.arcsin(np.clip(np.dot(edge_j, n), -1, 1))
+                        angle = masin(np.clip(np.dot(edge_j, n), -1, 1))
                         H += angle * len_j
 
                         # Angle defect for Gaussian curvature
@@ -2288,9 +2288,9 @@ class Particle(object):
                             len_e2 = np.linalg.norm(e2)
                             if len_e1 > 1e-10 and len_e2 > 1e-10:
                                 cos_angle = np.dot(e1, e2) / (len_e1 * len_e2)
-                                angle_at_vertex = np.arccos(np.clip(cos_angle, -1, 1))
+                                angle_at_vertex = macos(np.clip(cos_angle, -1, 1))
                                 K -= angle_at_vertex
-                                total_area += 0.5 * len_e1 * len_e2 * np.sin(angle_at_vertex)
+                                total_area += 0.5 * len_e1 * len_e2 * msin(angle_at_vertex)
 
                 # Normalize
                 if total_area > 1e-10:
@@ -2302,8 +2302,8 @@ class Particle(object):
                 K_val = gauss_curv[i]
                 discriminant = H_val**2 - K_val
                 if discriminant >= 0:
-                    lambda1[i] = H_val + np.sqrt(discriminant)
-                    lambda2[i] = H_val - np.sqrt(discriminant)
+                    lambda1[i] = H_val + msqrt(discriminant)
+                    lambda2[i] = H_val - msqrt(discriminant)
                 else:
                     lambda1[i] = H_val
                     lambda2[i] = H_val
@@ -2340,7 +2340,7 @@ class Particle(object):
             Cleaned particle
         """
         # Round vertices to avoid floating point issues
-        verts_rounded = np.round(self.verts, 8)
+        verts_rounded = mround(self.verts, 8)
 
         # Find unique vertices
         unique_verts, inv_idx = np.unique(verts_rounded, axis=0, return_inverse=True)

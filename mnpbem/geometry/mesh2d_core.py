@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 import numpy as np
 from scipy.sparse import csr_matrix
 
+from ..utils.matlab_compat import msqrt, mround
 from .mesh2d_utils import (
     mydelaunayn, inpoly, dist2poly, triarea, quality, circumcircle,
     fixmesh, findedge, mytsearch, tinterp, checkgeometry,
@@ -32,7 +33,7 @@ def _longest(p: np.ndarray,
     d1 = np.sum((p[t[:, 1]] - p[t[:, 0]]) ** 2, axis = 1)
     d2 = np.sum((p[t[:, 2]] - p[t[:, 1]]) ** 2, axis = 1)
     d3 = np.sum((p[t[:, 0]] - p[t[:, 2]]) ** 2, axis = 1)
-    return np.sqrt(np.maximum(np.maximum(d1, d2), d3))
+    return msqrt(np.maximum(np.maximum(d1, d2), d3))
 
 
 def _getedges(t: np.ndarray,
@@ -157,7 +158,7 @@ def _boundarynodes(ph: np.ndarray,
     # iterative edge splitting
     for _iter in range(100):
         dxy = p[e[:, 1]] - p[e[:, 0]]
-        L = np.sqrt(np.sum(dxy ** 2, axis = 1))
+        L = msqrt(np.sum(dxy ** 2, axis = 1))
         he = 0.5 * (h[e[:, 0]] + h[e[:, 1]])
 
         ratio = L / np.maximum(he, np.finfo(float).eps)
@@ -217,7 +218,7 @@ def _boundarynodes(ph: np.ndarray,
 
     nnode_orig = node.shape[0]
     dxy = p[e[:, 1]] - p[e[:, 0]]
-    L = np.sqrt(np.sum(dxy ** 2, axis = 1))
+    L = msqrt(np.sum(dxy ** 2, axis = 1))
     he = 0.5 * (h[e[:, 0]] + h[e[:, 1]])
 
     tol = 0.02
@@ -239,7 +240,7 @@ def _boundarynodes(ph: np.ndarray,
 
         # convergence
         dxy = p[e[:, 1]] - p[e[:, 0]]
-        Lnew = np.sqrt(np.sum(dxy ** 2, axis = 1))
+        Lnew = msqrt(np.sum(dxy ** 2, axis = 1))
         delta = np.max(np.abs((Lnew - L) / np.maximum(Lnew, np.finfo(float).eps)))
 
         if delta < tol:
@@ -328,7 +329,7 @@ def meshpoly(node: np.ndarray,
 
         # ensure unique node list
         _, unique_idx, inverse_idx = np.unique(
-            np.round(p * 1e10) / 1e10, axis = 0,
+            mround(p * 1e10) / 1e10, axis = 0,
             return_index = True, return_inverse = True)
         p = p[unique_idx]
         fix = inverse_idx[fix]
@@ -363,7 +364,7 @@ def meshpoly(node: np.ndarray,
         h = 0.5 * (hn[e[:, 0]] + hn[e[:, 1]])
 
         edgev = p[e[:, 0]] - p[e[:, 1]]
-        L = np.maximum(np.sqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
+        L = np.maximum(msqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
 
         # inner smoothing sub-iterations
         # MATLAB: for subiter = 1:(iter-1)
@@ -374,7 +375,7 @@ def meshpoly(node: np.ndarray,
         for _subiter in range(iteration):
 
             # spring based smoothing
-            L0 = h * np.sqrt(np.sum(L ** 2) / np.sum(h ** 2))
+            L0 = h * msqrt(np.sum(L ** 2) / np.sum(h ** 2))
             F = np.maximum(L0 / L - 1.0, -0.1)
             Fxy = edgev * F[:, np.newaxis]
             Fp = S.dot(Fxy)
@@ -383,7 +384,7 @@ def meshpoly(node: np.ndarray,
 
             # measure convergence
             edgev = p[e[:, 0]] - p[e[:, 1]]
-            L0_new = np.maximum(np.sqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
+            L0_new = np.maximum(msqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
             move = np.max(np.abs((L0_new - L) / L))
             L = L0_new
 
@@ -404,7 +405,7 @@ def meshpoly(node: np.ndarray,
         e = _getedges(t, p.shape[0])
 
         edgev = p[e[:, 0]] - p[e[:, 1]]
-        L = np.maximum(np.sqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
+        L = np.maximum(msqrt(np.sum(edgev ** 2, axis = 1)), np.finfo(float).eps)
 
         # size function at nodes
         tndx = mytsearch(qp[:, 0], qp[:, 1], qt, p[:, 0], p[:, 1],
@@ -713,7 +714,7 @@ def smoothmesh(p: np.ndarray,
     unique_edges[bnd_edges.shape[0]:] = internal_unique
 
     L = np.maximum(
-        np.sqrt(np.sum((p[unique_edges[:, 0]] - p[unique_edges[:, 1]]) ** 2, axis = 1)),
+        msqrt(np.sum((p[unique_edges[:, 0]] - p[unique_edges[:, 1]]) ** 2, axis = 1)),
         np.finfo(float).eps)
 
     for _iter in range(maxit):
@@ -726,7 +727,7 @@ def smoothmesh(p: np.ndarray,
         p = pnew
 
         Lnew = np.maximum(
-            np.sqrt(np.sum((p[unique_edges[:, 0]] - p[unique_edges[:, 1]]) ** 2, axis = 1)),
+            msqrt(np.sum((p[unique_edges[:, 0]] - p[unique_edges[:, 1]]) ** 2, axis = 1)),
             np.finfo(float).eps)
         move = np.max(np.abs((Lnew - L) / Lnew))
 

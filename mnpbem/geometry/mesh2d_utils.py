@@ -2,6 +2,8 @@ import numpy as np
 from typing import Tuple, Optional, Dict, Any, List
 from scipy.spatial import Delaunay
 
+from ..utils.matlab_compat import msqrt
+
 
 def mydelaunayn(p: np.ndarray) -> np.ndarray:
 
@@ -355,7 +357,7 @@ def dist2poly(p: np.ndarray,
 
                             dj = (x1 + r * x2mx1 - x_pt) ** 2 + (y1 + r * y2my1 - y_pt) ** 2
                             if (dj < d ** 2) and (dj > tol):
-                                d = np.sqrt(dj)
+                                d = msqrt(dj)
                     else:
                         break
         else:
@@ -387,7 +389,7 @@ def dist2poly(p: np.ndarray,
 
                             dj = (x1 + r * x2mx1 - x_pt) ** 2 + (y1 + r * y2my1 - y_pt) ** 2
                             if (dj < d ** 2) and (dj > tol):
-                                d = np.sqrt(dj)
+                                d = msqrt(dj)
                     else:
                         break
 
