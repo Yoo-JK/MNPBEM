@@ -16,6 +16,7 @@ Reference:
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 from ..greenfun import CompGreenStat, CompStruct
+from ..utils.matlab_compat import msqrt
 
 
 class BEMStat(object):
@@ -310,7 +311,7 @@ class BEMStat(object):
             # MATLAB: nvec = cross(t1, t2)
             #         h = sqrt(dot(nvec, nvec, 2)); nvec = bsxfun(@rdivide, nvec, h)
             nvec = np.cross(t1, t2)
-            h = np.sqrt(np.sum(nvec * nvec, axis=1, keepdims=True))
+            h = msqrt(np.sum(nvec * nvec, axis=1, keepdims=True))
             nvec = nvec / h
 
             # Tangential derivative of PHI

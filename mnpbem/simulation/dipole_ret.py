@@ -13,6 +13,7 @@ Matches MATLAB MNPBEM implementation exactly.
 
 import numpy as np
 from ..greenfun import CompStruct
+from ..utils.matlab_compat import msqrt
 
 
 class DipoleRet(object):
@@ -270,7 +271,7 @@ class DipoleRet(object):
         y = pos1[:, 1:2] - pos2[:, 1].T
         z = pos1[:, 2:3] - pos2[:, 2].T
         # Radius
-        r = np.sqrt(x**2 + y**2 + z**2)
+        r = msqrt(x**2 + y**2 + z**2)
         # Make unit vector
         x, y, z = x / r, y / r, z / r
 
@@ -463,7 +464,7 @@ class DipoleRet(object):
         x = pos1[:, 0:1] - pos2[:, 0].T
         y = pos1[:, 1:2] - pos2[:, 1].T
         z = pos1[:, 2:3] - pos2[:, 2].T
-        r = np.sqrt(x**2 + y**2 + z**2)
+        r = msqrt(x**2 + y**2 + z**2)
         x, y, z = x / r, y / r, z / r
 
         # MATLAB: potential.m lines 83-84

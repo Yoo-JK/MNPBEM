@@ -14,6 +14,7 @@ from scipy.special import kv as besselk
 from typing import Optional, Tuple
 
 from ..misc import pdist2, lglnodes
+from ..utils.matlab_compat import msqrt, mlog
 
 
 class EELSBase(object):
@@ -363,8 +364,8 @@ class EELSBase(object):
         y = pos1[:, 1:2] - pos2[:, 1:2].T
         z = np.tile(pos1[:, 2:3], (1, pos2.shape[0]))
 
-        r = np.sqrt(x ** 2 + y ** 2)
-        rr = np.sqrt(r ** 2 + self.width ** 2)
+        r = msqrt(x ** 2 + y ** 2)
+        rr = msqrt(r ** 2 + self.width ** 2)
 
         # MATLAB: potinfty.m lines 50-62
         phi = np.zeros((p.n, self.impact.shape[0]), dtype = complex)
@@ -400,8 +401,8 @@ class EELSBase(object):
             y_q = pos1_q[:, 1:2] - pos2_q[:, 1:2].T
             z_q = np.tile(pos1_q[:, 2:3], (1, pos2_q.shape[0]))
 
-            r_q = np.sqrt(x_q ** 2 + y_q ** 2)
-            rr_q = np.sqrt(r_q ** 2 + self.width ** 2)
+            r_q = msqrt(x_q ** 2 + y_q ** 2)
+            rr_q = msqrt(r_q ** 2 + self.width ** 2)
 
             K0_q = besselk(0, q * rr_q / gamma)
             K1_q = besselk(1, q * rr_q / gamma)
@@ -473,8 +474,8 @@ class EELSBase(object):
         y = pos1[:, 1:2] - pos2[:, 1:2].T
         z = np.tile(pos1[:, 2:3], (1, pos2.shape[0]))
 
-        r = np.sqrt(x ** 2 + y ** 2)
-        rr = np.sqrt(r ** 2 + self.width ** 2)
+        r = msqrt(x ** 2 + y ** 2)
+        rr = msqrt(r ** 2 + self.width ** 2)
 
         # Potential from charged wire
         I, Ir, Iz = self._potwire(rr, z, q, k, self._z[ind2, 0], self._z[ind2, 1])
@@ -506,8 +507,8 @@ class EELSBase(object):
             y_q = pos1_q[:, 1:2] - pos2_q[:, 1:2].T
             z_q = np.tile(pos1_q[:, 2:3], (1, pos2_q.shape[0]))
 
-            r_q = np.sqrt(x_q ** 2 + y_q ** 2)
-            rr_q = np.sqrt(r_q ** 2 + self.width ** 2)
+            r_q = msqrt(x_q ** 2 + y_q ** 2)
+            rr_q = msqrt(r_q ** 2 + self.width ** 2)
 
             I_q, Ir_q, Iz_q = self._potwire(
                 rr_q, z_q, q, k, self._z[i2_q, 0], self._z[i2_q, 1])
@@ -538,7 +539,7 @@ class EELSBase(object):
         vel : float
             Electron velocity in units of speed of light
         """
-        return np.sqrt(1 - 1.0 / (1 + ene / 0.51e6) ** 2)
+        return msqrt(1 - 1.0 / (1 + ene / 0.51e6) ** 2)
 
     # ---- private helper methods ----
 
@@ -584,7 +585,7 @@ class EELSBase(object):
                 x[ind_quad, k] = p.pos[ind_quad, 0] - p.verts[vidx, 0]
                 y[ind_quad, k] = p.pos[ind_quad, 1] - p.verts[vidx, 1]
 
-        rad_arr = np.sqrt(x ** 2 + y ** 2)
+        rad_arr = msqrt(x ** 2 + y ** 2)
         return np.max(rad_arr)
 
     @staticmethod
@@ -632,7 +633,7 @@ class EELSBase(object):
         # MATLAB: distmin.m lines 31-38
         lam = (dx * (x - xv) + dy * (y - yv)) / np.maximum(dx ** 2 + dy ** 2, np.finfo(float).eps)
         lam = np.clip(lam, 0, 1)
-        dnet = np.sqrt((x - xv - lam * dx) ** 2 + (y - yv - lam * dy) ** 2)
+        dnet = msqrt((x - xv - lam * dx) ** 2 + (y - yv - lam * dy) ** 2)
 
         # MATLAB: distmin.m lines 40-49
         dmin = np.full((p.n, npos), np.nan)
@@ -751,8 +752,8 @@ class EELSBase(object):
         z0_arr = np.tile(np.reshape(z0, (1, -1)), (r.shape[0], 1)) - z
         z1_arr = np.tile(np.reshape(z1, (1, -1)), (r.shape[0], 1)) - z
 
-        v0 = np.log(z0_arr + np.sqrt(r ** 2 + z0_arr ** 2))
-        v1 = np.log(z1_arr + np.sqrt(r ** 2 + z1_arr ** 2))
+        v0 = mlog(z0_arr + msqrt(r ** 2 + z0_arr ** 2))
+        v1 = mlog(z1_arr + msqrt(r ** 2 + z1_arr ** 2))
 
         # MATLAB: potwire.m lines 31-34
         phi = np.zeros_like(r, dtype = complex)
@@ -765,7 +766,7 @@ class EELSBase(object):
         for i in range(len(x_gl)):
             v = 0.5 * ((1 - x_gl[i]) * v0 + (1 + x_gl[i]) * v1)
             u = 0.5 * (np.exp(v) - r ** 2 * np.exp(-v))
-            rr = np.sqrt(r ** 2 + u ** 2)
+            rr = msqrt(r ** 2 + u ** 2)
             fac = np.exp(1j * (q * u + k * rr))
 
             phi += w_gl[i] * fac

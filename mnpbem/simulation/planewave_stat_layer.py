@@ -7,6 +7,7 @@ import numpy as np
 
 from ..greenfun import CompStruct
 from ..spectrum.spectrum_stat_layer import SpectrumStatLayer
+from ..utils.matlab_compat import msqrt
 
 
 class PlaneWaveStatLayer(object):
@@ -93,7 +94,7 @@ class PlaneWaveStatLayer(object):
         ky = dir[:, 1]
 
         # Parallel wavenumber component
-        kt = np.maximum(np.sqrt(kx ** 2 + ky ** 2), np.finfo(float).eps)
+        kt = np.maximum(msqrt(kx ** 2 + ky ** 2), np.finfo(float).eps)
 
         # Normal vector
         nvec = np.column_stack([ky / kt, -kx / kt, np.zeros_like(kx)])
@@ -389,7 +390,7 @@ class PlaneWaveStatLayer(object):
             dip = (area_pos.T @ sig.sig).T  # (npol, 3)
 
         # Get refractive indices
-        nb = np.sqrt(np.array([
+        nb = msqrt(np.array([
             np.real(self.layer.eps[j](sig.enei)[0])
             for j in range(len(self.layer.eps))
         ]))

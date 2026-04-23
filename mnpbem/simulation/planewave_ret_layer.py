@@ -6,6 +6,7 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 import numpy as np
 
 from ..greenfun import CompStruct
+from ..utils.matlab_compat import msqrt
 
 
 class PlaneWaveRetLayer(object):
@@ -104,7 +105,7 @@ class PlaneWaveRetLayer(object):
             nb = np.sqrt(eps_val)
 
             # Parallel component of wavevector
-            kpar = nb * k0 * np.sqrt(dir_i[0] ** 2 + dir_i[1] ** 2)
+            kpar = nb * k0 * msqrt(dir_i[0] ** 2 + dir_i[1] ** 2)
 
             # Reflection and transmission coefficients at pos1 and pos2
             pos_r1 = self._poslayer(pos1[:, 2], z2)
@@ -252,7 +253,7 @@ class PlaneWaveRetLayer(object):
 
             eps_val, _ = p.eps[medium - 1](enei)
             nb = np.sqrt(eps_val)
-            kpar = nb * k0 * np.sqrt(dir_i[0] ** 2 + dir_i[1] ** 2)
+            kpar = nb * k0 * msqrt(dir_i[0] ** 2 + dir_i[1] ** 2)
 
             # Loop over Cartesian displacements (0=undisplaced, 1=dx, 2=dy, 3=dz)
             for kk in range(4):
@@ -329,7 +330,7 @@ class PlaneWaveRetLayer(object):
         for i in range(npol):
             # Scattered far-field in reflection direction
             kr = k['r'][i, :]
-            kr_norm = np.sqrt(np.sum(np.abs(kr) ** 2))
+            kr_norm = msqrt(np.sum(np.abs(kr) ** 2))
             kr_hat = kr / kr_norm
             esr_field = self.spec.farfield(sig, kr_hat.reshape(1, -1))
             esr = esr_field.e
@@ -344,7 +345,7 @@ class PlaneWaveRetLayer(object):
                 # Evanescent field
                 est = np.zeros(3, dtype = complex)
             else:
-                kt_norm = np.sqrt(np.sum(np.abs(kt) ** 2))
+                kt_norm = msqrt(np.sum(np.abs(kt) ** 2))
                 kt_hat = kt / kt_norm
                 est_field = self.spec.farfield(sig, kt_hat.reshape(1, -1))
                 est = est_field.e

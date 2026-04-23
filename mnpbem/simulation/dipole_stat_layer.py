@@ -6,6 +6,7 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 import numpy as np
 
 from ..greenfun import CompStruct
+from ..utils.matlab_compat import msqrt
 
 
 class DipoleStatLayer(object):
@@ -173,7 +174,7 @@ class DipoleStatLayer(object):
         y = pos1[:, 1:2] - pos2[:, 1].T
         z = pos1[:, 2:3] - pos2[:, 2].T
 
-        r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+        r = msqrt(x ** 2 + y ** 2 + z ** 2)
         r = np.maximum(r, np.finfo(float).eps)
 
         x = x / r

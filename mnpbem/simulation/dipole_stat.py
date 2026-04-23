@@ -14,6 +14,7 @@ Matches MATLAB MNPBEM implementation exactly.
 
 import numpy as np
 from ..greenfun import CompStruct
+from ..utils.matlab_compat import msqrt
 
 
 class DipoleStat(object):
@@ -222,7 +223,7 @@ class DipoleStat(object):
         z = pos1[:, 2:3] - pos2[:, 2].T
 
         # Distance
-        r = np.sqrt(x**2 + y**2 + z**2)
+        r = msqrt(x**2 + y**2 + z**2)
 
         # Normalize distance vector
         x = x / r

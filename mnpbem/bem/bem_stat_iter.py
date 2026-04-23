@@ -8,6 +8,7 @@ from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
+from ..utils.matlab_compat import msqrt
 from .bem_iter import BEMIter
 
 
@@ -206,7 +207,7 @@ class BEMStatIter(BEMIter):
 
         # Normal vector
         nvec_c = np.cross(t1, t2)
-        h = np.sqrt(np.sum(nvec_c * nvec_c, axis = 1, keepdims = True))
+        h = msqrt(np.sum(nvec_c * nvec_c, axis = 1, keepdims = True))
         nvec_c = nvec_c / h
 
         # Tangential derivative of PHI

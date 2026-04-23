@@ -18,6 +18,7 @@ from typing import Optional, Tuple
 
 from ..greenfun import CompStruct
 from ..misc import EV2NM, BOHR, HARTREE, FINE
+from ..utils.matlab_compat import msqrt, mlog
 from .eels_base import EELSBase
 
 
@@ -218,7 +219,7 @@ class EELSStat(EELSBase):
         # Bulk losses [Eq. (17)]
         pbulk = (2 * FINE ** 2 / (BOHR * HARTREE * np.pi * self.vel ** 2)
                  * np.imag(-1.0 / eps_vals) @ self.path()
-                 * np.log(np.sqrt((mass / ene) ** 2 * self.vel ** 2 * self.phiout ** 2 + 1)))
+                 * mlog(msqrt((mass / ene) ** 2 * self.vel ** 2 * self.phiout ** 2 + 1)))
 
         return pbulk
 
@@ -301,7 +302,7 @@ class EELSStat(EELSBase):
         y = pos[:, 1:2] - b[:, 1:2].T
         z = np.tile(pos[:, 2:3], (1, n_imp))
 
-        rr = np.sqrt(x ** 2 + y ** 2 + self.width ** 2)
+        rr = msqrt(x ** 2 + y ** 2 + self.width ** 2)
         x_hat = x / rr
         y_hat = y / rr
 
@@ -356,8 +357,8 @@ class EELSStat(EELSBase):
         y = pos[:, 1:2] - b[:, 1:2].T
         z = np.tile(pos[:, 2:3], (1, n_imp))
 
-        r = np.sqrt(x ** 2 + y ** 2)
-        rr = np.sqrt(r ** 2 + self.width ** 2)
+        r = msqrt(x ** 2 + y ** 2)
+        rr = msqrt(r ** 2 + self.width ** 2)
 
         # MATLAB: field.m lines 76-78
         _, Ir, Iz = self._potwire(rr, z, q, 0, self._z[:, 0], self._z[:, 1])
