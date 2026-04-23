@@ -786,44 +786,18 @@ def _mytsearch(x: np.ndarray,
             result[k_idx[ok]] = tri_idx[ok]
 
     # full search for points that failed
+    # MATLAB mytsearch.m L70-73 falls back to `for k=1:nt: inpolygon(...);
+    # i(temp)=k`, i.e. the LAST triangle containing each point wins. Python
+    # must mirror this (not "first matching") for bit-identical meshing.
     need_search = result < 0
     if np.any(need_search):
-        try:
-            tri_obj = Delaunay(ps)
-            found = tri_obj.find_simplex(pis[need_search])
-            # map from Delaunay simplex to our triangulation
-            # since we use a different triangulation, do direct search
-        except Exception:
-            pass
-
-        # direct search using point-in-triangle test
         search_idx = np.where(need_search)[0]
+        # Use inpoly (matches MATLAB inpolygon semantics) per triangle
         for k in range(t.shape[0]):
-            if len(search_idx) == 0:
-                break
-            v0 = ps[t[k, 0]]
-            v1 = ps[t[k, 1]]
-            v2 = ps[t[k, 2]]
-
-            # barycentric coordinates
-            d00 = (v1[0] - v0[0]) * (v1[0] - v0[0]) + (v1[1] - v0[1]) * (v1[1] - v0[1])
-            d01 = (v1[0] - v0[0]) * (v2[0] - v0[0]) + (v1[1] - v0[1]) * (v2[1] - v0[1])
-            d11 = (v2[0] - v0[0]) * (v2[0] - v0[0]) + (v2[1] - v0[1]) * (v2[1] - v0[1])
-            inv_denom = d00 * d11 - d01 * d01
-            if abs(inv_denom) < np.finfo(float).eps:
-                continue
-            inv_denom = 1.0 / inv_denom
-
-            pts = pis[search_idx]
-            d20 = (pts[:, 0] - v0[0]) * (v1[0] - v0[0]) + (pts[:, 1] - v0[1]) * (v1[1] - v0[1])
-            d21 = (pts[:, 0] - v0[0]) * (v2[0] - v0[0]) + (pts[:, 1] - v0[1]) * (v2[1] - v0[1])
-
-            u = (d11 * d20 - d01 * d21) * inv_denom
-            v = (d00 * d21 - d01 * d20) * inv_denom
-
-            inside = (u >= -1e-10) & (v >= -1e-10) & (u + v <= 1.0 + 1e-10)
-            result[search_idx[inside]] = k
-            search_idx = search_idx[~inside]
+            tri_verts = ps[t[k, :]]
+            inside, _ = inpoly(pis[search_idx], tri_verts)
+            if np.any(inside):
+                result[search_idx[inside]] = k
 
     return result
 
