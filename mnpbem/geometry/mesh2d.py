@@ -1239,8 +1239,21 @@ def _boundarynodes(ph: np.ndarray,
     p = node.copy()
     e = edge.copy()
 
-    # get size function at geometry nodes
-    i = _mytsearch(ph[:, 0], ph[:, 1], th, p[:, 0], p[:, 1])
+    # MATLAB boundarynodes L201-204: for each triangle j, mark which p's are
+    # inpolygon of it; `i(temp)=j` overwrites so i[k] is the LAST triangle
+    # containing p[k]. This differs from _mytsearch (which returns the first
+    # enclosing triangle) and matters at boundary corners where the point
+    # lies on multiple triangle edges — the chosen triangle determines which
+    # tinterp bary result (and its FP noise) we use.
+    def _matlab_search(qp, ph_, th_):
+        ii = np.zeros(qp.shape[0], dtype = int)
+        for j in range(th_.shape[0]):
+            tri_verts = ph_[th_[j, :]]
+            inside, _ = inpoly(qp, tri_verts)
+            ii[inside] = j
+        return ii
+
+    i = _matlab_search(p, ph, th)
     h = _tinterp(ph, th, hh, p, i)
 
     for _iter in range(100):
@@ -1275,7 +1288,9 @@ def _boundarynodes(ph: np.ndarray,
         p_combined[p.shape[0]:] = pm
         p = p_combined
 
-        i_new = _mytsearch(ph[:, 0], ph[:, 1], th, pm[:, 0], pm[:, 1])
+        # MATLAB meshfaces.m L232 `mytsearch(...)` with no initial guess →
+        # full inpolygon-loop fallback (see mytsearch.m L70-73).
+        i_new = _matlab_search(pm, ph, th)
         h_new = _tinterp(ph, th, hh, pm, i_new)
         total_h = h.shape[0] + h_new.shape[0]
         h_combined = np.empty(total_h)
