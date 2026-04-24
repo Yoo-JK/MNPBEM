@@ -942,3 +942,84 @@ def _tripolygon_sharp_upper(polys, edge, **kwargs):
     p = p.clean()
     # enriched poly = upper ribbon boundary (MATLAB tripolygon.m L47)
     return p, up_polys
+
+
+# ===========================================================================
+# particle_from_mat: load MATLAB mesh dump as Particle (bit-identical inject)
+# ===========================================================================
+
+def particle_from_mat(path, key, interp = 'curv', inject_geom = False):
+    """
+    Load a MATLAB-dumped particle from a .mat file.
+
+    Expects the .mat file to contain four arrays named
+    ``{key}_verts``, ``{key}_faces``, ``{key}_verts2``, ``{key}_faces2``.
+    The curved (verts2, faces2) tables are used directly so the resulting
+    Particle is bit-identical to the MATLAB mesh — bypassing the
+    `polymesh2d`/`plate` floating-point drift documented in
+    MESH2D_FP_LIMIT.md.
+
+    Parameters
+    ----------
+    path : str
+        Path to the .mat file.
+    key : str
+        Variable name prefix inside the .mat file (e.g. ``'up'`` picks
+        up ``up_verts``, ``up_faces``, ``up_verts2``, ``up_faces2``).
+    interp : str, optional
+        Particle interpolation mode. Default ``'curv'`` to match MATLAB
+        ``bemoptions('interp','curv')``.
+    inject_geom : bool, optional
+        If True, also inject ``pos``, ``nvec`` (vec[3]), ``tvec1`` (vec[1]),
+        ``tvec2`` (vec[2]), and ``area`` directly from the .mat file,
+        bypassing Python's ``_norm_curv`` recomputation. Useful when even
+        the ~1e-14 ULP drift from ``_norm_curv`` matters. Requires the .mat
+        file to contain ``{key}_pos``, ``{key}_nvec``, ``{key}_tvec1``,
+        ``{key}_tvec2``, and ``{key}_area``.
+
+    Returns
+    -------
+    p : Particle
+        Particle reconstructed with MATLAB verts/faces and curved
+        midpoint tables.
+    """
+    from scipy.io import loadmat
+    mat = loadmat(path)
+    verts  = np.ascontiguousarray(mat[key + '_verts'], dtype = float)
+    faces  = np.asarray(mat[key + '_faces'],  dtype = float)
+    verts2 = np.ascontiguousarray(mat[key + '_verts2'], dtype = float)
+    faces2 = np.asarray(mat[key + '_faces2'], dtype = float)
+
+    # MATLAB uses 1-based indexing; stored NaN entries stay NaN.
+    faces  = _matidx_to_py(faces)
+    faces2 = _matidx_to_py(faces2)
+
+    # Build particle from (verts2, faces2) so Particle.__init__ takes the
+    # 9-column curved path and rebuilds verts/faces via corner extraction.
+    # Then overwrite verts/faces with the MATLAB-dumped arrays so the
+    # ComParticle indexing matches MATLAB exactly (no re-derivation).
+    p = Particle(verts2, faces2, interp = interp, norm = 'off')
+    p.verts = verts
+    p.faces = faces
+    p.verts2 = verts2
+    p.faces2 = faces2
+
+    if inject_geom:
+        p.pos  = np.ascontiguousarray(mat[key + '_pos'],   dtype = float)
+        nvec   = np.ascontiguousarray(mat[key + '_nvec'],  dtype = float)
+        tvec1  = np.ascontiguousarray(mat[key + '_tvec1'], dtype = float)
+        tvec2  = np.ascontiguousarray(mat[key + '_tvec2'], dtype = float)
+        p.vec  = [tvec1, tvec2, nvec]
+        p.area = np.ascontiguousarray(mat[key + '_area'],  dtype = float).flatten()
+    else:
+        # Recompute geometric properties (pos, vec, area) under MATLAB verts.
+        p._norm()
+    return p
+
+
+def _matidx_to_py(arr):
+    """Convert 1-based MATLAB face indices to 0-based, preserving NaN."""
+    out = np.array(arr, dtype = float, copy = True)
+    mask = ~np.isnan(out)
+    out[mask] = out[mask] - 1.0
+    return out
