@@ -1363,14 +1363,15 @@ class LayerStructure(object):
             n_names: int) -> np.ndarray:
         # Integration along semi-ellipse in complex kr-plane using composite
         # Gauss-Legendre with a vectorized batch RHS over all sample points.
-        # Far faster than RK45 for this smooth integrand and accurate to ~1e-7.
+        # Panel/order chosen to match MATLAB ode45 AbsTol=1e-12, RelTol=1e-10.
         ctx = self._build_integrate_context(enei, pos)
         k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
         ind_full = np.arange(len(ctx['r_flat']))
         semi = self.semi
 
-        # semi-ellipse integrand is smooth; 4 panels x 40 order = 160 pts suffice.
-        xs, ws = self._gl_panels(0.0, np.pi, 4, 40)
+        # semi-ellipse integrand is smooth; tighten to match MATLAB ode45
+        # (AbsTol=1e-12, RelTol=1e-10). 8 panels x 64 order = 512 pts.
+        xs, ws = self._gl_panels(0.0, np.pi, 8, 64)
 
         kr_arr = k1max * (1 - mcos(xs) - 1j * semi * msin(xs))
         dkr_arr = k1max * (msin(xs) - 1j * semi * mcos(xs))
@@ -1393,8 +1394,10 @@ class LayerStructure(object):
 
         # Use logarithmic panel boundaries to capture oscillations near x->0.
         # Break [1e-10, 1] into panels with geometrically increasing widths.
-        order = 40
-        edges = np.concatenate(([1e-10], np.logspace(-9, 0, 10)))
+        # Tightened to match MATLAB ode45 (AbsTol=1e-12, RelTol=1e-10):
+        # 18 panels x 64 order = 1152 pts.
+        order = 64
+        edges = np.concatenate(([1e-10], np.logspace(-9, 0, 18)))
         nodes_ref, weights_ref = self._gl_nodes_weights(order)
         xs = np.empty((len(edges) - 1) * order)
         ws = np.empty((len(edges) - 1) * order)
@@ -1419,8 +1422,10 @@ class LayerStructure(object):
         ctx = self._build_integrate_context(enei, pos)
         k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
 
-        order = 40
-        edges = np.concatenate(([1e-10], np.logspace(-9, 0, 10)))
+        # Tightened to match MATLAB ode45 (AbsTol=1e-12, RelTol=1e-10):
+        # 18 panels x 64 order = 1152 pts.
+        order = 64
+        edges = np.concatenate(([1e-10], np.logspace(-9, 0, 18)))
         nodes_ref, weights_ref = self._gl_nodes_weights(order)
         xs = np.empty((len(edges) - 1) * order)
         ws = np.empty((len(edges) - 1) * order)
