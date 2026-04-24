@@ -80,7 +80,7 @@ class GreenRetLayer(object):
 
         MATLAB: @greenretlayer/private/init.m
         """
-        RelCutoff = options.get('RelCutoff', 0)
+        RelCutoff = options.get('RelCutoff', 3)
         AbsCutoff = options.get('AbsCutoff', 0)
 
         # MATLAB: always call refinematrixlayer; defaults (0,0) still select

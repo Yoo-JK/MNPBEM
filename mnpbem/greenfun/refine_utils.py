@@ -140,7 +140,7 @@ def refinematrix(p1, p2, AbsCutoff=0, RelCutoff=3, memsize=2e7):
     return ir.tocsr()
 
 
-def refinematrixlayer(p1, p2, layer, AbsCutoff=0, RelCutoff=0, memsize=2e7):
+def refinematrixlayer(p1, p2, layer, AbsCutoff=0, RelCutoff=3, memsize=2e7):
 
     # MATLAB: /Greenfun/+green/refinematrixlayer.m
     # Refinement matrix for layer structures.
