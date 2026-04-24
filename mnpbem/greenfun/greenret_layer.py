@@ -739,20 +739,18 @@ class GreenRetLayer(object):
         Fr = Fr.reshape(n1, n2)
         Fz = Fz.reshape(n1, n2)
 
-        # Multiply with p2.area (MATLAB initrefl1.m line 36, initrefl2.m line 35)
+        # Multiply G with p2.area (MATLAB initrefl1.m line 36, initrefl2.m line 35).
+        # Fr/Fz keep raw (no-area) form; area is applied inside
+        # _compute_F_norm/_compute_F_cart to match MATLAB's multiplication
+        # order (see Wave 17 A).
         area2 = self.p2.area  # (n2,)
-        G = G * area2[np.newaxis, :]
-        Fr = Fr * area2[np.newaxis, :]
-        Fz = Fz * area2[np.newaxis, :]
-
-        # Store Green function
-        self.G = G
+        self.G = G * area2[np.newaxis, :]
 
         # Compute surface derivative
         if self.deriv == 'norm':
-            self._compute_F_norm(G, Fr, Fz)
+            self._compute_F_norm(self.G, Fr, Fz, area2)
         else:
-            self._compute_F_cart(G, Fr, Fz)
+            self._compute_F_cart(self.G, Fr, Fz, area2)
 
     def eval_components(self,
             enei: float) -> None:
@@ -793,26 +791,19 @@ class GreenRetLayer(object):
             Fr = Fr_dict[name].reshape(n1, n2)
             Fz = Fz_dict[name].reshape(n1, n2)
 
-            # Multiply with p2.area (MATLAB initrefl1.m line 36, initrefl2.m line 35)
-            G = G * area2[np.newaxis, :]
-            Fr = Fr * area2[np.newaxis, :]
-            Fz = Fz * area2[np.newaxis, :]
+            # MATLAB initrefl2.m line 35-40: Gp uses raw Fr/Fz, then area'
+            # is applied via fun(...); G itself is multiplied by area' in place.
+            self.G_comp[name] = G * area2[np.newaxis, :]
 
-            self.G_comp[name] = G
-
-            # Cartesian derivative: Gp (n1, 3, n2) -- matches MATLAB shape
             Gp = np.zeros((n1, 3, n2), dtype = complex)
             Gp[:, 0, :] = Fr * self._dx / r_safe
             Gp[:, 1, :] = Fr * self._dy / r_safe
             Gp[:, 2, :] = Fz
+            Gp = Gp * area2[np.newaxis, np.newaxis, :]
             self.Gp_comp[name] = Gp
 
-            # Normal derivative: F = nvec . Gp  (inner product)
-            F = np.zeros((n1, n2), dtype = complex)
-            F += nvec1[:, 0:1] * Gp[:, 0, :]
-            F += nvec1[:, 1:2] * Gp[:, 1, :]
-            F += nvec1[:, 2:3] * Gp[:, 2, :]
-            self.F_comp[name] = F
+            # Normal derivative: F = inner(nvec, Gp) (MATLAB initrefl2.m line 197)
+            self.F_comp[name] = np.einsum('ik,ikj->ij', nvec1, Gp)
 
         # Apply refinement if configured
         has_refinement = (len(self._diag_id) > 0 or len(self._offdiag_ind) > 0)
@@ -825,7 +816,8 @@ class GreenRetLayer(object):
     def _compute_F_norm(self,
             G: np.ndarray,
             Fr: np.ndarray,
-            Fz: np.ndarray) -> None:
+            Fz: np.ndarray,
+            area2: Optional[np.ndarray] = None) -> None:
 
         nvec1 = self.p1.nvec
         n1 = nvec1.shape[0]
@@ -833,18 +825,21 @@ class GreenRetLayer(object):
 
         r_safe = np.maximum(self._r, np.finfo(float).eps)
 
-        # Normal derivative: F = nvec_x * Fr * dx/r + nvec_y * Fr * dy/r + nvec_z * Fz
-        F = np.zeros((n1, n2), dtype = complex)
-        F += nvec1[:, 0:1] * Fr * self._dx / r_safe
-        F += nvec1[:, 1:2] * Fr * self._dy / r_safe
-        F += nvec1[:, 2:3] * Fz
+        # MATLAB initrefl1.m line 27-28, 38-40:
+        #   in = (x*nvec_x + y*nvec_y) / max(r, 1e-10)
+        #   F  = (Fr .* in + Fz .* nvec_z) .* area'
+        in_prod = (self._dx * nvec1[:, 0:1] + self._dy * nvec1[:, 1:2]) / r_safe
+        F = Fr * in_prod + Fz * nvec1[:, 2:3]
+        if area2 is not None:
+            F = F * area2[np.newaxis, :]
 
         self.F = F
 
     def _compute_F_cart(self,
             G: np.ndarray,
             Fr: np.ndarray,
-            Fz: np.ndarray) -> None:
+            Fz: np.ndarray,
+            area2: Optional[np.ndarray] = None) -> None:
         """Compute Cartesian derivative Gp and normal derivative F.
 
         MATLAB: initrefl2.m
@@ -858,14 +853,18 @@ class GreenRetLayer(object):
 
         r_safe = np.maximum(self._r, np.finfo(float).eps)
 
-        # Cartesian derivative: Gp[:, 0, :] = Fr * dx/r, etc.
-        # Shape (n1, 3, n2) to match MATLAB convention
+        # MATLAB initrefl2.m line 37-40:
+        #   Gp(:,1,:) = (Fr .* x ./ max(r,1e-10)) .* area'
+        #   Gp(:,2,:) = (Fr .* y ./ max(r,1e-10)) .* area'
+        #   Gp(:,3,:) =  Fz                       .* area'
         Gp = np.zeros((n1, 3, n2), dtype = complex)
         Gp[:, 0, :] = Fr * self._dx / r_safe
         Gp[:, 1, :] = Fr * self._dy / r_safe
         Gp[:, 2, :] = Fz
+        if area2 is not None:
+            Gp = Gp * area2[np.newaxis, np.newaxis, :]
 
-        # Normal derivative: F = inner(nvec, Gp)
+        # Normal derivative: F = inner(nvec, Gp) (MATLAB initrefl2.m line 197)
         # F[i,j] = nvec[i,0]*Gp[i,0,j] + nvec[i,1]*Gp[i,1,j] + nvec[i,2]*Gp[i,2,j]
         F = np.einsum('ik,ikj->ij', nvec1, Gp)
 
