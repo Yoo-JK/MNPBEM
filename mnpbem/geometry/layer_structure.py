@@ -1921,6 +1921,29 @@ class LayerStructure(object):
         return ir, iz1, iz2
 
     @staticmethod
+    def _logspace_matlab(a: float, b: float, n: int) -> np.ndarray:
+        # MATLAB-compatible logspace: logspace(-Inf, b, 2) returns [0, 10^b].
+        # numpy.logspace returns NaN for -inf endpoints; handle explicitly.
+        if np.isinf(a) or np.isinf(b):
+            lin = np.empty(n)
+            lin[0] = a
+            lin[-1] = b
+            if n > 2:
+                lin[1:-1] = np.nan
+            out = np.empty(n)
+            for i in range(n):
+                if np.isneginf(lin[i]):
+                    out[i] = 0.0
+                elif np.isposinf(lin[i]):
+                    out[i] = np.inf
+                elif np.isnan(lin[i]):
+                    out[i] = np.nan
+                else:
+                    out[i] = 10.0 ** lin[i]
+            return out
+        return np.logspace(a, b, n)
+
+    @staticmethod
     def _linlogspace(xmin: float,
             xmax: float,
             n: int,
@@ -1929,7 +1952,8 @@ class LayerStructure(object):
         if key == 'lin':
             return mlinspace(xmin, xmax, n)
         else:
-            return x0 + np.logspace(mlog10(xmin - x0), mlog10(xmax - x0), n)
+            return x0 + LayerStructure._logspace_matlab(
+                mlog10(xmin - x0), mlog10(xmax - x0), n)
 
     def _zlinlogspace(self,
             zmin: float,
@@ -1944,12 +1968,12 @@ class LayerStructure(object):
 
         if medium == 1:
             # Upper layer
-            return self.z[0] + np.logspace(
+            return self.z[0] + LayerStructure._logspace_matlab(
                 mlog10(zmin - self.z[0]),
                 mlog10(zmax - self.z[0]), n)
         elif medium == len(self.z) + 1:
             # Lower layer
-            z = self.z[-1] - np.logspace(
+            z = self.z[-1] - LayerStructure._logspace_matlab(
                 mlog10(self.z[-1] - zmax),
                 mlog10(self.z[-1] - zmin), n)
             return z[::-1]
