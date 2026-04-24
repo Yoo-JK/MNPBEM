@@ -1032,14 +1032,14 @@ def _refine_dist(layer, pos1, pos2, nvec):
     x = pos1[:, 0:1] - pos2[:, 0].reshape(1, -1)
     y = pos1[:, 1:2] - pos2[:, 1].reshape(1, -1)
 
-    # MATLAB dist() uses the "layer-rounded" z as input then mindist, but
-    # the code path is equivalent to mindist(z) directly since round_z never
-    # shifts through zero.  We keep the explicit round_z for bit-parity.
-    z1_round = layer.round_z(pos1[:, 2])[0]
-    z2_round = layer.round_z(pos2[:, 2])[0]
-
-    zmin1, _ = layer.mindist(z1_round)
-    zmin2, _ = layer.mindist(z2_round)
+    # MATLAB init1.m/init2.m line 102-103:
+    #   round( obj.layer, mindist( obj.layer, pos(:,3) ) )
+    # first compute mindist (scalar distance to nearest layer), then apply
+    # layer.round to enforce the minimum clearance (obj.zmin).
+    zmin1, _ = layer.mindist(pos1[:, 2])
+    zmin2, _ = layer.mindist(pos2[:, 2])
+    zmin1 = layer.round_z(zmin1)[0]
+    zmin2 = layer.round_z(zmin2)[0]
     z = zmin1[:, np.newaxis] + zmin2[np.newaxis, :]
 
     r = msqrt(x ** 2 + y ** 2)
