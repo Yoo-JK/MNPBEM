@@ -437,4 +437,30 @@ def refinestat(obj: Any,
     # the corrected formula because this path always feeds the F matrix.)
     f[i1, i2] = (fx * nvec[i1, 0] + fy * nvec[i1, 1] + fz * nvec[i1, 2])
 
+    # For deriv == 'cart' also update the Cartesian-derivative storage.
+    # MATLAB refinestat.m lines 40-41 write f(ind, :) = [fx, fy, fz] into
+    # the full Gp matrix; in the Python port this lives in `_Gp_raw` (with
+    # refinement overrides in `_f_cart_refined`). Without this update,
+    # cover-layer pair elements keep the far-field (1/r^3 * area) value in
+    # Gp which differs from the polar-integrated refinement used for F.
+    if getattr(obj, 'deriv', 'norm') == 'cart':
+        if not hasattr(obj, '_f_cart_refined'):
+            obj._f_cart_refined = []
+            obj._f_cart_refined_indices = []
+        if hasattr(obj, '_Gp_raw') and obj._Gp_raw is not None:
+            for k in range(len(i1)):
+                obj._Gp_raw[i1[k], :, i2[k]] = [fx[k], fy[k], fz[k]]
+        # Also override any previously queued _f_cart_refined entry for
+        # this (i1, i2) pair; otherwise append a new override.
+        existing = {(int(r), int(c)): idx
+                    for idx, (r, c) in enumerate(obj._f_cart_refined_indices)}
+        for k in range(len(i1)):
+            key = (int(i1[k]), int(i2[k]))
+            cart_val = np.array([fx[k], fy[k], fz[k]])
+            if key in existing:
+                obj._f_cart_refined[existing[key]] = cart_val
+            else:
+                obj._f_cart_refined.append(cart_val)
+                obj._f_cart_refined_indices.append((int(i1[k]), int(i2[k])))
+
     return g, f
