@@ -327,9 +327,9 @@ def meshpoly(node: np.ndarray,
 
     for iteration in range(maxit):
 
-        # ensure unique node list
+        # ensure unique node list (MATLAB meshpoly.m L78: unique(p,'rows') — no rounding)
         _, unique_idx, inverse_idx = np.unique(
-            mround(p * 1e10) / 1e10, axis = 0,
+            p, axis = 0,
             return_index = True, return_inverse = True)
         p = p[unique_idx]
         fix = inverse_idx[fix]

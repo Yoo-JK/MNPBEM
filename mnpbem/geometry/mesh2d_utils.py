@@ -9,7 +9,13 @@ def mydelaunayn(p: np.ndarray) -> np.ndarray:
 
     # MATLAB Mesh2d/mydelaunayn.m - Delaunay triangulation with coordinate normalization
     # Translate to origin and scale min xy range onto [-1, 1]
-    # This is absolutely critical to avoid precision issues for large problems
+    # This is absolutely critical to avoid precision issues for large problems.
+    #
+    # MATLAB's `delaunayn` in 2D uses qhull options 'Qt Qbb Qc' (triangulated
+    # output, bounding-box scaling, max-coord output). scipy's default is
+    # 'Qbb Qc Qz' which adds a 'Qz' cosphere point and gives a different
+    # tie-break for cocircular input groups. Passing 'Qt Qbb Qc' reproduces
+    # MATLAB's triangulation set bit-identically for well-conditioned inputs.
     p = np.asarray(p, dtype = float).copy()
 
     maxxy = np.max(p, axis = 0)
@@ -23,15 +29,33 @@ def mydelaunayn(p: np.ndarray) -> np.ndarray:
     p = p / scale
 
     try:
-        tri = Delaunay(p)
+        tri = Delaunay(p, qhull_options = 'Qt Qbb Qc')
         t = tri.simplices.copy()
     except Exception:
         # if default fails, add small jitter and retry (analogous to MATLAB QJ option)
-        jitter = np.random.randn(*p.shape) * 1e-10
-        tri = Delaunay(p + jitter)
+        rng = np.random.default_rng(0)
+        jitter = rng.standard_normal(p.shape) * 1e-10
+        tri = Delaunay(p + jitter, qhull_options = 'Qt Qbb Qc')
         t = tri.simplices.copy()
 
     return t
+
+
+def matlab_unique(arr: np.ndarray,
+        axis: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+    # MATLAB `unique(arr, 'rows')` / `unique(arr)` semantics with
+    # first-occurrence indices preserved. NumPy's `np.unique` already matches
+    # MATLAB's sorted-output + first-occurrence behaviour for well-defined
+    # inputs (no NaN). This helper is a thin wrapper that centralises the
+    # convention for future adjustments and makes the MATLAB intent explicit
+    # at call sites.
+    if axis is None:
+        u, idx, inv = np.unique(arr, return_index = True, return_inverse = True)
+    else:
+        u, idx, inv = np.unique(arr, axis = axis,
+                                 return_index = True, return_inverse = True)
+    return u, idx, inv
 
 
 def triarea(p: np.ndarray,
