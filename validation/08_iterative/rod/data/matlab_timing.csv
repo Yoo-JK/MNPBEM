@@ -1,0 +1,5 @@
+case,time_sec
+stat_direct,3.871102
+stat_iter,17.926016
+ret_direct,29.348902
+ret_iter,117.682382
