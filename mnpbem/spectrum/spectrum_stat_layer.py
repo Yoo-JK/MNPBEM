@@ -324,22 +324,25 @@ class SpectrumStatLayer(object):
         if npol == 1:
             e_total = e_total[:, :, 0]
 
-        # Compute magnetic field from electric field
-        # H ~ nb * dir x E
-        if self.layer is not None:
-            eps_val, k = self.layer.eps[0](enei)
-        else:
-            k = 2 * np.pi / enei
-            eps_val = 1.0
-        nb = np.sqrt(eps_val)
+        # MATLAB @spectrumstatlayer/farfield.m:
+        #   nb = sqrt( k / ( 2 * pi / sig.enei ) );
+        #   field.h = matmul( diag( nb ), matcross( dir, field.e ) );
+        # k_arr is per-direction (k1 upper, k2 lower); nb = eps^(1/4).
+        k0 = 2 * np.pi / enei
+        nb = np.sqrt(k_arr / k0)  # (ndir,), complex
 
         if e_total.ndim == 2:
-            h = nb * np.cross(self.nvec, e_total) / (k ** 2 / eps_val) * k ** 2 / nb
+            h = nb[:, np.newaxis] * np.cross(self.nvec, e_total)
         else:
             h = np.zeros_like(e_total)
             for ipol in range(npol):
-                h[:, :, ipol] = nb * np.cross(self.nvec, e_total[:, :, ipol])
+                h[:, :, ipol] = nb[:, np.newaxis] * np.cross(self.nvec, e_total[:, :, ipol])
 
+        # For CompStruct metadata: k scalar for upper medium (MATLAB legacy).
+        if self.layer is not None:
+            _, k = self.layer.eps[0](enei)
+        else:
+            k = k0
         field = CompStruct(self.pinfty, enei, e = e_total, h = h,
             nvec = self.nvec, area = self.area, k = k)
         return field
