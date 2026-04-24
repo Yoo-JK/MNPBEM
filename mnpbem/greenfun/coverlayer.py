@@ -303,8 +303,12 @@ def refineret(obj: Any,
     # Unique-column optimization (see refinestat for details)
     unique_i2, inv_i2 = np.unique(i2, return_inverse = True)
     pos_u, weight_u, row_u = pc.quadpol(unique_i2)
+
+    # row_u is tri-block-then-quad-block (not sorted) when unique_i2
+    # mixes triangular and quadrilateral faces; group via argsort.
+    sort_idx = np.argsort(row_u, kind = 'stable')
     counts = np.bincount(row_u, minlength = len(unique_i2))
-    offsets = np.concatenate([[0], np.cumsum(counts)])
+    group_offsets = np.concatenate([[0], np.cumsum(counts)])
 
     pair_counts = counts[inv_i2]
     total = int(pair_counts.sum())
@@ -316,7 +320,7 @@ def refineret(obj: Any,
     cursor = 0
     for uidx in inv_i2:
         n_pts = counts[uidx]
-        pos_idx[cursor:cursor + n_pts] = np.arange(offsets[uidx], offsets[uidx + 1])
+        pos_idx[cursor:cursor + n_pts] = sort_idx[group_offsets[uidx]:group_offsets[uidx + 1]]
         cursor += n_pts
 
     pos_all = pos_u[pos_idx]
@@ -381,18 +385,14 @@ def refinestat(obj: Any,
     unique_i2, inv_i2 = np.unique(i2, return_inverse = True)
     pos_u, weight_u, row_u = pc.quadpol(unique_i2)
 
-    # Expand: pair k contributes integration points of unique_i2[inv_i2[k]]
-    # For each pair index k, pick up the block of points belonging to
-    # unique_i2[inv_i2[k]]. We build flat arrays pair_pos, pair_weight, and
-    # pair_key by concatenating per-unique blocks in the order of `i2`.
-    starts = np.flatnonzero(np.diff(np.concatenate([[-1], row_u]))) if len(row_u) > 0 else np.array([], dtype = int)
-    # row_u is non-decreasing by construction (quadpol loops over unique_i2
-    # in order), so we can split by counting occurrences.
+    # quadpol emits tris first, then quads, so `row_u` is NOT sorted when
+    # the two face types are interleaved in `unique_i2`. Group by row value
+    # via argsort: `sort_idx[group_offsets[u]:group_offsets[u+1]]` are the
+    # indices into pos_u / weight_u that belong to unique-face u.
+    sort_idx = np.argsort(row_u, kind = 'stable')
     counts = np.bincount(row_u, minlength = len(unique_i2))
-    offsets = np.concatenate([[0], np.cumsum(counts)])
+    group_offsets = np.concatenate([[0], np.cumsum(counts)])
 
-    # For each pair k, block = slice(offsets[inv_i2[k]], offsets[inv_i2[k]+1])
-    # Build flat concatenation:
     pair_counts = counts[inv_i2]
     total = int(pair_counts.sum())
 
@@ -400,12 +400,13 @@ def refinestat(obj: Any,
         return g, f
 
     pair_key = np.repeat(np.arange(len(i2)), pair_counts)
-    # pos / weight per integration point for each pair:
+    # For each pair k, gather its block of integration-point indices into
+    # pos_u / weight_u via the sorted grouping.
     pos_idx = np.empty(total, dtype = int)
     cursor = 0
-    for k, u in enumerate(inv_i2):
+    for u in inv_i2:
         n_pts = counts[u]
-        pos_idx[cursor:cursor + n_pts] = np.arange(offsets[u], offsets[u + 1])
+        pos_idx[cursor:cursor + n_pts] = sort_idx[group_offsets[u]:group_offsets[u + 1]]
         cursor += n_pts
 
     pos_all = pos_u[pos_idx]

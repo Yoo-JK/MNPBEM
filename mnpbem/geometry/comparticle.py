@@ -118,6 +118,9 @@ class ComParticle(object):
             _refine = quad_kwargs.get('refine', None)
             for p in particles:
                 p.quad = _QuadFace(rule=_rule, npol=_npol, refine=_refine)
+            # Persist for later application to self.pc, which is re-built by
+            # Particle.vertcat (in _norm) with a fresh default quad.
+            self._quad_kwargs = dict(rule=_rule, npol=_npol, refine=_refine)
 
         return particles, closed_args
 
@@ -135,6 +138,14 @@ class ComParticle(object):
         else:
             self.pc = Particle(np.array([]).reshape(0, 3),
                               np.array([]).reshape(0, 4))
+
+        # Particle.vertcat rebuilds `pc` with a default-quad Particle. Restore
+        # the bemoptions-supplied quadrature on `pc` so cover-layer / near-field
+        # polar integration uses the requested npol/rule/refine.
+        qk = getattr(self, '_quad_kwargs', None)
+        if qk is not None and hasattr(self.pc, 'quad'):
+            from ..utils.quadface import QuadFace as _QuadFace
+            self.pc.quad = _QuadFace(**qk)
 
     def _compute_properties(self):
         """Compute derived properties."""

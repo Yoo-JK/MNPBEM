@@ -107,9 +107,10 @@ class QuadFace(object):
 
         MATLAB: Misc/integration/@quadface/private/init.m lines 25-53
         """
-        # Default npol is a single value, convert to [nr, ntheta]
-        if isinstance(npol, int):
-            npol = [7, 5]  # MATLAB default
+        # MATLAB: if numel(op.npol) ~= 2, op.npol = [1,1] * op.npol; end
+        # Scalar npol → broadcast to [npol, npol] (NOT the [7,5] default).
+        if np.isscalar(npol):
+            npol = [int(npol), int(npol)]
 
         # Legendre-Gauss-Lobatto nodes for radius and angle
         x1, w1 = self._lglnodes(npol[0])
@@ -159,9 +160,10 @@ class QuadFace(object):
 
         MATLAB: Misc/integration/@quadface/private/init.m lines 55-80
         """
-        # Default npol is a single value, convert to [nr, ntheta]
-        if isinstance(npol, int):
-            npol = [7, 5]  # MATLAB default
+        # MATLAB: if numel(op.npol) ~= 2, op.npol = [1,1] * op.npol; end
+        # Scalar npol → broadcast to [npol, npol] (NOT the [7,5] default).
+        if np.isscalar(npol):
+            npol = [int(npol), int(npol)]
 
         # Legendre-Gauss-Lobatto nodes for radius and angle
         x1, w1 = self._lglnodes(npol[0])

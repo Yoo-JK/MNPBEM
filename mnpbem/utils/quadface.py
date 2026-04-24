@@ -84,6 +84,10 @@ class QuadFace(object):
             Subdivide unit triangle into refine×refine sub-triangles, giving
             finer integration points. MATLAB: bemoptions('refine', N).
         """
+        # MATLAB: if numel(op.npol) ~= 2, op.npol = [1,1] * op.npol; end
+        # Scalar npol → broadcast to (npol, npol) per MATLAB @quadface init.
+        if np.isscalar(npol):
+            npol = (int(npol), int(npol))
         self.npol = npol
 
         # Standard triangle quadrature
