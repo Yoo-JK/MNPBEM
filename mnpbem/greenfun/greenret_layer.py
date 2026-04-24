@@ -4,6 +4,7 @@ import sys
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
+from scipy.sparse import csr_matrix, coo_matrix
 
 from mnpbem.utils.matlab_compat import mlinspace, msqrt
 
@@ -33,6 +34,12 @@ class GreenRetLayer(object):
         self.F = None
         self.Gp = None
 
+        # MATLAB init.m: offdiag='full' -> skip shape-function sparse precompute
+        # (use slow but exact full boundary element integration at eval time).
+        # Default (anything else, including absent) -> shape-function singularity
+        # subtraction via sparse matrices (fast + accurate near-surface).
+        self._offdiag_mode = options.get('offdiag', 'default')
+
         # Tabulated Green function
         if tab is not None:
             self.tab = GreenTabLayer(layer, tab = tab)
@@ -45,6 +52,10 @@ class GreenRetLayer(object):
         # Compute refinement indices
         # MATLAB: init.m -> refinematrixlayer, then init1/init2 for off-diagonal
         self._init_refinement(**options)
+
+        # Build sparse singularity-subtraction matrices (MATLAB init1.m / init2.m).
+        # Skipped when offdiag='full' (fallback to slow full integration path).
+        self._init_refine_sparse()
 
     def _init_positions(self) -> None:
 
@@ -99,8 +110,198 @@ class GreenRetLayer(object):
             self._offdiag_ind = np.ravel_multi_index(
                 (offdiag_rows, offdiag_cols),
                 (self.p1.n, self.p2.n))
+            self._offdiag_rows = offdiag_rows
+            self._offdiag_cols = offdiag_cols
         else:
             self._offdiag_ind = np.array([], dtype = int)
+            self._offdiag_rows = np.array([], dtype = int)
+            self._offdiag_cols = np.array([], dtype = int)
+
+    # -----------------------------------------------------------------
+    #  Sparse init (MATLAB init1.m / init2.m)
+    # -----------------------------------------------------------------
+    def _init_refine_sparse(self) -> None:
+        """Precompute sparse singularity-subtraction matrices.
+
+        MATLAB reference:
+          init1.m  -- normal-derivative case (ig, ifr, ifz)
+          init2.m  -- Cartesian-derivative case (ig, if1, if2, ifz)
+
+        The algorithm evaluates static ``1/d`` kernels at face vertices,
+        weights them by shape functions, and stores the result in sparse
+        matrices. At eval time the tabulated Green function is sampled at
+        those same vertex (r0, z1, z2) coordinates, and a single sparse
+        matmul accumulates the refined off-diagonal entries.
+
+        Attributes set
+        --------------
+        _refine_ready : bool
+            True if sparse matrices were built and should be used.
+        _refine_ir    : (nvertices,) ndarray — vertex radii
+        _refine_iz    : (nvertices, 2) ndarray — vertex z-values (z1, z2)
+        _refine_ig    : sparse (N_offdiag, nvertices)
+        _refine_ifr   : sparse (N_offdiag, nvertices)   (norm path)
+        _refine_ifz   : sparse (N_offdiag, nvertices)
+        _refine_if1   : sparse (N_offdiag, nvertices)   (cart path)
+        _refine_if2   : sparse (N_offdiag, nvertices)   (cart path)
+        """
+        self._refine_ready = False
+
+        # Skip when user requested the full integration path
+        if self._offdiag_mode == 'full':
+            return
+        if len(self._offdiag_ind) == 0:
+            return
+
+        p1 = self.p1
+        p2 = self.p2
+        layer = self.layer
+
+        # Build mapping ind(row, col) -> sparse column index (1-based in MATLAB).
+        # We use 0-based here: ind_map[row, col] = k  (0 <= k < N_offdiag)
+        N_off = len(self._offdiag_rows)
+        ind_map = -np.ones((p1.n, p2.n), dtype = np.int64)
+        # Preserve the same ordering used by self._offdiag_ind so callers that
+        # consume ig*g etc. slot entries back into the flat index correctly.
+        ind_map[self._offdiag_rows, self._offdiag_cols] = np.arange(N_off)
+
+        # Face columns that need refinement
+        reface = np.unique(self._offdiag_cols)
+
+        # Accumulators (single pass)
+        ir_list = []       # vertex radii (r0) - per face slab
+        iz1_list = []      # vertex z1
+        iz2_list = []      # vertex z2
+        i1_all = []        # sparse row indices
+        j_all = []         # sparse col indices into vertex stream
+        g_all = []
+        fr_all = []        # norm path
+        fz_norm_all = []   # norm path: includes nvec_z factor
+        f1_all = []        # cart path
+        f2_all = []
+        fz_cart_all = []   # cart path: pure z/d^3
+
+        face_slab_offset = 0
+
+        for face in reface:
+            # rows (neighbour faces) that need refinement in this column
+            nb = np.where(ind_map[:, face] >= 0)[0]
+            if len(nb) == 0:
+                continue
+            iface = ind_map[nb, face]  # sparse-row index
+
+            # Quadrature points + weights for this face (single-column)
+            pos_q, w_sparse, _ = _particle_quad(p2, np.array([face]))
+            _, nz_cols, w_vals = _sparse_find(w_sparse)
+            pos = pos_q[nz_cols]
+            w = np.asarray(w_vals).reshape(-1)
+            if len(w) == 0:
+                continue
+
+            # Vertices and shape function for this face
+            s, verts = _shape_and_verts(p2, face)
+
+            nvec = p1.nvec[nb]
+
+            # Distances centroids -> vertices (d0, r0, z0)
+            r0, z0, d0, _, _, _ = _refine_dist(
+                layer, p1.pos[nb], verts, nvec)
+            # Distances centroids -> quadrature points (r, z, d, in, x, y)
+            r, z, d, in_prod, x, y = _refine_dist(
+                layer, p1.pos[nb], pos, nvec)
+
+            # z-values of centroids and vertices (rounded to layer)
+            z1_round_arr = layer.round_z(p1.pos[nb, 2])[0]
+            z2_round_arr = layer.round_z(verts[:, 2])[0]
+            n_nb = len(nb)
+            n_verts = verts.shape[0]
+
+            # MATLAB: obj.ir = [obj.ir; r0(:)] -- column-major (Fortran) flatten.
+            # For fixed vertex v, neighbour k: column index = v*n_nb + k.
+            ir_list.append(r0.ravel(order = 'F'))
+            z1_grid = np.broadcast_to(z1_round_arr[:, np.newaxis],
+                    (n_nb, n_verts)).ravel(order = 'F')
+            z2_grid = np.broadcast_to(z2_round_arr[np.newaxis, :],
+                    (n_nb, n_verts)).ravel(order = 'F')
+            iz1_list.append(z1_grid)
+            iz2_list.append(z2_grid)
+
+            # For each shape mode (== vertex index)
+            n_shape = s.shape[1]
+            d_safe = np.maximum(d, 1e-30)
+
+            for i in range(n_shape):
+                d0_i = d0[:, i:i + 1]                   # (n_nb, 1)
+                r0_i = np.maximum(r0[:, i:i + 1], 1e-30)
+                z0_i = z0[:, i:i + 1]
+                s_i = s[:, i].reshape(1, -1)            # (1, m)
+
+                # g0 = d0(:,i) * s(:,i)^T -> (n_nb, m)
+                g0 = d0_i * s_i
+                fr0 = (d0_i ** 3 / r0_i) * s_i
+                # z0 may be zero when points are exactly on layer; protect.
+                # In MATLAB z0 is computed by dist() as sum of mindist(z) -
+                # it is always >= 0, and the face is assumed off-layer, so
+                # z0 > 0 in practice. 1e-30 guard is purely defensive.
+                z0_safe = np.where(np.abs(z0_i) < 1e-30, 1e-30, z0_i)
+                fz0 = (d0_i ** 3 / z0_safe) * s_i
+
+                # norm path
+                g_ent = (g0 / d_safe) @ w
+                fr_ent = (fr0 * in_prod * r / d_safe ** 3) @ w
+                fz_ent_norm = (fz0 * nvec[:, 2:3] * z / d_safe ** 3) @ w
+                # cart path
+                f1_ent = (fr0 * x / d_safe ** 3) @ w
+                f2_ent = (fr0 * y / d_safe ** 3) @ w
+                fz_ent_cart = (fz0 * z / d_safe ** 3) @ w
+
+                # Column indices: Fortran-order flatten of r0 (n_nb, n_verts)
+                # Shape mode i maps to vertex v=i: cols = i*n_nb + (0..n_nb-1)
+                j = face_slab_offset + i * n_nb + np.arange(n_nb)
+                i1_all.append(iface)
+                j_all.append(j)
+                g_all.append(g_ent)
+                fr_all.append(fr_ent)
+                fz_norm_all.append(fz_ent_norm)
+                f1_all.append(f1_ent)
+                f2_all.append(f2_ent)
+                fz_cart_all.append(fz_ent_cart)
+
+            face_slab_offset += n_nb * n_verts
+
+        if not i1_all:
+            return
+
+        # Stack vertex coords (size = face_slab_offset = sum over faces)
+        self._refine_ir = np.concatenate(ir_list)
+        self._refine_iz = np.column_stack(
+                [np.concatenate(iz1_list), np.concatenate(iz2_list)])
+        nverts_total = len(self._refine_ir)
+
+        i1_flat = np.concatenate(i1_all)
+        j_flat = np.concatenate(j_all)
+
+        shape = (N_off, nverts_total)
+        self._refine_ig = csr_matrix(
+                (np.concatenate(g_all), (i1_flat, j_flat)),
+                shape = shape, dtype = complex)
+        self._refine_ifr = csr_matrix(
+                (np.concatenate(fr_all), (i1_flat, j_flat)),
+                shape = shape, dtype = complex)
+        self._refine_ifz_norm = csr_matrix(
+                (np.concatenate(fz_norm_all), (i1_flat, j_flat)),
+                shape = shape, dtype = complex)
+        self._refine_if1 = csr_matrix(
+                (np.concatenate(f1_all), (i1_flat, j_flat)),
+                shape = shape, dtype = complex)
+        self._refine_if2 = csr_matrix(
+                (np.concatenate(f2_all), (i1_flat, j_flat)),
+                shape = shape, dtype = complex)
+        self._refine_ifz_cart = csr_matrix(
+                (np.concatenate(fz_cart_all), (i1_flat, j_flat)),
+                shape = shape, dtype = complex)
+
+        self._refine_ready = True
 
     # -----------------------------------------------------------------
     #  Helper: interpolate tab + return r_rounded and zmin
@@ -429,6 +630,60 @@ class GreenRetLayer(object):
                 self.Gp_comp[name][rows, 2, col] = fz_q @ w
 
     # -----------------------------------------------------------------
+    #  Off-diagonal refinement (sparse, fast path)
+    # -----------------------------------------------------------------
+    def _refine_offdiagonal_sparse(self) -> None:
+        """Fast sparse off-diagonal refinement using singularity subtraction.
+
+        MATLAB: initrefl1.m lines 135-143 + initrefl2.m lines 133-141.
+
+        At init time we precomputed ``ig``, ``ifr``, ``ifz``, ``if1``, ``if2``
+        which encode shape-function-weighted static-kernel integrals.  At
+        eval time we sample the tabulated Green function at the vertex
+        points stored in ``_refine_ir``/``_refine_iz`` and accumulate via
+        sparse matmul.
+        """
+        if not self._refine_ready:
+            return
+
+        # Interpolate tabulated Green function at vertex points.
+        g_dict, fr_dict, fz_dict = self.tab.eval_components(
+                self.enei,
+                self._refine_ir,
+                self._refine_iz[:, 0],
+                self._refine_iz[:, 1])
+
+        names = list(self.G_comp.keys())
+        n1 = self.p1.n
+        n2 = self.p2.n
+
+        # Rows/cols of off-diagonal entries (flat -> 2D).
+        rows = self._offdiag_rows
+        cols = self._offdiag_cols
+
+        for name in names:
+            g_vec = np.asarray(g_dict[name]).ravel()
+            fr_vec = np.asarray(fr_dict[name]).ravel()
+            fz_vec = np.asarray(fz_dict[name]).ravel()
+
+            # Sparse matmul: (N_off, nverts) @ (nverts,) = (N_off,)
+            g_ref = np.asarray(self._refine_ig @ g_vec).ravel()
+            # norm-path: F = ifr*fr + ifz_norm*fz  (ifz_norm already has nvec_z)
+            f_ref = (np.asarray(self._refine_ifr @ fr_vec).ravel()
+                   + np.asarray(self._refine_ifz_norm @ fz_vec).ravel())
+            # cart-path (Gp)
+            gp_x = np.asarray(self._refine_if1 @ fr_vec).ravel()
+            gp_y = np.asarray(self._refine_if2 @ fr_vec).ravel()
+            gp_z = np.asarray(self._refine_ifz_cart @ fz_vec).ravel()
+
+            # Slot back into per-component matrices.
+            self.G_comp[name][rows, cols] = g_ref
+            self.F_comp[name][rows, cols] = f_ref
+            self.Gp_comp[name][rows, 0, cols] = gp_x
+            self.Gp_comp[name][rows, 1, cols] = gp_y
+            self.Gp_comp[name][rows, 2, cols] = gp_z
+
+    # -----------------------------------------------------------------
     #  Apply refinement to per-component Green functions
     # -----------------------------------------------------------------
     def _apply_refinement_components(self) -> None:
@@ -445,9 +700,13 @@ class GreenRetLayer(object):
             # Refine Gp_comp (cart-style: initrefl2.m)
             self._refine_diagonal_cart_gp_only(self.Gp_comp)
 
-        # Off-diagonal refinement
+        # Off-diagonal refinement: prefer sparse (shape-function) path when
+        # available, fall back to full integration otherwise.
         if len(self._offdiag_ind) > 0:
-            self._refine_offdiagonal_components()
+            if getattr(self, '_refine_ready', False):
+                self._refine_offdiagonal_sparse()
+            else:
+                self._refine_offdiagonal_components()
 
     # -----------------------------------------------------------------
     #  Main evaluation methods
@@ -672,3 +931,122 @@ def _particle_quad(p, ind):
         return p._quad_flat(ind)
     else:
         return p._quad_curv(ind)
+
+
+def _underlying_particle(p):
+    """Return the concrete Particle object (handles ComParticle wrapper)."""
+    if hasattr(p, 'pc') and p.pc is not None and not hasattr(p, 'interp'):
+        return p.pc
+    return p
+
+
+def _shape_and_verts(p, face_idx):
+    """Return (shape_function_values, vertex_positions) for one face.
+
+    Mirrors MATLAB ``@greenretlayer/private/shapefunction.m`` combined with
+    ``vertices(p, face)``.
+
+    For a triangle face (3 vertices):
+        s(q, :) = [x_q, y_q, 1 - x_q - y_q]      -> (m, 3)
+        pos_q  = m quadrature points
+
+    For a quadrilateral face (4 vertices):
+        MATLAB maps the triangular Dunavant rule onto two sub-triangles of
+        the canonical [-1, 1]^2 square (v1=(-1,-1), v2=(1,-1), v3=(1,1),
+        v4=(-1,1)).  Two triangles -> 2m quadrature points.
+        s(q, :) = 0.25 * [(1-u)(1-v), (1+u)(1-v), (1+u)(1+v), (1-u)(1+v)]
+                  evaluated at the same (u, v) sample locations.
+    """
+    p = _underlying_particle(p)
+    quad_table = p.quad
+
+    faces = p.faces
+    is_triangle = (faces.shape[1] < 4) or np.isnan(faces[face_idx, 3])
+
+    if is_triangle:
+        x = np.asarray(quad_table.x).ravel()
+        y = np.asarray(quad_table.y).ravel()
+        s = np.column_stack([x, y, 1.0 - x - y])
+        vert_ids = faces[face_idx, :3].astype(int)
+        verts = p.verts[vert_ids]
+        return s, verts
+
+    # Quadrilateral: reproduce MATLAB @quadface/quad([-1,-1,0], [1,-1,0],
+    # [1,1,0], [-1,1,0]) which stitches together two adapted triangles.
+    # Triangle 1 uses corners (v1, v2, v3) = ((-1,-1), (1,-1), (1,1)):
+    #   u = x*(-1) + y*(1) + (1-x-y)*(1)  = 1 - 2x
+    #   v = x*(-1) + y*(-1) + (1-x-y)*(1) = 1 - 2x - 2y   ... wait this is wrong
+    # Actually adaptrule: pos = x*v1 + y*v2 + (1-x-y)*v3.
+    # With v1=(-1,-1), v2=(1,-1), v3=(1,1):
+    #   u = x*(-1) + y*(1)  + (1-x-y)*(1)  = 1 - 2x
+    #   v = x*(-1) + y*(-1) + (1-x-y)*(1)  = 1 - 2x
+    # -> u == v; that collapses.  The correct reading is:
+    #   v1 -> maps x=1 (other two=0) to v1; v2 -> y=1 to v2; v3 -> (1-x-y)=1 to v3
+    # With x=1 -> point is v1; y=1 -> v2; x=y=0 -> v3.  So:
+    #   u = 1*x + 1*y + 1*(1-x-y)  when v1=(v1u), v2=(v2u), v3=(v3u)
+    # Substituting v1=(-1,-1), v2=(1,-1), v3=(1,1):
+    #   u = -1*x + 1*y + 1*(1-x-y)       = 1 - 2x
+    #   v = -1*x + -1*y + 1*(1-x-y)      = 1 - 2x - 2y + x - y... recomputing:
+    #   u_1 = (-1)*x + (1)*y + (1)*(1 - x - y) = -x + y + 1 - x - y = 1 - 2x
+    #   v_1 = (-1)*x + (-1)*y + (1)*(1 - x - y) = -x - y + 1 - x - y = 1 - 2x - 2y
+    # Triangle 2 uses (v3, v4, v1) = ((1,1), (-1,1), (-1,-1)):
+    #   u_2 = (1)*x + (-1)*y + (-1)*(1 - x - y) = x - y - 1 + x + y = 2x - 1
+    #   v_2 = (1)*x + (1)*y + (-1)*(1 - x - y) = x + y - 1 + x + y = 2x + 2y - 1
+    x = np.asarray(quad_table.x).ravel()
+    y = np.asarray(quad_table.y).ravel()
+    u1 = 1.0 - 2.0 * x
+    v1 = 1.0 - 2.0 * x - 2.0 * y
+    u2 = 2.0 * x - 1.0
+    v2 = 2.0 * x + 2.0 * y - 1.0
+    u = np.concatenate([u1, u2])
+    v = np.concatenate([v1, v2])
+
+    s = 0.25 * np.column_stack([
+            (1.0 - u) * (1.0 - v),
+            (1.0 + u) * (1.0 - v),
+            (1.0 + u) * (1.0 + v),
+            (1.0 - u) * (1.0 + v),
+    ])
+    vert_ids = faces[face_idx, :4].astype(int)
+    verts = p.verts[vert_ids]
+    return s, verts
+
+
+def _refine_dist(layer, pos1, pos2, nvec):
+    """Compute distances used by init1.m/init2.m.
+
+    Mirrors the private ``dist`` helpers.
+
+    Returns
+    -------
+    r  : (n1, n2) radial (xy) distance, floored at layer.rmin
+    z  : (n1, n2) sum of mindist-to-layer for z1 and z2 (always >= 0)
+    d  : (n1, n2) sqrt(r^2 + z^2)
+    in_prod : (n1, n2) inner product (x*nvec_x + y*nvec_y) / max(r, 1e-10)
+    x  : (n1, n2) x-difference pos1 - pos2
+    y  : (n1, n2) y-difference pos1 - pos2
+    """
+    pos1 = np.asarray(pos1, dtype = float)
+    pos2 = np.asarray(pos2, dtype = float)
+
+    x = pos1[:, 0:1] - pos2[:, 0].reshape(1, -1)
+    y = pos1[:, 1:2] - pos2[:, 1].reshape(1, -1)
+
+    # MATLAB dist() uses the "layer-rounded" z as input then mindist, but
+    # the code path is equivalent to mindist(z) directly since round_z never
+    # shifts through zero.  We keep the explicit round_z for bit-parity.
+    z1_round = layer.round_z(pos1[:, 2])[0]
+    z2_round = layer.round_z(pos2[:, 2])[0]
+
+    zmin1, _ = layer.mindist(z1_round)
+    zmin2, _ = layer.mindist(z2_round)
+    z = zmin1[:, np.newaxis] + zmin2[np.newaxis, :]
+
+    r = msqrt(x ** 2 + y ** 2)
+    r = np.maximum(r, layer.rmin)
+    d = msqrt(r ** 2 + z ** 2)
+
+    r_safe = np.maximum(r, 1e-10)
+    in_prod = (x * nvec[:, 0:1] + y * nvec[:, 1:2]) / r_safe
+
+    return r, z, d, in_prod, x, y
