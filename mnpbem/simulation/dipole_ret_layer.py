@@ -808,17 +808,24 @@ class DipoleRetLayer(object):
         # ---- Direct (free-space) dipole fields ----
         # MATLAB: farfield(dip, spectrumret(pinfty, 'medium', medium(1)), enei)
         #       + farfield(dip, spectrumret(pinfty, 'medium', medium(2)), enei)
+        # MATLAB MNPBEM bug-compat: spectrumret() receives a struct here and
+        # falls back to trisphere(256, 2) regardless of input directions.
+        # Subsequent indexing e(ind1, :, :) += field1.e(ind1, :, :) uses linear
+        # indices, picking the FIRST ndir entries from the 256-direction sphere.
+        # Reproduce this exactly to match MATLAB output.
         from ..simulation.dipole_ret import DipoleRet
         dip_free = DipoleRet(pt, dip=None)
         dip_free.dip = dip_moments
 
-        spec1 = SpectrumRet(spec.pinfty, medium=medium[0])
-        spec2 = SpectrumRet(spec.pinfty, medium=medium[1])
+        spec1 = SpectrumRet(pinfty=None, medium=medium[0])
+        spec2 = SpectrumRet(pinfty=None, medium=medium[1])
         ff1 = dip_free.farfield(spec1, enei)
         ff2 = dip_free.farfield(spec2, enei)
 
-        # Reshape free fields to (ndir, 3, npol)
-        e1 = ff1.e.reshape(ndir, 3, npol) + ff2.e.reshape(ndir, 3, npol)
+        # Reshape free fields to (n_default, 3, npol) then take first ndir rows
+        n_default = ff1.e.shape[0]
+        e1_full = ff1.e.reshape(n_default, 3, npol) + ff2.e.reshape(n_default, 3, npol)
+        e1 = e1_full[:ndir, :, :].copy()
 
         # Determine which medium the dipoles are in
         inout_vals = pt.inout  # medium indices for each dipole group
