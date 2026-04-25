@@ -11,6 +11,22 @@ class GreenTabLayer(object):
 
     name = 'greentablayer'
 
+    def __new__(cls,
+            layer: Any,
+            tab: Optional[Any] = None,
+            **options: Any):
+        # MATLAB compgreentablayer treats a cell-array of tabs as separate
+        # sub-tables and dispatches each query to the owning sub-tab via
+        # inside.m.  When given a list with more than one entry we route
+        # through _MultiGreenTabLayer to mirror that behaviour; merging them
+        # into a single union grid (as before) caused 2D MATLAB queries to
+        # become 3D in Python and produced systematically wrong z2 finite
+        # differences in dipoleretlayer (Wave 45).
+        if cls is GreenTabLayer and isinstance(tab, list) and len(tab) > 1:
+            from .compgreentab_layer import _MultiGreenTabLayer
+            return _MultiGreenTabLayer(layer, tab)
+        return super().__new__(cls)
+
     def __init__(self,
             layer: Any,
             tab: Optional[Dict[str, Any]] = None,
