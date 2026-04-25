@@ -808,17 +808,26 @@ class DipoleRetLayer(object):
         # ---- Direct (free-space) dipole fields ----
         # MATLAB: farfield(dip, spectrumret(pinfty, 'medium', medium(1)), enei)
         #       + farfield(dip, spectrumret(pinfty, 'medium', medium(2)), enei)
-        # MATLAB MNPBEM bug-compat: spectrumret() receives a struct here and
-        # falls back to trisphere(256, 2) regardless of input directions.
-        # Subsequent indexing e(ind1, :, :) += field1.e(ind1, :, :) uses linear
+        # MATLAB MNPBEM bug-compat: when spec.pinfty is a struct (i.e. supplied
+        # by the user as a plain nvec wrapper), MATLAB's spectrumret(...) hits
+        # the isstruct branch and falls back to trisphere(256, 2). Subsequent
+        # indexing e(ind1, :, :) += field1.e(ind1, :, :) then uses linear
         # indices, picking the FIRST ndir entries from the 256-direction sphere.
-        # Reproduce this exactly to match MATLAB output.
+        # When spec.pinfty is the SpectrumRetLayer-internal default (a real
+        # particle from select+vertcat), MATLAB takes the else-branch and uses
+        # the supplied pinfty directly. We mirror this by checking the flag
+        # SpectrumRetLayer set during init.
         from ..simulation.dipole_ret import DipoleRet
         dip_free = DipoleRet(pt, dip=None)
         dip_free.dip = dip_moments
 
-        spec1 = SpectrumRet(pinfty=None, medium=medium[0])
-        spec2 = SpectrumRet(pinfty=None, medium=medium[1])
+        use_fallback = bool(getattr(spec, '_user_pinfty', True))
+        if use_fallback:
+            spec1 = SpectrumRet(pinfty=None, medium=medium[0])
+            spec2 = SpectrumRet(pinfty=None, medium=medium[1])
+        else:
+            spec1 = SpectrumRet(spec.pinfty, medium=medium[0])
+            spec2 = SpectrumRet(spec.pinfty, medium=medium[1])
         ff1 = dip_free.farfield(spec1, enei)
         ff2 = dip_free.farfield(spec2, enei)
 

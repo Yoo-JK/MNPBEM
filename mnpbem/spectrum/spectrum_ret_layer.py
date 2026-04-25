@@ -18,6 +18,10 @@ class SpectrumRetLayer(object):
 
         self.layer = layer
 
+        # Track whether pinfty came from the user (relevant for MATLAB
+        # spectrumret isstruct-fallback bug-compat in DipoleRetLayer.farfield).
+        self._user_pinfty = pinfty is not None
+
         # Handle different input types
         if pinfty is None:
             # MATLAB @spectrumretlayer/init.m uses
