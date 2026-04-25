@@ -112,8 +112,14 @@ class BEMRet(object):
         self.Delta_lu = None
         self.Sigma_lu = None
 
-        # Green function object (for field/potential computation)
-        self.g = None
+        # Green function object (for field/potential computation).
+        # MATLAB bemret/private/init.m line 26 builds compgreenret immediately
+        # in the constructor, snapshotting the particle's quadrature state at
+        # bemsolver-creation time. Python must do the same; otherwise an
+        # excitation object created afterwards (e.g. EELSRet with refine=2)
+        # could mutate p.quad and the BEM Green matrix would silently use the
+        # refined rule. See Wave 22 Track A for full diagnosis.
+        self.g = CompGreenRet(self.p, self.p)
 
         # Initialize at specific energy if provided
         if enei is not None:
