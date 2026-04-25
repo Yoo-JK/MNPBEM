@@ -9,6 +9,23 @@ from scipy.sparse import lil_matrix, csr_matrix
 from scipy.spatial import distance
 
 
+def _pdist2_matlab(p1, p2):
+    """MATLAB Misc/+misc/pdist2.m parity.
+
+    Uses the algebraic identity d^2 = |p1|^2 + |p2|^2 - 2 p1.p2 (instead of the
+    direct sqrt(sum((p1-p2)^2)) form scipy.cdist uses) so that boundary cases
+    in refinematrix's `id_rel < RelCutoff` test agree with MATLAB at the ULP
+    level. See Wave 21 Track C diagnostics.
+    """
+    p1 = np.asarray(p1)
+    p2 = np.asarray(p2)
+    n1_sq = np.sum(p1 * p1, axis=1)
+    n2_sq = np.sum(p2 * p2, axis=1)
+    d_sq = n1_sq[:, np.newaxis] + n2_sq[np.newaxis, :] - 2.0 * (p1 @ p2.T)
+    d_sq[d_sq < 1e-10] = 0.0
+    return np.sqrt(d_sq)
+
+
 def refinematrix(p1, p2, AbsCutoff=0, RelCutoff=3, memsize=2e7):
     """
     Determine which Green function elements need refinement.
@@ -99,8 +116,9 @@ def refinematrix(p1, p2, AbsCutoff=0, RelCutoff=3, memsize=2e7):
         chunk = slice(i_start, i_end)
 
         # Distance matrix for this chunk: (n1, chunk_size)
-        # Using scipy.spatial.distance.cdist for efficiency
-        d = distance.cdist(pos1, pos2[chunk])
+        # Use MATLAB's algebraic pdist2 form for ULP parity at the
+        # `id_rel == RelCutoff` boundary (see _pdist2_matlab docstring).
+        d = _pdist2_matlab(pos1, pos2[chunk])
 
         # Approximate distance to boundary element centers
         # Subtract element radius to get distance to element surface
