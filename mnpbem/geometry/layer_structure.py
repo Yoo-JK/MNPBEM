@@ -118,7 +118,16 @@ class LayerStructure(object):
 
         # ODE integration options
         self.atol = options.get('atol', 1e-6)
+        self.rtol = options.get('rtol', 1e-3)
         self.initial_step = options.get('initial_step', 1e-3)
+
+        # Wave 33: Sommerfeld integration backend selection.
+        # use_ode=True selects scipy solve_ivp with RK45 to mirror MATLAB ode45
+        # (AbsTol=1e-6, RelTol=1e-3, InitialStep=1e-3). Default False keeps the
+        # high-accuracy GL panels backend used by 69 perf demos. Demos requiring
+        # MATLAB-faithful Sommerfeld inaccuracy (demospecret13/dipret8/dipret9)
+        # can opt in via LayerStructure(..., use_ode=True).
+        self.use_ode = options.get('use_ode', False)
 
         # Sommerfeld GL panel/order configuration (Wave 26)
         # Defaults match Wave 20 A revert (suitable for most demos).
@@ -1372,9 +1381,12 @@ class LayerStructure(object):
             pos: Dict[str, Any],
             n1: int,
             n_names: int) -> np.ndarray:
-        # Integration along semi-ellipse in complex kr-plane using composite
-        # Gauss-Legendre with a vectorized batch RHS over all sample points.
-        # Panel/order chosen to match MATLAB ode45 AbsTol=1e-12, RelTol=1e-10.
+        # Integration along semi-ellipse in complex kr-plane.
+        # Wave 33: dispatch to ODE backend (MATLAB ode45 mirror) when use_ode
+        # is set, otherwise use composite Gauss-Legendre (high accuracy).
+        if self.use_ode:
+            return self._integrate_semiellipse_ode(enei, pos, n1, n_names)
+
         ctx = self._build_integrate_context(enei, pos)
         k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
         ind_full = np.arange(len(ctx['r_flat']))
@@ -1392,6 +1404,37 @@ class LayerStructure(object):
         weighted = (ws * dkr_arr)[:, np.newaxis] * y_batch
         return weighted.sum(axis = 0)
 
+    def _integrate_semiellipse_ode(self,
+            enei: float,
+            pos: Dict[str, Any],
+            n1: int,
+            n_names: int) -> np.ndarray:
+        # Wave 33: solve_ivp RK45 mirroring MATLAB ode45.
+        # MATLAB green.m: ode45(@(x,y) fun(...,1), [0, 1e-3, pi], y1, op)
+        # with op = odeset('AbsTol', 1e-6, 'InitialStep', 1e-3).
+        # MATLAB ode45 default MaxStep = abs(t1-t0)/10 (= pi/10 here).
+        ctx = self._build_integrate_context(enei, pos)
+        k1max = float(np.max(np.real(ctx['k_vals'])) + ctx['k0'])
+        ind_full = np.arange(len(ctx['r_flat']))
+        n_state = 15 * len(ind_full)
+        semi = self.semi
+
+        def rhs(x, y):
+            kr = k1max * (1 - np.cos(x) - 1j * semi * np.sin(x))
+            dkr = k1max * (np.sin(x) - 1j * semi * np.cos(x))
+            val = self._intbessel_ctx(kr, ctx, ind_full)
+            out = dkr * val
+            return np.concatenate([out.real, out.imag])
+
+        y0 = np.zeros(2 * n_state)
+        sol = solve_ivp(rhs, (0.0, np.pi), y0, method = 'RK45',
+                        atol = self.atol, rtol = self.rtol,
+                        first_step = self.initial_step,
+                        max_step = np.pi / 10,
+                        t_eval = [np.pi])
+        y_end = sol.y[:, -1]
+        return y_end[:n_state] + 1j * y_end[n_state:]
+
     def _integrate_real(self,
             enei: float,
             pos: Dict[str, Any],
@@ -1401,6 +1444,9 @@ class LayerStructure(object):
         # Real kr-axis integration. Original ODE went x: 1 -> 1e-10.
         # We integrate forward over [1e-10, 1] with composite GL (more panels
         # near the small-x end where integrand oscillates) and negate.
+        if self.use_ode:
+            return self._integrate_real_ode(enei, pos, ind, n, n_names)
+
         ctx = self._build_integrate_context(enei, pos)
         k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
 
@@ -1424,12 +1470,45 @@ class LayerStructure(object):
         weighted = (ws * fac_arr)[:, np.newaxis] * y_batch
         return -weighted.sum(axis = 0)
 
+    def _integrate_real_ode(self,
+            enei: float,
+            pos: Dict[str, Any],
+            ind: np.ndarray,
+            n: int,
+            n_names: int) -> np.ndarray:
+        # Wave 33: solve_ivp RK45 mirroring MATLAB ode45 along real kr-axis.
+        # MATLAB green.m: ode45(@(x,y) fun(...,2,ind2), [1, 1e-3, 1e-10], y2, op)
+        # We integrate from 1 -> 1e-10 (forward in MATLAB time direction).
+        ctx = self._build_integrate_context(enei, pos)
+        k1max = float(np.max(np.real(ctx['k_vals'])) + ctx['k0'])
+        n_state = 15 * len(ind)
+
+        def rhs(x, y):
+            kr = 2.0 * k1max / x
+            val = self._intbessel_ctx(kr, ctx, ind)
+            out = -2.0 * k1max * val / (x * x)
+            return np.concatenate([out.real, out.imag])
+
+        y0 = np.zeros(2 * n_state)
+        # Integrate from 1 to 1e-10 (decreasing x). first_step is signed.
+        # MATLAB MaxStep = abs(1 - 1e-10)/10 ~ 0.1.
+        sol = solve_ivp(rhs, (1.0, 1e-10), y0, method = 'RK45',
+                        atol = self.atol, rtol = self.rtol,
+                        first_step = self.initial_step,
+                        max_step = 0.1,
+                        t_eval = [1e-10])
+        y_end = sol.y[:, -1]
+        return y_end[:n_state] + 1j * y_end[n_state:]
+
     def _integrate_imag(self,
             enei: float,
             pos: Dict[str, Any],
             ind: np.ndarray,
             n: int,
             n_names: int) -> np.ndarray:
+        if self.use_ode:
+            return self._integrate_imag_ode(enei, pos, ind, n, n_names)
+
         ctx = self._build_integrate_context(enei, pos)
         k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
 
@@ -1450,6 +1529,33 @@ class LayerStructure(object):
         y_batch = self._inthankel_batch(kr_arr, ctx, ind)
         weighted = (ws * fac_arr)[:, np.newaxis] * y_batch
         return -weighted.sum(axis = 0)
+
+    def _integrate_imag_ode(self,
+            enei: float,
+            pos: Dict[str, Any],
+            ind: np.ndarray,
+            n: int,
+            n_names: int) -> np.ndarray:
+        # Wave 33: solve_ivp RK45 mirroring MATLAB ode45 along imag kr-axis.
+        # MATLAB green.m: ode45(@(x,y) fun(...,3,ind3), [1, 1e-3, 1e-10], y3, op)
+        ctx = self._build_integrate_context(enei, pos)
+        k1max = float(np.max(np.real(ctx['k_vals'])) + ctx['k0'])
+        n_state = 15 * len(ind)
+
+        def rhs(x, y):
+            kr = 2.0 * k1max * (1 - 1j + 1j / x)
+            val = self._inthankel_ctx(kr, ctx, ind)
+            out = -2j * k1max * val / (x * x)
+            return np.concatenate([out.real, out.imag])
+
+        y0 = np.zeros(2 * n_state)
+        sol = solve_ivp(rhs, (1.0, 1e-10), y0, method = 'RK45',
+                        atol = self.atol, rtol = self.rtol,
+                        first_step = self.initial_step,
+                        max_step = 0.1,
+                        t_eval = [1e-10])
+        y_end = sol.y[:, -1]
+        return y_end[:n_state] + 1j * y_end[n_state:]
 
     def _intbessel_ctx(self,
             kpar: complex,
