@@ -1887,10 +1887,20 @@ class LayerStructure(object):
             *args: Any,
             **options: Any) -> list:
         # MATLAB: private/tabspace2.m
+        # MATLAB API: tabspace(layer, {p, pt}, [pt_extra,] options).
+        # The cell {p, pt} contributes to BOTH pos1 (z1 source) and pos2
+        # (z2 source); pt_extra is added only to pos1.
+        # Python convenience call tabspace(p, pt, ...) with non-list `p`
+        # mirrors the cell pattern: both p and pt go to pos1=pos2.
+        # If a second ComPoint-like arg is given, it acts as pt_extra.
         pt = None
+        pt_extra = None
         remaining = list(args)
         if len(remaining) > 0 and not isinstance(remaining[0], str):
             pt = remaining[0]
+            remaining = remaining[1:]
+        if len(remaining) > 0 and not isinstance(remaining[0], str):
+            pt_extra = remaining[0]
             remaining = remaining[1:]
 
         scale = options.get('scale', 1.05)
@@ -1898,12 +1908,19 @@ class LayerStructure(object):
         nz = options.get('nz', 30)
         n_layers = len(self.z) + 1
 
+        # If user passed `(p, pt)` with single particle and ComPoint pt,
+        # promote to cell-style `[p, pt]` for primary positions.
         if not isinstance(p, list):
-            p = [p]
+            primary = [p]
+            if pt is not None:
+                primary.append(pt)
+                pt = None  # consumed into primary
+        else:
+            primary = list(p)
 
-        # Collect positions from particles
+        # Collect positions from primary particles/points
         positions = []
-        for particle in p:
+        for particle in primary:
             if hasattr(particle, 'verts'):
                 positions.append(particle.verts)
             elif hasattr(particle, 'pos'):
@@ -1912,9 +1929,14 @@ class LayerStructure(object):
         pos1 = np.vstack(positions)
         pos2 = pos1.copy()
 
-        if pt is not None:
-            if hasattr(pt, 'pos'):
-                pos1 = np.vstack([pos1, pt.pos])
+        # MATLAB tabspace2.m line 50-56: if pt arg present, pt.pos is
+        # appended to pos1 (NOT pos2) once per primary particle. Mirror
+        # this for the optional pt_extra arg (or pt when p was a list).
+        extra = pt_extra if pt_extra is not None else pt
+        if extra is not None and hasattr(extra, 'pos'):
+            n_primary = len(primary)
+            extra_pos = np.tile(extra.pos, (n_primary, 1))
+            pos1 = np.vstack([pos1, extra_pos])
 
         # Get limits
         ir, iz1, iz2 = self._limits(pos1, pos2)
