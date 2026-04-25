@@ -198,7 +198,9 @@ def refinematrixlayer(p1, p2, layer, AbsCutoff=0, RelCutoff=3, memsize=2e7):
         n_chunk = i_end - i_start
 
         # In-plane radial distance (xy only)
-        r_xy = distance.cdist(pos1[:, :2], pos2[chunk, :2])  # (n1, n_chunk)
+        # MATLAB refinematrixlayer.m uses misc.pdist2 (algebraic form). Use
+        # _pdist2_matlab here for ULP-level parity at the cutoff boundary.
+        r_xy = _pdist2_matlab(pos1[:, :2], pos2[chunk, :2])  # (n1, n_chunk)
 
         # Minimum z-distance to layer boundaries for each point
         zmin1, _ = layer.mindist(pos1[:, 2])   # (n1,)
