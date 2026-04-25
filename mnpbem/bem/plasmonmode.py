@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.linalg as sla
 from scipy.sparse.linalg import eigs
 from typing import Tuple, Any, Optional
 
@@ -63,22 +64,25 @@ def plasmonmode(
         ene_diag, ur = eigs(F, k = nev_actual, **eigs_opts)
     else:
         # Dense eigensolver (LAPACK) -- exact eigenvalues
-        ene_all, ur_all = np.linalg.eig(F)
+        # Use scipy.linalg.eig with left=True, right=True so left and right
+        # eigenvectors are paired with the SAME eigenvalue ordering. Computing
+        # eig(F) and eig(F.T) separately permutes near-degenerate eigenvalues
+        # differently, breaking the biorthogonality (ul * ur)\ul step.
+        ene_all, vl_all, vr_all = sla.eig(F, left = True, right = True)
         idx_sort = np.argsort(ene_all.real)[:nev_actual]
-        ur = ur_all[:, idx_sort]
         ene_diag = ene_all[idx_sort]
-
-        ene_all_l, ul_all = np.linalg.eig(F.T)
-        idx_sort_l = np.argsort(ene_all_l.real)[:nev_actual]
-        ul = ul_all[:, idx_sort_l].T  # (nev, n)
+        ur = vr_all[:, idx_sort]
+        # Left eigenvectors satisfy vl^H F = ene * vl^H, so ul rows = vl^H
+        ul = vl_all[:, idx_sort].conj().T  # (nev, n)
 
     # extract eigenvalues and sort by ascending real part
     # IMPORTANT: sort BEFORE bi-orthogonalization so ul and ur are properly
     # paired. Sorting after bi-orthogonalization breaks the identity
     # ul @ ur = I when sort_idx is not the identity permutation.
-    ene = ene_diag.real if np.all(np.isreal(ene_diag)) else ene_diag
-    sort_idx = np.argsort(ene.real)
-    ene = ene[sort_idx].real
+    # Keep complex eigenvalues (matches MATLAB eigs which preserves the
+    # imaginary part of numerically near-degenerate conjugate pairs).
+    sort_idx = np.argsort(ene_diag.real)
+    ene = ene_diag[sort_idx]
 
     ur = ur[:, sort_idx]
     ul = ul[sort_idx, :]
