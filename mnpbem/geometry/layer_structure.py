@@ -360,8 +360,10 @@ class LayerStructure(object):
             _, k_vals[i] = eps_func(enei)
 
         # Perpendicular component of wavevector
-        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2) + 1e-10j
-        kz = kz * np.sign(np.imag(kz))
+        # MATLAB intbessel.m / reflection.m: kz = sqrt(...); kz = kz * sign(imag(kz + 1e-10i))
+        # The 1e-10j is only used inside sign() to break ties, not added to kz itself.
+        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2)
+        kz = kz * np.sign(np.imag(kz + 1e-10j))
 
         ind1 = np.atleast_1d(pos['ind1'])
         ind2 = np.atleast_1d(pos['ind2'])
@@ -522,8 +524,10 @@ class LayerStructure(object):
             _, k_vals[i] = eps_func(enei)
 
         # Perpendicular component of wavevector
-        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2) + 1e-10j
-        kz = kz * np.sign(np.imag(kz))
+        # MATLAB intbessel.m / reflection.m: kz = sqrt(...); kz = kz * sign(imag(kz + 1e-10i))
+        # The 1e-10j is only used inside sign() to break ties, not added to kz itself.
+        kz = m_sqrt_c(k_vals ** 2 - kpar ** 2)
+        kz = kz * np.sign(np.imag(kz + 1e-10j))
 
         # Perpendicular components
         ind1 = np.atleast_1d(pos['ind1'])
@@ -1016,8 +1020,9 @@ class LayerStructure(object):
         kpar_arr = np.asarray(kpar_arr)
         M = kpar_arr.size
 
-        kz = m_sqrt_c(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2) + 1e-10j
-        kz = kz * np.sign(np.imag(kz))  # (M, neps)
+        # MATLAB intbessel.m: kz = sqrt(...); kz = kz * sign(imag(kz + 1e-10i))
+        kz = m_sqrt_c(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2)
+        kz = kz * np.sign(np.imag(kz + 1e-10j))  # (M, neps)
 
         k1z = kz[:, ind1 - 1]  # (M, n_pos)
         k2z = kz[:, ind2 - 1]  # (M, n_pos)
