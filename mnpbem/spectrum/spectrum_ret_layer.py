@@ -25,12 +25,30 @@ class SpectrumRetLayer(object):
         # Handle different input types
         if pinfty is None:
             # MATLAB @spectrumretlayer/init.m uses
-            # trispheresegment(linspace(0,2*pi,21), linspace(0,pi,21), 2)
-            from ..geometry import trispheresegment
-            phi_grid = np.linspace(0, 2 * np.pi, 21)
-            theta_grid = np.linspace(0, np.pi, 21)
-            p_inf = trispheresegment(phi_grid, theta_grid, 2)
-            self.pinfty = _PinftyStruct(p_inf.nvec.copy(), p_inf.area.copy())
+            # trispheresegment(linspace(0,2*pi,21), linspace(0,pi,21), 2).
+            # Load the MATLAB-exported pinfty for bit-identical face ordering
+            # (Python trispheresegment's mesh-cleaning step reorders faces).
+            data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
+            pinfty_file = os.path.join(data_dir, 'pinfty_layer_default.bin')
+            if os.path.exists(pinfty_file):
+                with open(pinfty_file, 'rb') as f:
+                    n = np.fromfile(f, dtype=np.int32, count=1)[0]
+                    nx = np.fromfile(f, dtype=np.float64, count=n)
+                    ny = np.fromfile(f, dtype=np.float64, count=n)
+                    nz = np.fromfile(f, dtype=np.float64, count=n)
+                    px = np.fromfile(f, dtype=np.float64, count=n)
+                    py = np.fromfile(f, dtype=np.float64, count=n)
+                    pz = np.fromfile(f, dtype=np.float64, count=n)
+                    area = np.fromfile(f, dtype=np.float64, count=n)
+                nvec = np.column_stack([nx, ny, nz])
+                pos = np.column_stack([px, py, pz])
+                self.pinfty = _PinftyStruct(nvec, area, pos=pos)
+            else:
+                from ..geometry import trispheresegment
+                phi_grid = np.linspace(0, 2 * np.pi, 21)
+                theta_grid = np.linspace(0, np.pi, 21)
+                p_inf = trispheresegment(phi_grid, theta_grid, 2)
+                self.pinfty = _PinftyStruct(p_inf.nvec.copy(), p_inf.area.copy())
         elif isinstance(pinfty, int):
             _, _, nvec, area = trisphere_unit(pinfty)
             self.pinfty = _PinftyStruct(nvec, area)

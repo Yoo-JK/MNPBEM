@@ -24,9 +24,19 @@ def _load_pinfty_default():
             nx = np.fromfile(f, dtype=np.float64, count=n)
             ny = np.fromfile(f, dtype=np.float64, count=n)
             nz = np.fromfile(f, dtype=np.float64, count=n)
-            area = np.fromfile(f, dtype=np.float64, count=n)
+            # Try to read optional pos (px, py, pz) — extended format.
+            data_remaining = np.fromfile(f, dtype=np.float64)
         nvec = np.column_stack([nx, ny, nz])
-        return _PinftyStruct(nvec, area)
+        if data_remaining.size == 4 * n:
+            px = data_remaining[0:n]
+            py = data_remaining[n:2*n]
+            pz = data_remaining[2*n:3*n]
+            area = data_remaining[3*n:4*n]
+            pos = np.column_stack([px, py, pz])
+            return _PinftyStruct(nvec, area, pos=pos)
+        else:
+            area = data_remaining[:n]
+            return _PinftyStruct(nvec, area)
 
     # Fallback to icosahedron
     _, _, nvec, area = trisphere_unit(256)
