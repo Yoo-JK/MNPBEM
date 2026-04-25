@@ -120,6 +120,17 @@ class LayerStructure(object):
         self.atol = options.get('atol', 1e-6)
         self.initial_step = options.get('initial_step', 1e-3)
 
+        # Sommerfeld GL panel/order configuration (Wave 26)
+        # Defaults match Wave 20 A revert (suitable for most demos).
+        # demospecret13 (near-interface, sub-nm gap) needs higher resolution
+        # and can override these via LayerStructure(..., gl_semi_panels=...).
+        self.gl_semi_panels = options.get('gl_semi_panels', 4)
+        self.gl_semi_order = options.get('gl_semi_order', 40)
+        self.gl_real_panels = options.get('gl_real_panels', 10)
+        self.gl_real_order = options.get('gl_real_order', 40)
+        self.gl_imag_panels = options.get('gl_imag_panels', 10)
+        self.gl_imag_order = options.get('gl_imag_order', 40)
+
     @property
     def n(self) -> int:
         return len(self.z)
@@ -1370,7 +1381,9 @@ class LayerStructure(object):
         semi = self.semi
 
         # semi-ellipse integrand is smooth; 4 panels x 40 order = 160 pts suffice.
-        xs, ws = self._gl_panels(0.0, np.pi, 4, 40)
+        # Higher resolution available via gl_semi_panels/gl_semi_order options
+        # for near-interface cases (demospecret13, sub-nm gap).
+        xs, ws = self._gl_panels(0.0, np.pi, self.gl_semi_panels, self.gl_semi_order)
 
         kr_arr = k1max * (1 - mcos(xs) - 1j * semi * msin(xs))
         dkr_arr = k1max * (msin(xs) - 1j * semi * mcos(xs))
@@ -1393,8 +1406,9 @@ class LayerStructure(object):
 
         # Use logarithmic panel boundaries to capture oscillations near x->0.
         # Break [1e-10, 1] into panels with geometrically increasing widths.
-        order = 40
-        edges = np.concatenate(([1e-10], np.logspace(-9, 0, 10)))
+        order = self.gl_real_order
+        n_panels = self.gl_real_panels
+        edges = np.concatenate(([1e-10], np.logspace(-9, 0, n_panels)))
         nodes_ref, weights_ref = self._gl_nodes_weights(order)
         xs = np.empty((len(edges) - 1) * order)
         ws = np.empty((len(edges) - 1) * order)
@@ -1419,8 +1433,9 @@ class LayerStructure(object):
         ctx = self._build_integrate_context(enei, pos)
         k1max = np.max(np.real(ctx['k_vals'])) + ctx['k0']
 
-        order = 40
-        edges = np.concatenate(([1e-10], np.logspace(-9, 0, 10)))
+        order = self.gl_imag_order
+        n_panels = self.gl_imag_panels
+        edges = np.concatenate(([1e-10], np.logspace(-9, 0, n_panels)))
         nodes_ref, weights_ref = self._gl_nodes_weights(order)
         xs = np.empty((len(edges) - 1) * order)
         ws = np.empty((len(edges) - 1) * order)
