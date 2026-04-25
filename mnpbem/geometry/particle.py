@@ -1020,6 +1020,11 @@ class Particle(object):
                                 norm='off')
         new_particle.verts2 = new_verts2
         new_particle.faces2 = new_faces2
+        # Inherit quad rule from source particle (MATLAB vertcat keeps obj.quad).
+        # Without this, the concatenated particle defaults to rule=18 / refine=None,
+        # losing the higher-order integration set by bemoptions on sub-particles.
+        if hasattr(self, 'quad') and self.quad is not None:
+            new_particle.quad = self.quad
         new_particle._norm()
         return new_particle
 
