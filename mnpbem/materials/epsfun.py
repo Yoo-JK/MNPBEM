@@ -38,8 +38,8 @@ class EpsFun(object):
     MATLAB equivalent: @epsfun class
     """
 
-    # eV to nm conversion
-    _EV2NM = 1240.0
+    # eV to nm conversion (MATLAB Misc/units.m: eV2nm = 1 / 8.0655477e-4)
+    _EV2NM = 1.0 / 8.0655477e-4
 
     def __init__(self, fun, key = 'nm'):
         """
