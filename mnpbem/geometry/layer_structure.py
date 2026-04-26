@@ -146,6 +146,40 @@ class LayerStructure(object):
         self.gl_imag_panels = options.get('gl_imag_panels', 10)
         self.gl_imag_order = options.get('gl_imag_order', 40)
 
+        # Wave 51: opt-in MATLAB Engine API path for Green function
+        # evaluation. When enabled, LayerStructure.green() is delegated to a
+        # MATLAB session via mnpbem_layer_green_helper.m, yielding bit-
+        # identical results vs MATLAB. Default False (no engine dependency).
+        self.use_matlab_engine = options.get('use_matlab_engine', False)
+        self._matlab_engine = None
+        self._matlab_eps_specs_cmd = None
+        if self.use_matlab_engine:
+            self._init_matlab_engine(epstab)
+
+    def _init_matlab_engine(self, epstab: list) -> None:
+        # Wave 51: spin up MATLAB Engine and pre-build a workspace command
+        # that recreates the epstab cell array used to construct
+        # layerstructure.  Each entry must map to a Python EpsConst /
+        # EpsTable so we can mirror it to MATLAB's epsconst / epstable.
+        import matlab.engine as _matlab_engine_mod
+
+        eng = _matlab_engine_mod.start_matlab()
+        eng.addpath(eng.genpath('/home/yoojk20/workspace/MNPBEM'), nargout=0)
+
+        specs = []
+        for eps in epstab:
+            cls_name = type(eps).__name__
+            if cls_name == 'EpsConst':
+                specs.append("{{'const',{:.17g}}}".format(float(eps.eps.real)))
+            elif cls_name == 'EpsTable':
+                specs.append("{{'table','{}'}}".format(eps.filename))
+            else:
+                raise ValueError(
+                    "use_matlab_engine: unsupported eps class {}".format(cls_name))
+
+        self._matlab_engine = eng
+        self._matlab_eps_specs_cmd = "eps_specs = { " + ", ".join(specs) + " };"
+
     @property
     def n(self) -> int:
         return len(self.z)
@@ -640,12 +674,89 @@ class LayerStructure(object):
         k = {'i': ki, 'r': kr, 't': kt}
         return e, k
 
+    def _matlab_green(self,
+            enei: float,
+            r: np.ndarray,
+            z1: np.ndarray,
+            z2: np.ndarray) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        # Wave 51: delegate to MATLAB Engine for bit-identical Green output.
+        import matlab as _matlab_mod
+
+        eng = self._matlab_engine
+        r_in = np.asarray(r, dtype=float)
+        z1_in = np.asarray(z1, dtype=float)
+        z2_in = np.asarray(z2, dtype=float)
+
+        # Mirror Python's pos handling: green.m flattens internally and
+        # returns shape(r) at the end; we replicate the squeezed shape on
+        # the Python side for parity with the local code path.
+        r_flat = r_in.ravel().tolist()
+        z1_flat = z1_in.ravel().tolist()
+        z2_flat = z2_in.ravel().tolist()
+
+        eng.workspace['r'] = _matlab_mod.double(r_flat)
+        eng.workspace['z1'] = _matlab_mod.double(z1_flat)
+        eng.workspace['z2'] = _matlab_mod.double(z2_flat)
+        eng.workspace['enei'] = float(enei)
+        eng.workspace['layer_inds'] = _matlab_mod.double(
+            [int(i) for i in self.ind])
+        eng.workspace['ztab'] = _matlab_mod.double(
+            [float(z) for z in np.atleast_1d(self.z)])
+        eng.eval(self._matlab_eps_specs_cmd, nargout=0)
+        eng.eval(
+            "opts = struct('ztol',{:.17g},'rmin',{:.17g},'zmin',{:.17g},"
+            "'semi',{:.17g},'ratio',{:.17g},'atol',{:.17g},'rtol',{:.17g},"
+            "'initial_step',{:.17g});".format(
+                self.ztol, self.rmin, self.zmin, self.semi, self.ratio,
+                self.atol, self.rtol, self.initial_step),
+            nargout=0)
+        eng.eval(
+            "[G_r, G_i, Fr_r, Fr_i, Fz_r, Fz_i, names] = "
+            "mnpbem_layer_green_helper(eps_specs, layer_inds, ztab, opts, "
+            "enei, r, z1, z2);",
+            nargout=0)
+
+        names = list(eng.workspace['names'])
+
+        out_shape = r_in.shape
+
+        def fetch(prefix: str, name: str) -> np.ndarray:
+            re = np.asarray(eng.eval("{}_r.{}".format(prefix, name)),
+                            dtype=float).ravel()
+            im = np.asarray(eng.eval("{}_i.{}".format(prefix, name)),
+                            dtype=float).ravel()
+            arr = re + 1j * im
+            return np.squeeze(arr.reshape(out_shape))
+
+        G = {nm: fetch('G', nm) for nm in names}
+        Fr = {nm: fetch('Fr', nm) for nm in names}
+        Fz = {nm: fetch('Fz', nm) for nm in names}
+
+        # Build pos_out parallel to local green() return value.
+        r_local = np.maximum(r_in, self.rmin)
+        z1_local, z2_local = self.round_z(z1_in, z2_in)
+        r_exp = self._mul(r_local,
+                          self._mul(np.ones_like(z1_local),
+                                    np.ones_like(z2_local)))
+        z1_exp = self._mul(np.ones_like(r_local),
+                           self._mul(z1_local, np.ones_like(z2_local)))
+        z2_exp = self._mul(np.ones_like(r_local),
+                           self._mul(np.ones_like(z1_local), z2_local))
+        zmin_1, _ = self.mindist(z1_exp.ravel())
+        zmin_2, _ = self.mindist(z2_exp.ravel())
+        zmin = (zmin_1 + zmin_2).reshape(r_exp.shape)
+        pos_out = {'r': r_exp, 'z1': z1_exp, 'z2': z2_exp, 'zmin': zmin}
+
+        return G, Fr, Fz, pos_out
+
     def green(self,
             enei: float,
             r: np.ndarray,
             z1: np.ndarray,
             z2: np.ndarray) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
         # MATLAB: green.m
+        if self.use_matlab_engine:
+            return self._matlab_green(enei, r, z1, z2)
         r = np.asarray(r, dtype = float)
         z1 = np.asarray(z1, dtype = float)
         z2 = np.asarray(z2, dtype = float)
