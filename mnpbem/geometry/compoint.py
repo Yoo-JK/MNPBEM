@@ -190,7 +190,7 @@ class ComPoint(object):
             medium: Optional[Any] = None,
             layer: Optional[Any] = None) -> None:
 
-        pos = np.atleast_2d(np.asarray(pos, dtype = np.float64))
+        pos = np.atleast_2d(np.asarray(pos, dtype = np.float64)).copy()
         self._npos = pos.shape[0]
         self.eps = comparticle.eps
         self._pin = comparticle
@@ -204,6 +204,27 @@ class ComPoint(object):
         # Determine which medium each point is in by checking
         # distance to nearest particle boundary
         inout_per_point = self._classify_points(comparticle, pos, mindist_val)
+
+        # Layer-aware shift: points sitting exactly on a layer interface are
+        # nudged into the upper layer by 1e-8 so they have a well-defined
+        # medium index. Mirrors MATLAB @compoint/init.m L47-L51 (only points
+        # whose inout matches a layer.ind entry are eligible).
+        if layer is not None and hasattr(layer, 'ind') and hasattr(layer, 'mindist'):
+            layer_inds = np.atleast_1d(np.asarray(layer.ind, dtype=int)).ravel()
+            eligible = np.isin(inout_per_point, layer_inds) & (inout_per_point > 0)
+            if np.any(eligible):
+                z_eligible = pos[eligible, 2]
+                zmin_vals, _ = layer.mindist(z_eligible)
+                on_interface = np.asarray(zmin_vals).ravel() < 1e-10
+                if np.any(on_interface):
+                    eligible_idx = np.where(eligible)[0]
+                    shift_idx = eligible_idx[on_interface]
+                    pos[shift_idx, 2] = pos[shift_idx, 2] + 1e-8
+                    # Re-assign inout from the new z via indlayer -> layer.ind
+                    eligible_z = pos[eligible_idx, 2]
+                    new_layer_pos, _ = layer.indlayer(eligible_z)
+                    new_inout = layer_inds[np.asarray(new_layer_pos).ravel() - 1]
+                    inout_per_point[eligible_idx] = new_inout
 
         # Group points by medium
         unique_media = np.unique(inout_per_point[inout_per_point > 0])
