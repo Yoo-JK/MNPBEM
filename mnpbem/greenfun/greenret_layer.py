@@ -699,6 +699,19 @@ class GreenRetLayer(object):
                 self.G_comp, self.F_comp)
             # Refine Gp_comp (cart-style: initrefl2.m)
             self._refine_diagonal_cart_gp_only(self.Gp_comp)
+            # MATLAB compgreenretlayer routes 'F'/'H1'/'H2' via gr.F, which is
+            # filled by initrefl2.m: F = inner(nvec, Gp) AFTER cart refinement.
+            # Recompute F_comp[diag] from refined Gp_comp[diag] so we match
+            # MATLAB's cart-style result (rim faces with quad points near the
+            # centroid otherwise diverge between the norm/cart formulas due to
+            # the rmin-clamp in `interp` only being applied on the cart path).
+            nvec1 = self.p1.nvec
+            for nm in self.F_comp.keys():
+                Gp_diag = self.Gp_comp[nm]
+                F_einsum = np.einsum('ik,ikj->ij', nvec1, Gp_diag)
+                F_flat = self.F_comp[nm].ravel()
+                F_flat[self._diag_id] = F_einsum.ravel()[self._diag_id]
+                self.F_comp[nm] = F_flat.reshape(self.F_comp[nm].shape)
 
         # Off-diagonal refinement: prefer sparse (shape-function) path when
         # available, fall back to full integration otherwise.
