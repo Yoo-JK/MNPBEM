@@ -1263,14 +1263,11 @@ class LayerStructure(object):
         j0 = besselj(0, arg)
         j1 = besselj(1, arg)
 
+        # Wave 49: match MATLAB intbessel.m FP ordering exactly.
+        # MATLAB: 1i * j0 .* (rr .* (kpar ./ kz))  - inner factor (rr*kpar/kz) first.
         y = np.empty((M, 15 * n), dtype = complex)
         kpar_col = kpar_arr[:, np.newaxis]
         kpar_sq_col = (kpar_arr ** 2)[:, np.newaxis]
-        inv_kz = 1.0 / kz_ind
-
-        j0_k_invkz = 1j * j0 * kpar_col * inv_kz
-        j1_k2_invkz = -1j * j1 * kpar_sq_col * inv_kz
-        j0_k = -j0 * kpar_col
 
         names = ('p', 'ss', 'hs', 'sh', 'hh')
         for iname, name in enumerate(names):
@@ -1284,9 +1281,12 @@ class LayerStructure(object):
                 rr = rr[:, ind]
                 rrz = rrz[:, ind]
             base = iname * 3 * n
-            y[:, base:base + n] = j0_k_invkz * rr
-            y[:, base + n:base + 2 * n] = j1_k2_invkz * rr
-            y[:, base + 2 * n:base + 3 * n] = j0_k * rrz
+            # 1i * j0 .* (rr .* (kpar ./ kz))
+            y[:, base:base + n] = 1j * (j0 * (rr * (kpar_col / kz_ind)))
+            # 1i * j1 .* (rr .* (-kpar^2 ./ kz))
+            y[:, base + n:base + 2 * n] = 1j * (j1 * (rr * (-kpar_sq_col / kz_ind)))
+            # 1i * j0 .* (1i * rrz .* kpar)
+            y[:, base + 2 * n:base + 3 * n] = 1j * (j0 * (1j * (rrz * kpar_col)))
 
         return y
 
@@ -1326,20 +1326,12 @@ class LayerStructure(object):
         h0_conj = np.conj(h0)
         h1_conj = np.conj(h1)
 
+        # Wave 49: match MATLAB inthankel.m FP ordering exactly.
         y = np.empty((M, 15 * n), dtype = complex)
         kpar1_col = kpar1[:, np.newaxis]
         kpar2_col = kpar2[:, np.newaxis]
         kpar1_sq_col = (kpar1 ** 2)[:, np.newaxis]
         kpar2_sq_col = (kpar2 ** 2)[:, np.newaxis]
-        inv_kz1 = 1.0 / kz1_ind
-        inv_kz2 = 1.0 / kz2_ind
-
-        a1 = 0.5j * h0 * kpar1_col * inv_kz1
-        a2 = 0.5j * h0_conj * kpar2_col * inv_kz2
-        b1 = 0.5j * h1 * kpar1_sq_col * inv_kz1
-        b2 = 0.5j * h1_conj * kpar2_sq_col * inv_kz2
-        c1 = 0.5 * h0 * kpar1_col
-        c2 = 0.5 * h0_conj * kpar2_col
 
         names = ('p', 'ss', 'hs', 'sh', 'hh')
         for iname, name in enumerate(names):
@@ -1358,9 +1350,18 @@ class LayerStructure(object):
                 rr2 = rr2[:, ind]
                 rr2z = rr2z[:, ind]
             base = iname * 3 * n
-            y[:, base:base + n] = a1 * rr1 - a2 * rr2
-            y[:, base + n:base + 2 * n] = -b1 * rr1 + b2 * rr2
-            y[:, base + 2 * n:base + 3 * n] = -c1 * rr1z + c2 * rr2z
+            y[:, base:base + n] = (
+                0.5j * (h0 * (rr1 * (kpar1_col / kz1_ind)))
+                - 0.5j * (h0_conj * (rr2 * (kpar2_col / kz2_ind)))
+            )
+            y[:, base + n:base + 2 * n] = (
+                0.5j * (h1 * (rr1 * (-kpar1_sq_col / kz1_ind)))
+                - 0.5j * (h1_conj * (rr2 * (-kpar2_sq_col / kz2_ind)))
+            )
+            y[:, base + 2 * n:base + 3 * n] = (
+                0.5j * (h0 * (1j * (rr1z * kpar1_col)))
+                - 0.5j * (h0_conj * (1j * (rr2z * kpar2_col)))
+            )
 
         return y
 
@@ -1630,11 +1631,10 @@ class LayerStructure(object):
         n = len(ind)
         y = np.empty(15 * n, dtype = complex)
 
+        # Wave 49: match MATLAB intbessel.m FP ordering exactly.
+        # MATLAB: y = 1i * (j0 .* (rr .* (kpar ./ kz)))   [Eq. for num(i,1)]
+        # Compute factor = rr * kpar / kz first, then j0 * factor, then 1i * (...)
         kpar_sq = kpar ** 2
-        inv_kz = 1.0 / kz_ind
-        j0_k_invkz = j0 * kpar * inv_kz
-        j1_k2_invkz = j1 * kpar_sq * inv_kz
-        j0_k = j0 * kpar
 
         names = list(refl.keys())
         for iname, name in enumerate(names):
@@ -1647,9 +1647,12 @@ class LayerStructure(object):
             rrz_ind = rrz[ind] if rrz.size > 1 else rrz
 
             base = iname * 3 * n
-            y[base:base + n] = 1j * j0_k_invkz * rr_ind
-            y[base + n:base + 2 * n] = -1j * j1_k2_invkz * rr_ind
-            y[base + 2 * n:base + 3 * n] = -j0_k * rrz_ind
+            # MATLAB: 1i * j0 .* (rr .* (kpar ./ kz))
+            y[base:base + n] = 1j * (j0 * (rr_ind * (kpar / kz_ind)))
+            # MATLAB: 1i * j1 .* (rr .* (-kpar^2 ./ kz))
+            y[base + n:base + 2 * n] = 1j * (j1 * (rr_ind * (-kpar_sq / kz_ind)))
+            # MATLAB: 1i * j0 .* (1i * rrz .* kpar) = -j0 .* (rrz .* kpar)
+            y[base + 2 * n:base + 3 * n] = 1j * (j0 * (1j * (rrz_ind * kpar)))
 
         if np.isreal(kpar) and not np.iscomplexobj(y):
             return np.real(y)
@@ -1690,17 +1693,10 @@ class LayerStructure(object):
         n = len(ind)
         y = np.empty(15 * n, dtype = complex)
 
+        # Wave 49: match MATLAB inthankel.m FP ordering exactly.
+        # MATLAB: 0.5i * h0 .* (rr1 .* (kpar1 ./ kz1)) - 0.5i * conj(h0) .* (rr2 .* (kpar2 ./ kz2))
         kpar1_sq = kpar1 ** 2
         kpar2_sq = kpar2 ** 2
-        inv_kz1 = 1.0 / kz1_ind
-        inv_kz2 = 1.0 / kz2_ind
-
-        a1 = 0.5j * h0 * kpar1 * inv_kz1
-        a2 = 0.5j * h0_conj * kpar2 * inv_kz2
-        b1 = 0.5j * h1 * kpar1_sq * inv_kz1
-        b2 = 0.5j * h1_conj * kpar2_sq * inv_kz2
-        c1 = 0.5 * h0 * kpar1  # sign absorbed below: 0.5i * 1i = -0.5
-        c2 = 0.5 * h0_conj * kpar2
 
         names = list(refl1.keys())
         for iname, name in enumerate(names):
@@ -1719,9 +1715,18 @@ class LayerStructure(object):
             rr2z_ind = rr2z[ind] if rr2z.size > 1 else rr2z
 
             base = iname * 3 * n
-            y[base:base + n] = a1 * rr1_ind - a2 * rr2_ind
-            y[base + n:base + 2 * n] = -b1 * rr1_ind + b2 * rr2_ind
-            y[base + 2 * n:base + 3 * n] = -c1 * rr1z_ind + c2 * rr2z_ind
+            y[base:base + n] = (
+                0.5j * (h0 * (rr1_ind * (kpar1 / kz1_ind)))
+                - 0.5j * (h0_conj * (rr2_ind * (kpar2 / kz2_ind)))
+            )
+            y[base + n:base + 2 * n] = (
+                0.5j * (h1 * (rr1_ind * (-kpar1_sq / kz1_ind)))
+                - 0.5j * (h1_conj * (rr2_ind * (-kpar2_sq / kz2_ind)))
+            )
+            y[base + 2 * n:base + 3 * n] = (
+                0.5j * (h0 * (1j * (rr1z_ind * kpar1)))
+                - 0.5j * (h0_conj * (1j * (rr2z_ind * kpar2)))
+            )
 
         return y
 
