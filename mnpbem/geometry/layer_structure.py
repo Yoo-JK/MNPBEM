@@ -26,6 +26,7 @@ from ..utils.matlab_compat import (
     mcos, msin, msqrt, mlinspace, mlog10, mtanh, matan,
     m_exp_c, m_sqrt_c,
 )
+from ..utils.matlab_ode45 import matlab_ode45
 
 
 class LayerStructure(object):
@@ -128,6 +129,11 @@ class LayerStructure(object):
         # MATLAB-faithful Sommerfeld inaccuracy (demospecret13/dipret8/dipret9)
         # can opt in via LayerStructure(..., use_ode=True).
         self.use_ode = options.get('use_ode', False)
+        # Wave 48: bit-exact MATLAB ode45 step controller. When set, the ODE
+        # backend uses our matlab_ode45 reimplementation (1:1 with MATLAB's
+        # ode45.m PI-style controller and error norm) instead of scipy
+        # solve_ivp. Only active when use_ode is also True.
+        self.use_matlab_ode45 = options.get('use_matlab_ode45', False)
 
         # Sommerfeld GL panel/order configuration (Wave 26)
         # Defaults match Wave 20 A revert (suitable for most demos).
@@ -1418,11 +1424,25 @@ class LayerStructure(object):
         # MATLAB green.m: ode45(@(x,y) fun(...,1), [0, 1e-3, pi], y1, op)
         # with op = odeset('AbsTol', 1e-6, 'InitialStep', 1e-3).
         # MATLAB ode45 default MaxStep = abs(t1-t0)/10 (= pi/10 here).
+        # Wave 48: when use_matlab_ode45 is set, use complex-y matlab_ode45
+        # (bit-exact MATLAB step controller).
         ctx = self._build_integrate_context(enei, pos)
         k1max = float(np.max(np.real(ctx['k_vals'])) + ctx['k0'])
         ind_full = np.arange(len(ctx['r_flat']))
         n_state = 15 * len(ind_full)
         semi = self.semi
+
+        if self.use_matlab_ode45:
+            def rhs_c(x, y):
+                kr = k1max * (1 - np.cos(x) - 1j * semi * np.sin(x))
+                dkr = k1max * (np.sin(x) - 1j * semi * np.cos(x))
+                val = self._intbessel_ctx(kr, ctx, ind_full)
+                return dkr * val
+
+            y0 = np.zeros(n_state, dtype = complex)
+            return matlab_ode45(rhs_c, [0.0, 1e-3, np.pi], y0,
+                                atol = self.atol, rtol = self.rtol,
+                                initial_step = self.initial_step)
 
         def rhs(x, y):
             kr = k1max * (1 - np.cos(x) - 1j * semi * np.sin(x))
@@ -1488,6 +1508,17 @@ class LayerStructure(object):
         k1max = float(np.max(np.real(ctx['k_vals'])) + ctx['k0'])
         n_state = 15 * len(ind)
 
+        if self.use_matlab_ode45:
+            def rhs_c(x, y):
+                kr = 2.0 * k1max / x
+                val = self._intbessel_ctx(kr, ctx, ind)
+                return -2.0 * k1max * val / (x * x)
+
+            y0 = np.zeros(n_state, dtype = complex)
+            return matlab_ode45(rhs_c, [1.0, 1e-3, 1e-10], y0,
+                                atol = self.atol, rtol = self.rtol,
+                                initial_step = self.initial_step)
+
         def rhs(x, y):
             kr = 2.0 * k1max / x
             val = self._intbessel_ctx(kr, ctx, ind)
@@ -1546,6 +1577,17 @@ class LayerStructure(object):
         ctx = self._build_integrate_context(enei, pos)
         k1max = float(np.max(np.real(ctx['k_vals'])) + ctx['k0'])
         n_state = 15 * len(ind)
+
+        if self.use_matlab_ode45:
+            def rhs_c(x, y):
+                kr = 2.0 * k1max * (1 - 1j + 1j / x)
+                val = self._inthankel_ctx(kr, ctx, ind)
+                return -2j * k1max * val / (x * x)
+
+            y0 = np.zeros(n_state, dtype = complex)
+            return matlab_ode45(rhs_c, [1.0, 1e-3, 1e-10], y0,
+                                atol = self.atol, rtol = self.rtol,
+                                initial_step = self.initial_step)
 
         def rhs(x, y):
             kr = 2.0 * k1max * (1 - 1j + 1j / x)
