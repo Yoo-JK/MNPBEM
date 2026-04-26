@@ -199,74 +199,101 @@ class BEMRetLayer(object):
         G2e = self._build_outer_mixed_eps(G22, G12, eps2, eps1)
         H2e = self._build_outer_mixed_eps(H22, H12, eps2, eps1)
 
-        # ---- Auxiliary matrices (MATLAB initmat.m lines 51-68) ----
-        # Inverse of G1 and of parallel component G2.p
+        n = G1.shape[0]
+
         if self.use_matlab_engine:
-            from .matlab_bem import matlab_solve
-            G1i = matlab_solve(G1, np.eye(G1.shape[0], dtype=complex))
-            G2pi = matlab_solve(G2['p'],
-                np.eye(G2['p'].shape[0], dtype=complex))
+            # ---- Wave 67: delegate the entire BEM matrix construction
+            # (initmat.m sequence) to MATLAB to inherit MATLAB's exact BLAS
+            # ordering and rounding behavior on each matmul/inv. ----
+            from .matlab_bem import matlab_bem_init
+
+            eps1_diag = (np.full(n, eps1, dtype=complex) if np.isscalar(eps1)
+                         else np.asarray(np.diag(eps1) if eps1.ndim == 2 else eps1, dtype=complex))
+            eps2_diag = (np.full(n, eps2, dtype=complex) if np.isscalar(eps2)
+                         else np.asarray(np.diag(eps2) if eps2.ndim == 2 else eps2, dtype=complex))
+
+            ml_in_G22 = G22 if isinstance(G22, dict) else {'ss': G22, 'hh': G22, 'p': G22}
+            ml_in_H22 = H22 if isinstance(H22, dict) else {'ss': H22, 'hh': H22, 'p': H22}
+
+            mout = matlab_bem_init(
+                G11, G21 if isinstance(G21, np.ndarray) else np.zeros((n, n), dtype=complex),
+                H11, H21 if isinstance(H21, np.ndarray) else np.zeros((n, n), dtype=complex),
+                ml_in_G22, G12 if isinstance(G12, np.ndarray) else np.zeros((n, n), dtype=complex),
+                ml_in_H22, H12 if isinstance(H12, np.ndarray) else np.zeros((n, n), dtype=complex),
+                eps1_diag, eps2_diag, k, nvec)
+
+            G1 = mout['G1']
+            G1i = mout['G1i']
+            G2pi = mout['G2pi']
+            G2 = {
+                'ss': mout['G2_ss'], 'hh': mout['G2_hh'], 'p': mout['G2_p'],
+                'sh': mout['G2_sh'], 'hs': mout['G2_hs'],
+            }
+            G2e = {
+                'ss': mout['G2e_ss'], 'hh': mout['G2e_hh'], 'p': mout['G2e_p'],
+                'sh': mout['G2e_sh'], 'hs': mout['G2e_hs'],
+            }
+            Sigma1 = mout['Sigma1']
+            Sigma1e = mout['Sigma1e']
+            L1 = mout['L1']
+            L2p = mout['L2p']
+            Gamma = mout['Gamma']
+            m_full = mout['m_full']
+
+            self.m_full = m_full
+            self.m_lu = None
             self._G1_lu = None
             self._G2p_lu = None
+            self._Gamma_lu = None
         else:
+            # ---- Auxiliary matrices (MATLAB initmat.m lines 51-68) ----
+            # Inverse of G1 and of parallel component G2.p
             self._G1_lu = lu_factor(G1, check_finite=False)
             G1i = lu_solve(self._G1_lu, np.eye(G1.shape[0]), check_finite=False)
 
             self._G2p_lu = lu_factor(G2['p'], check_finite=False)
             G2pi = lu_solve(self._G2p_lu, np.eye(G2['p'].shape[0]), check_finite=False)
 
-        # Sigma matrices [Eq.(21)]
-        Sigma1 = H1 @ G1i
-        Sigma1e = H1e @ G1i
-        Sigma2p = H2['p'] @ G2pi
+            # Sigma matrices [Eq.(21)]
+            Sigma1 = H1 @ G1i
+            Sigma1e = H1e @ G1i
+            Sigma2p = H2['p'] @ G2pi
 
-        # Auxiliary dielectric function matrices
-        L1 = G1e @ G1i
-        L2p = G2e['p'] @ G2pi
+            # Auxiliary dielectric function matrices
+            L1 = G1e @ G1i
+            L2p = G2e['p'] @ G2pi
 
-        # Gamma matrix
-        if self.use_matlab_engine:
-            from .matlab_bem import matlab_solve
-            Gamma = matlab_solve(Sigma1 - Sigma2p,
-                np.eye(Sigma1.shape[0], dtype=complex))
-            self._Gamma_lu = None
-        else:
+            # Gamma matrix
             self._Gamma_lu = lu_factor(Sigma1 - Sigma2p, check_finite=False, overwrite_a=True)
             Gamma = lu_solve(self._Gamma_lu, np.eye(Sigma1.shape[0]), check_finite=False)
 
-        # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
-        # Element-wise multiply with outer product of parallel normals
-        npar_outer = npar @ npar.T  # (n, n)
-        Gammapar = 1j * k * (L1 - L2p) @ Gamma * npar_outer
+            # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
+            # Element-wise multiply with outer product of parallel normals
+            npar_outer = npar @ npar.T  # (n, n)
+            Gammapar = 1j * k * (L1 - L2p) @ Gamma * npar_outer
 
-        # ---- Set up 2x2 block response matrix (MATLAB initmat.m lines 72-77) ----
-        n = G1.shape[0]
+            # ---- Set up 2x2 block response matrix (MATLAB initmat.m lines 72-77) ----
+            # m{1,1} = Sigma1e*G2.ss - H2e.ss - ik*(Gammapar*(L1*G2.ss - G2e.ss)
+            #          + bsxfun(@times, L1*G2.sh - G2e.sh, nperp))
+            diff_ss = L1 @ G2['ss'] - G2e['ss']
+            diff_sh = L1 @ G2['sh'] - G2e['sh']
+            diff_hh = L1 @ G2['hh'] - G2e['hh']
 
-        # m{1,1} = Sigma1e*G2.ss - H2e.ss - ik*(Gammapar*(L1*G2.ss - G2e.ss)
-        #          + bsxfun(@times, L1*G2.sh - G2e.sh, nperp))
-        diff_ss = L1 @ G2['ss'] - G2e['ss']
-        diff_sh = L1 @ G2['sh'] - G2e['sh']
-        diff_hh = L1 @ G2['hh'] - G2e['hh']
+            m11 = (Sigma1e @ G2['ss'] - H2e['ss']
+                - 1j * k * (Gammapar @ diff_ss + diff_sh * nperp[:, np.newaxis]))
+            m12 = (Sigma1e @ G2['sh'] - H2e['sh']
+                - 1j * k * (Gammapar @ diff_sh + diff_hh * nperp[:, np.newaxis]))
+            m21 = (Sigma1 @ G2['hs'] - H2['hs']
+                - 1j * k * diff_ss * nperp[:, np.newaxis])
+            m22 = (Sigma1 @ G2['hh'] - H2['hh']
+                - 1j * k * diff_sh * nperp[:, np.newaxis])
 
-        m11 = (Sigma1e @ G2['ss'] - H2e['ss']
-            - 1j * k * (Gammapar @ diff_ss + diff_sh * nperp[:, np.newaxis]))
-        m12 = (Sigma1e @ G2['sh'] - H2e['sh']
-            - 1j * k * (Gammapar @ diff_sh + diff_hh * nperp[:, np.newaxis]))
-        m21 = (Sigma1 @ G2['hs'] - H2['hs']
-            - 1j * k * diff_ss * nperp[:, np.newaxis])
-        m22 = (Sigma1 @ G2['hh'] - H2['hh']
-            - 1j * k * diff_sh * nperp[:, np.newaxis])
-
-        # Assemble 2x2 block matrix (2n x 2n) and LU factorize
-        m_full = np.empty((2 * n, 2 * n), dtype = complex)
-        m_full[:n, :n] = m11
-        m_full[:n, n:] = m12
-        m_full[n:, :n] = m21
-        m_full[n:, n:] = m22
-        if self.use_matlab_engine:
-            self.m_full = m_full
-            self.m_lu = None
-        else:
+            # Assemble 2x2 block matrix (2n x 2n) and LU factorize
+            m_full = np.empty((2 * n, 2 * n), dtype = complex)
+            m_full[:n, :n] = m11
+            m_full[:n, n:] = m12
+            m_full[n:, :n] = m21
+            m_full[n:, n:] = m22
             self.m_full = None
             self.m_lu = lu_factor(m_full, check_finite=False, overwrite_a=True)
 
