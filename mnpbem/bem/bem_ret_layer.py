@@ -97,6 +97,7 @@ class BEMRetLayer(object):
         self.Sigma1e = None
         self.Gamma = None
         self.m_lu = None
+        self.m_full = None
 
         # LU factorizations
         self._G1_lu = None
@@ -106,6 +107,12 @@ class BEMRetLayer(object):
         # Green function with layer
         self.g = None
         self.options = options
+
+        # Wave 66: opt-in MATLAB Engine route for the dense linear solves of
+        # the 2n x 2n block matrix.  Default False keeps numpy lu_factor /
+        # lu_solve; True delegates the matrix solve to MATLAB's mldivide,
+        # eliminating LU/solve numerical drift versus the MATLAB reference.
+        self.use_matlab_engine = options.get('use_matlab_engine', False)
 
         if enei is not None:
             self.init(enei)
@@ -194,11 +201,19 @@ class BEMRetLayer(object):
 
         # ---- Auxiliary matrices (MATLAB initmat.m lines 51-68) ----
         # Inverse of G1 and of parallel component G2.p
-        self._G1_lu = lu_factor(G1, check_finite=False)
-        G1i = lu_solve(self._G1_lu, np.eye(G1.shape[0]), check_finite=False)
+        if self.use_matlab_engine:
+            from .matlab_bem import matlab_solve
+            G1i = matlab_solve(G1, np.eye(G1.shape[0], dtype=complex))
+            G2pi = matlab_solve(G2['p'],
+                np.eye(G2['p'].shape[0], dtype=complex))
+            self._G1_lu = None
+            self._G2p_lu = None
+        else:
+            self._G1_lu = lu_factor(G1, check_finite=False)
+            G1i = lu_solve(self._G1_lu, np.eye(G1.shape[0]), check_finite=False)
 
-        self._G2p_lu = lu_factor(G2['p'], check_finite=False)
-        G2pi = lu_solve(self._G2p_lu, np.eye(G2['p'].shape[0]), check_finite=False)
+            self._G2p_lu = lu_factor(G2['p'], check_finite=False)
+            G2pi = lu_solve(self._G2p_lu, np.eye(G2['p'].shape[0]), check_finite=False)
 
         # Sigma matrices [Eq.(21)]
         Sigma1 = H1 @ G1i
@@ -210,8 +225,14 @@ class BEMRetLayer(object):
         L2p = G2e['p'] @ G2pi
 
         # Gamma matrix
-        self._Gamma_lu = lu_factor(Sigma1 - Sigma2p, check_finite=False, overwrite_a=True)
-        Gamma = lu_solve(self._Gamma_lu, np.eye(Sigma1.shape[0]), check_finite=False)
+        if self.use_matlab_engine:
+            from .matlab_bem import matlab_solve
+            Gamma = matlab_solve(Sigma1 - Sigma2p,
+                np.eye(Sigma1.shape[0], dtype=complex))
+            self._Gamma_lu = None
+        else:
+            self._Gamma_lu = lu_factor(Sigma1 - Sigma2p, check_finite=False, overwrite_a=True)
+            Gamma = lu_solve(self._Gamma_lu, np.eye(Sigma1.shape[0]), check_finite=False)
 
         # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
         # Element-wise multiply with outer product of parallel normals
@@ -242,7 +263,12 @@ class BEMRetLayer(object):
         m_full[:n, n:] = m12
         m_full[n:, :n] = m21
         m_full[n:, n:] = m22
-        self.m_lu = lu_factor(m_full, check_finite=False, overwrite_a=True)
+        if self.use_matlab_engine:
+            self.m_full = m_full
+            self.m_lu = None
+        else:
+            self.m_full = None
+            self.m_lu = lu_factor(m_full, check_finite=False, overwrite_a=True)
 
         # Store all needed matrices
         self.G1i = G1i
@@ -499,10 +525,13 @@ class BEMRetLayer(object):
         zunit = np.zeros((n, 3))
         zunit[:, 2] = 1.0
 
+        m_full = self.m_full
+
         if npol == 1:
             sig1, sig2, h1, h2 = self._solve_single(
                 phi, a, alpha, De, k, n, nvec, npar, nperp, zunit,
-                L1, L2p, G1i, G2pi, G2, G2e, Sigma1, Sigma1e, Gamma, m_lu)
+                L1, L2p, G1i, G2pi, G2, G2e, Sigma1, Sigma1e, Gamma,
+                m_lu, m_full)
         else:
             sig1 = np.zeros((n, npol), dtype = complex)
             sig2 = np.zeros((n, npol), dtype = complex)
@@ -517,7 +546,8 @@ class BEMRetLayer(object):
 
                 s1, s2, hh1, hh2 = self._solve_single(
                     phi_i, a_i, alpha_i, De_i, k, n, nvec, npar, nperp, zunit,
-                    L1, L2p, G1i, G2pi, G2, G2e, Sigma1, Sigma1e, Gamma, m_lu)
+                    L1, L2p, G1i, G2pi, G2, G2e, Sigma1, Sigma1e, Gamma,
+                    m_lu, m_full)
 
                 sig1[:, ipol] = s1
                 sig2[:, ipol] = s2
@@ -549,7 +579,8 @@ class BEMRetLayer(object):
             Sigma1: np.ndarray,
             Sigma1e: np.ndarray,
             Gamma: np.ndarray,
-            m_lu: Any) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            m_lu: Any,
+            m_full: Any = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 
         # MATLAB mldivide.m: Decompose vector potential into parallel and perpendicular
         aperp = _inner(zunit, a)  # (n,)
@@ -574,7 +605,11 @@ class BEMRetLayer(object):
         rhs[:n] = De
         rhs[n:] = alphaperp
 
-        xi2 = lu_solve(m_lu, rhs, check_finite=False, overwrite_b=True)
+        if self.use_matlab_engine and m_full is not None:
+            from .matlab_bem import matlab_solve
+            xi2 = matlab_solve(m_full, rhs)
+        else:
+            xi2 = lu_solve(m_lu, rhs, check_finite=False, overwrite_b=True)
         sig2 = xi2[:n]
         h2perp = xi2[n:]
 
@@ -652,6 +687,7 @@ class BEMRetLayer(object):
         self.Sigma1e = None
         self.Gamma = None
         self.m_lu = None
+        self.m_full = None
         self._G1_lu = None
         self._G2p_lu = None
         self._Gamma_lu = None
