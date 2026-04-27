@@ -26,3 +26,5 @@ demoeelsret6,matlab,34.4000,ok,matlab_internal
 demoeelsret7,matlab,1200.1325,timeout,
 demoeelsret8,matlab,1200.1444,timeout,
 demoeelsstat2,matlab,1200.1603,timeout,
+demoeelsstat3,matlab,1200.1367,timeout,
+demospecret10,matlab,363.0000,cached,
