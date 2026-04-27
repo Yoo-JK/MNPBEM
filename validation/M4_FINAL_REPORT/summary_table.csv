@@ -44,7 +44,7 @@ demospecret16,1200,timeout,327.6,ok,81.99,ok,1d_series,2.789e-14,perf,3.663,14.6
 demospecret17,186.5,cached,33.18,ok,10.49,ok,1d_series,1.004e-14,perf,5.622,17.77
 demospecret18,1200,timeout,186.2,ok,117.9,ok,1d_series,8.883e-13,perf,6.444,10.18
 demospecret2,,,41.22,ok,10.29,ok,1d_series,3.196e-14,perf,,
-demospecret3,,,47.27,ok,7.313,ok,face,6.922e-14,perf,,
+demospecret3,1200,timeout,47.27,ok,7.313,ok,face,6.922e-14,perf,25.39,164.1
 demospecret4,,,159.5,ok,57.35,ok,1d_series,7.495e-14,perf,,
 demospecret5,,,165.1,ok,55.08,ok,1d_series,5.683e-13,perf,,
 demospecret6,,,,,,,1d_series,1.616e-06,perf,,
