@@ -335,19 +335,12 @@ class TestMeshFieldRetarded(object):
         e, h = mf.field(sig)
         assert e.shape == (11, 11, 3)
         assert h is not None
-        # NOTE (bug B3-1): in retarded MeshField the magnetic field carries
-        # an extra trailing polarization axis (h.shape == (..., 3, 1)) while
-        # the electric field does not (e.shape == (..., 3)). Test against the
-        # current behavior; document in /tmp/m3_b3_bugs.md.
-        h_squeezed = np.squeeze(h)
-        assert h_squeezed.shape == (11, 11, 3), (
-            'h shape {} not squeezable to {}'.format(h.shape, (11, 11, 3))
-        )
+        assert h.shape == (11, 11, 3), 'h shape {} != (11, 11, 3)'.format(h.shape)
         # Mask out interior points (r=30 sphere) before checking finiteness.
         r2 = x_grid ** 2 + z_grid ** 2
         outside = r2 > (30.0 + 2.0) ** 2
         assert np.all(np.isfinite(e[outside]))
-        assert np.all(np.isfinite(h_squeezed[outside]))
+        assert np.all(np.isfinite(h[outside]))
 
 
 # ---------------------------------------------------------------------------
