@@ -19,9 +19,9 @@ demodipstat3,8.4,ok,,,,,face,8.894e-15,perf,,
 demodipstat4,67.5,ok,69.29,ok,37.52,ok,1d_series,7.634e-13,perf,0.9741,1.799
 demodipstat5,260.5,ok,9.536,ok,7.066,ok,1d_series,3.083e-15,perf,27.32,36.86
 demodipstat6,199.4,ok,,,,,face,5.343e-15,perf,,
-demodipstat7,,,123.9,ok,32.98,ok,1d_series,2.277e-14,perf,,
-demodipstat8,,,16.3,ok,7.479,ok,face,1.916e-14,perf,,
-demodipstat9,,,22.63,ok,6.215,ok,1d_series,5.277e-15,perf,,
+demodipstat7,265.8,ok,123.9,ok,32.98,ok,1d_series,2.277e-14,perf,2.145,8.059
+demodipstat8,71.5,ok,16.3,ok,7.479,ok,face,1.916e-14,perf,4.386,9.561
+demodipstat9,44.6,ok,22.63,ok,6.215,ok,1d_series,5.277e-15,perf,1.971,7.176
 demoeelsret1,,,28.87,ok,14.03,ok,1d_series,1.658e-14,perf,,
 demoeelsret2,,,124.2,ok,40.54,ok,1d_series,6.358e-14,perf,,
 demoeelsret3,,,12.11,ok,4.876,ok,face,3.171e-13,perf,,

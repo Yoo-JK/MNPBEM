@@ -22,9 +22,9 @@
 | demodipstat4 | 1d_series | 67.50 | 69.29 | 37.52 | :red_circle: 0.97 | :green_circle: 1.80 | 7.63e-13 | perf |
 | demodipstat5 | 1d_series | 260.50 | 9.54 | 7.07 | :green_circle: 27.32 | :green_circle: 36.86 | 3.08e-15 | perf |
 | demodipstat6 | face | 199.40 | - | - |  - |  - | 5.34e-15 | perf |
-| demodipstat7 | 1d_series | - | 123.89 | 32.98 |  - |  - | 2.28e-14 | perf |
-| demodipstat8 | face | - | 16.30 | 7.48 |  - |  - | 1.92e-14 | perf |
-| demodipstat9 | 1d_series | - | 22.63 | 6.22 |  - |  - | 5.28e-15 | perf |
+| demodipstat7 | 1d_series | 265.80 | 123.89 | 32.98 | :green_circle: 2.15 | :green_circle: 8.06 | 2.28e-14 | perf |
+| demodipstat8 | face | 71.50 | 16.30 | 7.48 | :green_circle: 4.39 | :green_circle: 9.56 | 1.92e-14 | perf |
+| demodipstat9 | 1d_series | 44.60 | 22.63 | 6.22 | :green_circle: 1.97 | :green_circle: 7.18 | 5.28e-15 | perf |
 | demoeelsret1 | 1d_series | - | 28.87 | 14.03 |  - |  - | 1.66e-14 | perf |
 | demoeelsret2 | 1d_series | - | 124.21 | 40.54 |  - |  - | 6.36e-14 | perf |
 | demoeelsret3 | face | - | 12.11 | 4.88 |  - |  - | 3.17e-13 | perf |
