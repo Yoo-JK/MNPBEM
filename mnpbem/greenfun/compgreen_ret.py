@@ -54,7 +54,9 @@ class CompGreenRet(object):
     name = 'greenfunction'
     needs = {'sim': 'ret'}
 
-    def __new__(cls, p1, p2, **options):
+    def __new__(cls, p1=None, p2=None, **options):
+        if p1 is None or p2 is None:
+            return object.__new__(cls)
         if options.get('hmatrix', False) and p1 is p2:
             n_faces = getattr(p1, 'n', None)
             if n_faces is None and hasattr(p1, 'p') and len(p1.p) > 0:

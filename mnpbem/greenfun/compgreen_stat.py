@@ -51,10 +51,12 @@ class CompGreenStat(object):
     name = 'greenfunction'
     needs = {'sim': 'stat'}
 
-    def __new__(cls, p1, p2, **options):
+    def __new__(cls, p1=None, p2=None, **options):
         # Optional H-matrix acceleration: when ``hmatrix=True`` and the mesh
         # is large enough to benefit from ACA, return an ACACompGreenStat
         # instance (drop-in replacement supporting .G/.F/.eval()/.potential()).
+        if p1 is None or p2 is None:
+            return object.__new__(cls)
         if options.get('hmatrix', False) and p1 is p2:
             n_faces = getattr(p1, 'n', None)
             if n_faces is None and hasattr(p1, 'p') and len(p1.p) > 0:

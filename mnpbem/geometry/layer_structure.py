@@ -2142,8 +2142,8 @@ class LayerStructure(object):
         # MATLAB: private/adjust.m
         i1, _ = self.indlayer(np.array([z1[0]]))
         i2, _ = self.indlayer(np.array([z2[0]]))
-        i1 = int(i1)
-        i2 = int(i2)
+        i1 = int(np.asarray(i1).flat[0])
+        i2 = int(np.asarray(i2).flat[0])
 
         n = len(self.z) + 1
         zlayer = np.empty((n, 2))
