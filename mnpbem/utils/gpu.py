@@ -4,7 +4,7 @@ Provides a unified API that automatically routes large dense linear systems
 to a CuPy + cuSOLVER backend when:
 
 - ``cupy`` is importable
-- ``MNPBEM_GPU=1`` (default)
+- ``MNPBEM_GPU=1`` (default OFF — explicit opt-in)
 - the matrix dimension is at least ``MNPBEM_GPU_THRESHOLD`` (default 1500)
 
 Below the threshold the helpers fall back to ``scipy.linalg.lu_factor`` /
@@ -25,7 +25,7 @@ import numpy as np
 from scipy.linalg import lu_factor as _scipy_lu_factor
 from scipy.linalg import lu_solve as _scipy_lu_solve
 
-USE_GPU: bool = os.environ.get("MNPBEM_GPU", "1") == "1"
+USE_GPU: bool = os.environ.get("MNPBEM_GPU", "0") == "1"
 GPU_THRESHOLD: int = int(os.environ.get("MNPBEM_GPU_THRESHOLD", "1500"))
 
 try:
