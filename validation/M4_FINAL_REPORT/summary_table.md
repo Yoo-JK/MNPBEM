@@ -21,7 +21,7 @@
 | demodipstat3 | face | 8.40 | - | - |  - |  - | 8.89e-15 | perf |
 | demodipstat4 | 1d_series | 67.50 | 69.29 | 37.52 | :red_circle: 0.97 | :green_circle: 1.80 | 7.63e-13 | perf |
 | demodipstat5 | 1d_series | 260.50 | 9.54 | 7.07 | :green_circle: 27.32 | :green_circle: 36.86 | 3.08e-15 | perf |
-| demodipstat6 | face | - | - | - |  - |  - | 5.34e-15 | perf |
+| demodipstat6 | face | 199.40 | - | - |  - |  - | 5.34e-15 | perf |
 | demodipstat7 | 1d_series | - | 123.89 | 32.98 |  - |  - | 2.28e-14 | perf |
 | demodipstat8 | face | - | 16.30 | 7.48 |  - |  - | 1.92e-14 | perf |
 | demodipstat9 | 1d_series | - | 22.63 | 6.22 |  - |  - | 5.28e-15 | perf |
