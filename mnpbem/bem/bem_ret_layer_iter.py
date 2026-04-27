@@ -206,10 +206,10 @@ class BEMRetLayerIter(BEMIter):
         H2_p = H2.p if hasattr(H2, 'p') else (H2['p'] if isinstance(H2, dict) else H2)
 
         # LU factorizations of G1 and parallel component
-        G1_lu = lu_factor(G1)
-        G2p_lu = lu_factor(G2_p)
-        G1i = lu_solve(G1_lu, np.eye(G1.shape[0]))
-        G2pi = lu_solve(G2p_lu, np.eye(G2_p.shape[0]))
+        G1_lu = lu_factor(G1, check_finite=False)
+        G2p_lu = lu_factor(G2_p, check_finite=False)
+        G1i = lu_solve(G1_lu, np.eye(G1.shape[0]), check_finite=False, overwrite_b=True)
+        G2pi = lu_solve(G2p_lu, np.eye(G2_p.shape[0]), check_finite=False, overwrite_b=True)
 
         # Sigma matrices [Eq. (21)]
         Sigma1 = H1 @ G1i
@@ -219,8 +219,8 @@ class BEMRetLayerIter(BEMIter):
         nperp_diag = np.diag(nvec[:, 3 - 1])  # nvec(:,3)
 
         # Gamma matrix
-        Gamma_lu = lu_factor(Sigma1 - Sigma2p)
-        Gamma = lu_solve(Gamma_lu, np.eye(Sigma1.shape[0]))
+        Gamma_lu = lu_factor(Sigma1 - Sigma2p, check_finite=False, overwrite_a=True)
+        Gamma = lu_solve(Gamma_lu, np.eye(Sigma1.shape[0]), check_finite=False, overwrite_b=True)
 
         # Gammapar with only parallel normal vector components
         Gammapar = ikdeps @ self._decorate_gamma(Gamma, nvec)
@@ -243,16 +243,16 @@ class BEMRetLayerIter(BEMIter):
 
         # LU decomposition as block inverse
         # L11 * U11 = M11
-        m11_lu = lu_factor(m11)
-        im11 = lu_solve(m11_lu, np.eye(m11.shape[0]))
+        m11_lu = lu_factor(m11, check_finite=False, overwrite_a=True)
+        im11 = lu_solve(m11_lu, np.eye(m11.shape[0]), check_finite=False, overwrite_b=True)
         # L11 * U12 = M12 -> U12 = inv(L11) * M12
         im12 = im11 @ m12
         # L21 * U11 = M21 -> L21 = M21 * inv(U11)
         im21 = m21 @ im11
         # L22 * U22 = M22 - L21 * U12
         schur = m22 - im21 @ m12
-        schur_lu = lu_factor(schur)
-        im22 = lu_solve(schur_lu, np.eye(schur.shape[0]))
+        schur_lu = lu_factor(schur, check_finite=False, overwrite_a=True)
+        im22 = lu_solve(schur_lu, np.eye(schur.shape[0]), check_finite=False, overwrite_b=True)
 
         # Save variables
         sav = {}
@@ -635,9 +635,9 @@ class BEMRetLayerIter(BEMIter):
 
         def _ls(lu_piv, b):
             if b.ndim == 1:
-                return lu_solve(lu_piv, b)
+                return lu_solve(lu_piv, b, check_finite=False)
             n_rows = lu_piv[0].shape[0]
-            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(n_rows, *b.shape[1:])
 
         # Modify alpha
         alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, eps1 @ phi if phi.ndim <= 1 else eps1 @ phi)

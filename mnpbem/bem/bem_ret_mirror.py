@@ -110,10 +110,10 @@ class BEMRetMirror(object):
         # MATLAB: if all(obj.g.con{1,2} == 0)
 
         for i in range(n_sym):
-            g1_lu = lu_factor(G1[i])
-            g2_lu = lu_factor(G2[i])
-            g1i = lu_solve(g1_lu, np.eye(G1[i].shape[0]))
-            g2i = lu_solve(g2_lu, np.eye(G2[i].shape[0]))
+            g1_lu = lu_factor(G1[i], check_finite=False)
+            g2_lu = lu_factor(G2[i], check_finite=False)
+            g1i = lu_solve(g1_lu, np.eye(G1[i].shape[0]), check_finite=False, overwrite_b=True)
+            g2i = lu_solve(g2_lu, np.eye(G2[i].shape[0]), check_finite=False, overwrite_b=True)
             self._G1_lu.append(g1_lu)
             self._G2_lu.append(g2_lu)
 
@@ -128,7 +128,7 @@ class BEMRetMirror(object):
             sigma2 = H2[i] @ g2i
             self._Sigma1.append(sigma1)
             self._Sigma2.append(sigma2)
-            self._Delta_lu.append(lu_factor(sigma1 - sigma2))
+            self._Delta_lu.append(lu_factor(sigma1 - sigma2, check_finite=False, overwrite_a=True))
 
         # Sigma_lu cache: indexed by (x, y, z) symmetry indices
         n_tab = self.p.symtable.shape[0]
@@ -172,7 +172,7 @@ class BEMRetMirror(object):
             Sigma = (self._Sigma1[z] @ self._L1[z] - self._Sigma2[z] @ self._L2[z])
 
         for dim, idx in enumerate([x, y, z]):
-            Deltai_idx = lu_solve(self._Delta_lu[idx], np.eye(self._Sigma1[0].shape[0]))
+            Deltai_idx = lu_solve(self._Delta_lu[idx], np.eye(self._Sigma1[0].shape[0]), check_finite=False, overwrite_b=True)
             if np.isscalar(L[dim]):
                 term = k ** 2 * (L[dim] * Deltai_idx * outer_ii(dim))
                 if np.isscalar(L[2]):
@@ -183,7 +183,7 @@ class BEMRetMirror(object):
                 term = k ** 2 * ((L[dim] @ Deltai_idx) * outer_ii(dim))
                 Sigma = Sigma + term @ (self._L1[z] - self._L2[z])
 
-        sigma_lu = lu_factor(Sigma)
+        sigma_lu = lu_factor(Sigma, check_finite=False, overwrite_a=True)
         self._Sigma_lu[key] = sigma_lu
         return sigma_lu
 
@@ -375,10 +375,10 @@ def _lu_solve_multi(lu_piv: Tuple, b: Any) -> Any:
         return 0
     if isinstance(b, np.ndarray):
         if b.ndim == 1:
-            return lu_solve(lu_piv, b)
+            return lu_solve(lu_piv, b, check_finite=False)
         else:
-            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
-    return lu_solve(lu_piv, np.asarray(b))
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(b.shape)
+    return lu_solve(lu_piv, np.asarray(b), check_finite=False)
 
 
 def _subtract_list(a_list: List, b_list: List) -> List:

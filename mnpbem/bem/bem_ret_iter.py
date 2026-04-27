@@ -137,18 +137,18 @@ class BEMRetIter(BEMIter):
             eps2_diag = np.diag(eps2)
 
         # LU factorizations of Green functions
-        G1_lu = lu_factor(G1)
-        G2_lu = lu_factor(G2)
-        G1i = lu_solve(G1_lu, np.eye(G1.shape[0]))
-        G2i = lu_solve(G2_lu, np.eye(G2.shape[0]))
+        G1_lu = lu_factor(G1, check_finite=False)
+        G2_lu = lu_factor(G2, check_finite=False)
+        G1i = lu_solve(G1_lu, np.eye(G1.shape[0]), check_finite=False, overwrite_b=True)
+        G2i = lu_solve(G2_lu, np.eye(G2.shape[0]), check_finite=False, overwrite_b=True)
 
         # Sigma matrices [Eq. (21)]
         Sigma1 = H1 @ G1i
         Sigma2 = H2 @ G2i
 
         # LU factorization of Delta matrix
-        Delta_lu = lu_factor(Sigma1 - Sigma2)
-        Deltai = lu_solve(Delta_lu, np.eye(Sigma1.shape[0]))
+        Delta_lu = lu_factor(Sigma1 - Sigma2, check_finite=False, overwrite_a=True)
+        Deltai = lu_solve(Delta_lu, np.eye(Sigma1.shape[0]), check_finite=False, overwrite_b=True)
 
         # deps = eps1 - eps2
         if np.isscalar(eps1_diag):
@@ -166,7 +166,7 @@ class BEMRetIter(BEMIter):
         else:
             Sigma_mat = eps1_diag @ Sigma1 - eps2_diag @ Sigma2 + k ** 2 * deps @ Deltai_nvec @ deps
 
-        Sigma_lu = lu_factor(Sigma_mat)
+        Sigma_lu = lu_factor(Sigma_mat, check_finite=False, overwrite_a=True)
 
         # Save variables for preconditioner
         sav = {}
@@ -444,8 +444,8 @@ class BEMRetIter(BEMIter):
 
         def _ls(lu_piv, b):
             if b.ndim == 1:
-                return lu_solve(lu_piv, b)
-            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
+                return lu_solve(lu_piv, b, check_finite=False)
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(b.shape)
 
         # Modify alpha and De
         # MATLAB: alpha = alpha - matmul1(Sigma1, a) + 1i*k*outer(nvec, eps1*phi)
