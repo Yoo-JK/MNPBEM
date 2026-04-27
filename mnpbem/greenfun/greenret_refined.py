@@ -394,17 +394,15 @@ class GreenRetRefined(object):
                 return F
 
         elif key == 'H1':
-            F = self.eval(k, 'F')
-            H1 = F.copy()
+            H1 = self.eval(k, 'F')
             if self.p1 is self.p2:
-                np.fill_diagonal(H1, np.diag(F) + 2.0 * np.pi)
+                np.fill_diagonal(H1, np.diag(H1) + 2.0 * np.pi)
             return H1
 
         elif key == 'H2':
-            F = self.eval(k, 'F')
-            H2 = F.copy()
+            H2 = self.eval(k, 'F')
             if self.p1 is self.p2:
-                np.fill_diagonal(H2, np.diag(F) - 2.0 * np.pi)
+                np.fill_diagonal(H2, np.diag(H2) - 2.0 * np.pi)
             return H2
 
         elif key == 'Gp':
@@ -430,8 +428,7 @@ class GreenRetRefined(object):
             return Gp
 
         elif key == 'H1p':
-            Gp = self.eval(k, 'Gp')
-            H1p = Gp.copy()
+            H1p = self.eval(k, 'Gp')
             if self.p1 is self.p2:
                 nvec = self.p1.nvec
                 idx = np.arange(len(nvec))
@@ -439,8 +436,7 @@ class GreenRetRefined(object):
             return H1p
 
         elif key == 'H2p':
-            Gp = self.eval(k, 'Gp')
-            H2p = Gp.copy()
+            H2p = self.eval(k, 'Gp')
             if self.p1 is self.p2:
                 nvec = self.p1.nvec
                 idx = np.arange(len(nvec))
