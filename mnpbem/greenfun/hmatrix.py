@@ -645,7 +645,7 @@ class HMatrix(object):
         # Dense fallback using lu_factor (more efficient than full P,L,U)
         from scipy.linalg import lu_factor
         mat = self.full()
-        self._lu_packed, self._lu_piv = lu_factor(mat)
+        self._lu_packed, self._lu_piv = lu_factor(mat, check_finite=False, overwrite_a=True)
         self._lu_done = True
         self._lu_method = 'dense'
         return self
@@ -673,10 +673,10 @@ class HMatrix(object):
 
         from scipy.linalg import lu_factor, lu_solve
 
-        lu11, piv11 = lu_factor(A11)
-        C12 = lu_solve((lu11, piv11), A12)  # A11^-1 @ A12
+        lu11, piv11 = lu_factor(A11, check_finite=False)
+        C12 = lu_solve((lu11, piv11), A12, check_finite=False)  # A11^-1 @ A12
         S22 = A22 - A21 @ C12               # Schur complement
-        lu22, piv22 = lu_factor(S22)
+        lu22, piv22 = lu_factor(S22, check_finite=False, overwrite_a=True)
 
         self._block_lu = {
             'lu11': lu11, 'piv11': piv11,
@@ -697,7 +697,7 @@ class HMatrix(object):
         from scipy.linalg import lu_solve
 
         if self._lu_method == 'dense':
-            return lu_solve((self._lu_packed, self._lu_piv), b)
+            return lu_solve((self._lu_packed, self._lu_piv), b, check_finite=False)
 
         # Block Schur complement solve:
         # x2 = S22^-1 @ (b2 - A21 @ A11^-1 @ b1)
@@ -707,9 +707,9 @@ class HMatrix(object):
         b1 = b[:n1]
         b2 = b[n1:]
 
-        temp = lu_solve((blk['lu11'], blk['piv11']), b1)
-        x2 = lu_solve((blk['lu22'], blk['piv22']), b2 - blk['A21'] @ temp)
-        x1 = lu_solve((blk['lu11'], blk['piv11']), b1 - blk['A12'] @ x2)
+        temp = lu_solve((blk['lu11'], blk['piv11']), b1, check_finite=False)
+        x2 = lu_solve((blk['lu22'], blk['piv22']), b2 - blk['A21'] @ temp, check_finite=False, overwrite_b=True)
+        x1 = lu_solve((blk['lu11'], blk['piv11']), b1 - blk['A12'] @ x2, check_finite=False, overwrite_b=True)
 
         if b.ndim == 1:
             return np.concatenate([x1, x2])
