@@ -97,14 +97,46 @@ class PlaneWaveRet(object):
                 - medium : can also be specified in options
         """
         # MATLAB: init.m line 18
+        if pol is None:
+            raise ValueError("PlaneWaveRet: 'pol' must be a polarization vector, got None.")
+        if dir is None:
+            raise ValueError("PlaneWaveRet: 'dir' must be a propagation direction vector, got None.")
         self.pol = np.asarray(pol)
         self.dir = np.asarray(dir)
 
+        if self.pol.dtype == object or self.pol.size == 0:
+            raise ValueError(
+                "PlaneWaveRet: 'pol' must be a numeric array of shape (3,) or (npol, 3).")
+        if self.dir.dtype == object or self.dir.size == 0:
+            raise ValueError(
+                "PlaneWaveRet: 'dir' must be a numeric array of shape (3,) or (npol, 3).")
+
         # Ensure 2D arrays
         if self.pol.ndim == 1:
+            if self.pol.size != 3:
+                raise ValueError(
+                    "PlaneWaveRet: 1D 'pol' must have length 3, got length {}."
+                    .format(self.pol.size))
             self.pol = self.pol.reshape(1, -1)
+        elif self.pol.ndim == 2:
+            if self.pol.shape[1] != 3:
+                raise ValueError(
+                    "PlaneWaveRet: 2D 'pol' must have shape (npol, 3), got {}.".format(self.pol.shape))
+        else:
+            raise ValueError("PlaneWaveRet: 'pol' must be 1D or 2D, got {}D.".format(self.pol.ndim))
+
         if self.dir.ndim == 1:
+            if self.dir.size != 3:
+                raise ValueError(
+                    "PlaneWaveRet: 1D 'dir' must have length 3, got length {}."
+                    .format(self.dir.size))
             self.dir = self.dir.reshape(1, -1)
+        elif self.dir.ndim == 2:
+            if self.dir.shape[1] != 3:
+                raise ValueError(
+                    "PlaneWaveRet: 2D 'dir' must have shape (npol, 3), got {}.".format(self.dir.shape))
+        else:
+            raise ValueError("PlaneWaveRet: 'dir' must be 1D or 2D, got {}D.".format(self.dir.ndim))
 
         # MATLAB: init.m line 24
         self.medium = options.get('medium', medium)
@@ -176,8 +208,8 @@ class PlaneWaveRet(object):
         # Get all face indices for excited particles
         face_indices = []
         for i in ind:
-            face_indices.extend(p.index[i])
-        ind = np.array(face_indices)
+            face_indices.extend(p.index_func(i + 1))  # 1-indexed in MATLAB
+        ind = np.array(face_indices, dtype = int) if face_indices else np.array([], dtype = int)
 
         # MATLAB: field.m lines 37-38
         npol = pol.shape[0]
@@ -185,19 +217,20 @@ class PlaneWaveRet(object):
         h = np.zeros((p.n, 3, npol), dtype=complex)
 
         # MATLAB: field.m lines 40-46
-        for i in range(npol):
-            # Phase factor: exp(i k r·dir)
-            phase = np.exp(1j * k * p.pos[ind, :] @ dir[i, :]) / (1j * k0)
+        if len(ind) > 0:
+            for i in range(npol):
+                # Phase factor: exp(i k r·dir)
+                phase = np.exp(1j * k * p.pos[ind, :] @ dir[i, :]) / (1j * k0)
 
-            # MATLAB: field.m line 43
-            # Electric field: E = i k₀ phase * pol
-            e[ind, :, i] = 1j * k0 * phase[:, np.newaxis] * pol[i, :]
+                # MATLAB: field.m line 43
+                # Electric field: E = i k₀ phase * pol
+                e[ind, :, i] = 1j * k0 * phase[:, np.newaxis] * pol[i, :]
 
-            # MATLAB: field.m lines 44-45
-            # Magnetic field: H = n_b dir × E
-            e_full = e[:, :, i]
-            dir_rep = np.tile(dir[i, :], (p.n, 1))
-            h[:, :, i] = nb * np.cross(dir_rep, e_full)
+                # MATLAB: field.m lines 44-45
+                # Magnetic field: H = n_b dir × E
+                e_full = e[:, :, i]
+                dir_rep = np.tile(dir[i, :], (p.n, 1))
+                h[:, :, i] = nb * np.cross(dir_rep, e_full)
 
         # Squeeze if only one polarization
         if npol == 1:
