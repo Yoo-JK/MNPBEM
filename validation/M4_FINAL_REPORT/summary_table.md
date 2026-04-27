@@ -34,7 +34,7 @@
 | demoeelsret7 | 1d_series | 1200.13 | 469.17 | 327.53 | :green_circle: 2.56 | :green_circle: 3.66 | 9.97e-08 | perf |
 | demoeelsret8 | 2d_spatial | 1200.14 | 714.38 | 220.25 | :green_circle: 1.68 | :green_circle: 5.45 | 1.86e-07 | perf |
 | demoeelsstat1 | 1d_series | - | 5.28 | 1.46 |  - |  - | 1.22e-14 | perf |
-| demoeelsstat2 | 2d_impact | - | - | - |  - |  - | 2.18e-08 | perf |
+| demoeelsstat2 | 2d_impact | 1200.16 | - | - |  - |  - | 2.18e-08 | perf |
 | demoeelsstat3 | 2d_impact | - | 184.78 | 19.40 |  - |  - | 1.53e-14 | perf |
 | demospecret1 | 1d_series | - | 20.44 | 3.91 |  - |  - | 6.12e-15 | perf |
 | demospecret10 | face | - | 114.39 | 18.16 |  - |  - | 1.21e-04 | OK |

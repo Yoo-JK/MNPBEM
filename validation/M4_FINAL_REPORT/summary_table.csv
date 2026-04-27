@@ -31,7 +31,7 @@ demoeelsret6,34.4,ok,21.95,ok,8.371,ok,face,2.054e-13,perf,1.567,4.109
 demoeelsret7,1200,timeout,469.2,ok,327.5,ok,1d_series,9.971e-08,perf,2.558,3.664
 demoeelsret8,1200,timeout,714.4,ok,220.3,ok,2d_spatial,1.859e-07,perf,1.68,5.449
 demoeelsstat1,,,5.275,ok,1.458,ok,1d_series,1.224e-14,perf,,
-demoeelsstat2,,,,,,,2d_impact,2.18e-08,perf,,
+demoeelsstat2,1200,timeout,,,,,2d_impact,2.18e-08,perf,,
 demoeelsstat3,,,184.8,ok,19.4,ok,2d_impact,1.533e-14,perf,,
 demospecret1,,,20.44,ok,3.91,ok,1d_series,6.118e-15,perf,,
 demospecret10,,,114.4,ok,18.16,ok,face,0.0001214,OK,,
