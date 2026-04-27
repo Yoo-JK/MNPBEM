@@ -50,10 +50,10 @@
 | demospecret3 | face | 1200.14 | 47.27 | 7.31 | :green_circle: 25.39 | :green_circle: 164.11 | 6.92e-14 | perf |
 | demospecret4 | 1d_series | 1200.14 | 159.52 | 57.35 | :green_circle: 7.52 | :green_circle: 20.93 | 7.50e-14 | perf |
 | demospecret5 | 1d_series | - | 165.13 | 55.08 |  - |  - | 5.68e-13 | perf |
-| demospecret6 | 1d_series | - | - | - |  - |  - | 1.62e-06 | perf |
+| demospecret6 | 1d_series | 1200.14 | - | - |  - |  - | 1.62e-06 | perf |
 | demospecret7 | 1d_series | - | 159.20 | 58.48 |  - |  - | 4.97e-08 | perf |
-| demospecret8 | 1d_series | - | 136.26 | 27.79 |  - |  - | 2.88e-08 | perf |
-| demospecret9 | 1d_series | - | 128.89 | 27.31 |  - |  - | 4.77e-08 | perf |
+| demospecret8 | 1d_series | 138.00 | 136.26 | 27.79 | :green_circle: 1.01 | :green_circle: 4.97 | 2.88e-08 | perf |
+| demospecret9 | 1d_series | 927.10 | 128.89 | 27.31 | :green_circle: 7.19 | :green_circle: 33.94 | 4.77e-08 | perf |
 | demospecstat1 | 1d_series | - | - | - |  - |  - | 1.03e-14 | perf |
 | demospecstat10 | 1d_series | - | 13.50 | 2.92 |  - |  - | 7.23e-13 | perf |
 | demospecstat11 | face | - | - | - |  - |  - | 3.37e-15 | perf |

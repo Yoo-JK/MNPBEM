@@ -47,10 +47,10 @@ demospecret2,,,41.22,ok,10.29,ok,1d_series,3.196e-14,perf,,
 demospecret3,1200,timeout,47.27,ok,7.313,ok,face,6.922e-14,perf,25.39,164.1
 demospecret4,1200,timeout,159.5,ok,57.35,ok,1d_series,7.495e-14,perf,7.523,20.93
 demospecret5,,,165.1,ok,55.08,ok,1d_series,5.683e-13,perf,,
-demospecret6,,,,,,,1d_series,1.616e-06,perf,,
+demospecret6,1200,timeout,,,,,1d_series,1.616e-06,perf,,
 demospecret7,,,159.2,ok,58.48,ok,1d_series,4.969e-08,perf,,
-demospecret8,,,136.3,ok,27.79,ok,1d_series,2.882e-08,perf,,
-demospecret9,,,128.9,ok,27.31,ok,1d_series,4.769e-08,perf,,
+demospecret8,138,cached,136.3,ok,27.79,ok,1d_series,2.882e-08,perf,1.013,4.967
+demospecret9,927.1,cached,128.9,ok,27.31,ok,1d_series,4.769e-08,perf,7.193,33.94
 demospecstat1,,,,,,,1d_series,1.028e-14,perf,,
 demospecstat10,,,13.5,ok,2.917,ok,1d_series,7.226e-13,perf,,
 demospecstat11,,,,,,,face,3.367e-15,perf,,
