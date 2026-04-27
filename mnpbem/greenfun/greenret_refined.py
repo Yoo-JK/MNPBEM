@@ -350,8 +350,30 @@ class GreenRetRefined(object):
         inv_d2 = c['inv_d2']
         area2 = c['area2']
 
+        # Numba fast path for distinct-particle (meshfield / observer) case.
+        # Refinement overrides act on the *pre-phase* matrix, so the kernel
+        # produces the pre-phase result, the caller overwrites refined
+        # entries via numpy fancy indexing, and a final numba phase apply
+        # multiplies in exp(i k d).
+        use_numba = self.p1 is not self.p2
+        nb = None
+        if use_numba:
+            from ..simulation import _meshfield_numba as _nb
+            if _nb.numba_enabled():
+                nb = _nb
+
         # Evaluate based on key
         if key == 'G':
+            if nb is not None:
+                G = nb.ret_G_pre(inv_d, area2)
+                if len(self.ind) > 0:
+                    ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
+                    G_refined = self.g @ ik_powers
+                    G[self.row, self.col] = G_refined
+                phase = nb.ret_phase(d, k)
+                nb.apply_phase_2d(G, phase)
+                return G
+
             G = inv_d * area2[np.newaxis, :] + 0j
 
             if len(self.ind) > 0:
@@ -364,10 +386,21 @@ class GreenRetRefined(object):
 
         elif key == 'F':
             if self.deriv == 'cart':
-                # MATLAB eval1.m lines 110-124: F via Gp inner product
                 x, y, z = c['x'], c['y'], c['z']
-                f_aux = (1j * k - inv_d) * inv_d2
                 nvec = self.p1.nvec
+                if nb is not None:
+                    F = nb.ret_F_cart_pre(inv_d, inv_d2, x, y, z, nvec, area2, k)
+                    if len(self.ind) > 0:
+                        ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
+                        nvec_ref = nvec[self.row]
+                        F_refined = np.einsum('ij,ijk,k->i', nvec_ref, self.f, ik_powers)
+                        F[self.row, self.col] = F_refined
+                    phase = nb.ret_phase(d, k)
+                    nb.apply_phase_2d(F, phase)
+                    return F
+
+                # MATLAB eval1.m lines 110-124: F via Gp inner product
+                f_aux = (1j * k - inv_d) * inv_d2
                 F = (nvec[:, 0:1] * (f_aux * x) +
                      nvec[:, 1:2] * (f_aux * y) +
                      nvec[:, 2:3] * (f_aux * z)) * area2[np.newaxis, :]
@@ -383,6 +416,16 @@ class GreenRetRefined(object):
                 return F
             else:
                 n_dot_r = c['n_dot_r']
+                if nb is not None:
+                    F = nb.ret_F_norm_pre(inv_d, inv_d2, n_dot_r, area2, k)
+                    if len(self.ind) > 0:
+                        ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
+                        F_refined = self.f @ ik_powers
+                        F[self.row, self.col] = F_refined
+                    phase = nb.ret_phase(d, k)
+                    nb.apply_phase_2d(F, phase)
+                    return F
+
                 F = n_dot_r * (1j * k - inv_d) * inv_d2 * area2[np.newaxis, :]
 
                 if len(self.ind) > 0:
@@ -395,20 +438,34 @@ class GreenRetRefined(object):
 
         elif key == 'H1':
             F = self.eval(k, 'F')
-            H1 = F.copy()
             if self.p1 is self.p2:
+                H1 = F.copy()
                 np.fill_diagonal(H1, np.diag(F) + 2.0 * np.pi)
-            return H1
+                return H1
+            return F
 
         elif key == 'H2':
             F = self.eval(k, 'F')
-            H2 = F.copy()
             if self.p1 is self.p2:
+                H2 = F.copy()
                 np.fill_diagonal(H2, np.diag(F) - 2.0 * np.pi)
-            return H2
+                return H2
+            return F
 
         elif key == 'Gp':
             x, y, z = c['x'], c['y'], c['z']
+            if nb is not None:
+                Gp = nb.ret_Gp_pre(inv_d, inv_d2, x, y, z, area2, k)
+                if len(self.ind) > 0 and self.deriv == 'cart':
+                    ik_powers = np.array([(1j * k)**n for n in range(self.order + 1)])
+                    Gp_refined = np.einsum('ijk,k->ij', self.f, ik_powers)
+                    Gp[self.row, 0, self.col] = Gp_refined[:, 0]
+                    Gp[self.row, 1, self.col] = Gp_refined[:, 1]
+                    Gp[self.row, 2, self.col] = Gp_refined[:, 2]
+                phase = nb.ret_phase(d, k)
+                nb.apply_phase_3d_axis02(Gp, phase)
+                return Gp
+
             phase = np.exp(1j * k * d)
             f_aux = (1j * k - inv_d) * inv_d2
             # Gp as (n1, n2, 3) — then transpose to (n1, 3, n2)
@@ -431,21 +488,23 @@ class GreenRetRefined(object):
 
         elif key == 'H1p':
             Gp = self.eval(k, 'Gp')
-            H1p = Gp.copy()
             if self.p1 is self.p2:
+                H1p = Gp.copy()
                 nvec = self.p1.nvec
                 idx = np.arange(len(nvec))
                 H1p[idx, :, idx] += 2.0 * np.pi * nvec.T
-            return H1p
+                return H1p
+            return Gp
 
         elif key == 'H2p':
             Gp = self.eval(k, 'Gp')
-            H2p = Gp.copy()
             if self.p1 is self.p2:
+                H2p = Gp.copy()
                 nvec = self.p1.nvec
                 idx = np.arange(len(nvec))
                 H2p[idx, :, idx] -= 2.0 * np.pi * nvec.T
-            return H2p
+                return H2p
+            return Gp
 
         else:
             raise ValueError("Unknown key: {}".format(key))
