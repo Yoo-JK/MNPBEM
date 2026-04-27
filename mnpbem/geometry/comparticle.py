@@ -316,15 +316,21 @@ class ComParticle(object):
 
             # Index to closed particle
             if all(c > 0 for c in closed_list):
-                # Find locations in pc
-                loc = []
-                for i, pos in enumerate(p_combined.pos):
-                    # Find matching position in pc
-                    for j, pc_pos in enumerate(self.pc.pos):
-                        if np.allclose(pos, pc_pos):
-                            loc.append(j)
-                            break
-                loc = np.array(loc) if len(loc) == len(p_combined.pos) else None
+                # Vectorized: compute pairwise distance to find matching positions.
+                # MATLAB uses element-wise tolerance via np.allclose (rtol=1e-5, atol=1e-8);
+                # since coordinates are O(1)..O(100), atol-dominated tolerance is sufficient.
+                src = np.asarray(p_combined.pos, dtype=float)
+                tgt = np.asarray(self.pc.pos, dtype=float)
+                # diff[i, j, :] = src[i] - tgt[j]
+                diff = np.abs(src[:, None, :] - tgt[None, :, :])
+                tol = 1e-8 + 1e-5 * np.abs(tgt[None, :, :])
+                match = np.all(diff <= tol, axis=2)
+                # First matching column per row
+                any_match = match.any(axis=1)
+                if any_match.all():
+                    loc = np.argmax(match, axis=1)
+                else:
+                    loc = None
             else:
                 loc = None
 
