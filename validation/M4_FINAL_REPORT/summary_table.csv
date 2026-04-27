@@ -42,7 +42,7 @@ demospecret14,1200,timeout,900.6,timeout,733.5,ok,1d_series,2.684e-07,perf,1.333
 demospecret15,,,26.02,ok,6.083,ok,1d_series,5.339e-14,perf,,
 demospecret16,1200,timeout,327.6,ok,81.99,ok,1d_series,2.789e-14,perf,3.663,14.64
 demospecret17,186.5,cached,33.18,ok,10.49,ok,1d_series,1.004e-14,perf,5.622,17.77
-demospecret18,,,186.2,ok,117.9,ok,1d_series,8.883e-13,perf,,
+demospecret18,1200,timeout,186.2,ok,117.9,ok,1d_series,8.883e-13,perf,6.444,10.18
 demospecret2,,,41.22,ok,10.29,ok,1d_series,3.196e-14,perf,,
 demospecret3,,,47.27,ok,7.313,ok,face,6.922e-14,perf,,
 demospecret4,,,159.5,ok,57.35,ok,1d_series,7.495e-14,perf,,
