@@ -465,7 +465,14 @@ class GreenTabLayer(object):
 
     @staticmethod
     def _interp_complex(grid, data, points):
-        """Interpolate complex array on a regular grid (split real/imag)."""
+        """Interpolate complex array on a regular grid (split real/imag).
+
+        Dispatches to numba kernel when ``MNPBEM_NUMBA`` is set, else falls
+        back to scipy.RegularGridInterpolator (split real/imag).
+        """
+        from ._numba_layer import trilinear_complex, _numba_enabled
+        if _numba_enabled():
+            return trilinear_complex(grid, data, points)
         val_r = RegularGridInterpolator(
             grid, data.real, method='linear',
             bounds_error=False, fill_value=None)(points)
