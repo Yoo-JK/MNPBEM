@@ -58,6 +58,19 @@ class ComParticle(object):
 
         MATLAB: obj = comparticle(eps, p, inout, varargin)
         """
+        # Validate inputs (C1-4..C1-8)
+        if eps is None:
+            raise ValueError("ComParticle: 'eps' must be a list of dielectric functions, got None.")
+        if particles is None:
+            raise ValueError("ComParticle: 'particles' must be a list of Particle, got None.")
+        if inout is None:
+            raise ValueError("ComParticle: 'inout' must be an inside/outside index table, got None.")
+
+        if not hasattr(eps, '__len__'):
+            raise TypeError("ComParticle: 'eps' must be a sequence (list) of dielectric functions.")
+        if len(eps) == 0:
+            raise ValueError("ComParticle: 'eps' must contain at least one dielectric function.")
+
         self.eps = eps
 
         # Process input particles and options (MATLAB: getinput.m)
@@ -74,7 +87,27 @@ class ComParticle(object):
             self.p = [particles]
 
         # Convert inout to numpy array (MATLAB uses 1-indexing)
-        self.inout = np.atleast_2d(inout)
+        inout_arr = np.atleast_2d(np.asarray(inout))
+        if inout_arr.ndim != 2 or inout_arr.shape[1] != 2:
+            raise ValueError(
+                "ComParticle: 'inout' must be a list of [in, out] pairs with "
+                "shape (n, 2); got shape {}.".format(inout_arr.shape))
+        if inout_arr.shape[0] != len(self.p):
+            raise ValueError(
+                "ComParticle: 'inout' must have one row per particle; got "
+                "{} particles vs {} inout rows."
+                .format(len(self.p), inout_arr.shape[0]))
+        # eps indices in inout are 1-based (MATLAB) — must be within range.
+        max_idx = int(inout_arr.max()) if inout_arr.size > 0 else 0
+        if max_idx > len(eps):
+            raise ValueError(
+                "ComParticle: 'inout' references eps[{}] but only {} "
+                "dielectric functions provided.".format(max_idx, len(eps)))
+        if int(inout_arr.min()) < 1:
+            raise ValueError(
+                "ComParticle: 'inout' indices are 1-based; got minimum {}."
+                .format(int(inout_arr.min())))
+        self.inout = inout_arr
 
         # Mask (default: all particles active)
         self._mask = list(range(len(self.p)))
