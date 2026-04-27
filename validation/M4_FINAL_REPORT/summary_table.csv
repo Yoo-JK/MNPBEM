@@ -35,8 +35,8 @@ demoeelsstat2,1200,timeout,,,,,2d_impact,2.18e-08,perf,,
 demoeelsstat3,1200,timeout,184.8,ok,19.4,ok,2d_impact,1.533e-14,perf,6.495,61.86
 demospecret1,,,20.44,ok,3.91,ok,1d_series,6.118e-15,perf,,
 demospecret10,363,cached,114.4,ok,18.16,ok,face,0.0001214,OK,3.173,19.99
-demospecret11,,,900.2,timeout,146.3,ok,1d_series,4.034e-07,perf,,
-demospecret12,,,113.1,ok,12.86,ok,1d_series,1.184e-16,perf,,
+demospecret11,1200,timeout,900.2,timeout,146.3,ok,1d_series,4.034e-07,perf,1.333,8.201
+demospecret12,666.3,cached,113.1,ok,12.86,ok,1d_series,1.184e-16,perf,5.89,51.81
 demospecret13,,,862,ok,396.2,ok,1d_series,2.887e-08,perf,,
 demospecret14,,,900.6,timeout,733.5,ok,1d_series,2.684e-07,perf,,
 demospecret15,,,26.02,ok,6.083,ok,1d_series,5.339e-14,perf,,
