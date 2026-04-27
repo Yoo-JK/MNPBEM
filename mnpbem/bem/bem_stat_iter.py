@@ -95,11 +95,11 @@ class BEMStatIter(BEMIter):
 
             if self.precond == 'hmat':
                 # MATLAB: obj.mat = lu(-lambda - F)
-                self._mat_lu = lu_factor(-Lambda - F)
+                self._mat_lu = lu_factor(-Lambda - F, check_finite=False, overwrite_a=True)
 
             elif self.precond == 'full':
                 # MATLAB: obj.mat = inv(-lambda - full(F))
-                self._mat_lu = lu_factor(-Lambda - F)
+                self._mat_lu = lu_factor(-Lambda - F, check_finite=False, overwrite_a=True)
 
             else:
                 raise ValueError('[error] preconditioner not known: <{}>'.format(self.precond))
@@ -130,7 +130,7 @@ class BEMStatIter(BEMIter):
 
         if self.precond == 'hmat' or self.precond == 'full':
             # MATLAB: vec = solve(obj.mat, vec) or obj.mat * vec
-            result = lu_solve(self._mat_lu, vec_2d)
+            result = lu_solve(self._mat_lu, vec_2d, check_finite=False)
         else:
             result = vec_2d
 
