@@ -1,0 +1,4 @@
+case,n_faces_requested,n_faces_actual,assembly_seconds,lu_factor_seconds,solve_seconds,total_seconds,status
+trisphere2562_BEMStat,2562,2884,71.48442614916712,0.44789346773177385,0.011803907342255116,71.94412352424115,OK
+trisphere2562_BEMRet,2562,-1,nan,nan,nan,nan,FAIL
+trisphere10242_BEMStat,10242,2884,71.89297773782164,1.0760216685011983,0.033355098217725754,73.00235450454056,OK
