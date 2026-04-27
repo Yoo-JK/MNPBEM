@@ -16,11 +16,11 @@
 | demodipret9 | 1d_series | 108.80 | - | - |  - |  - | 3.46e-09 | perf |
 | demodipstat1 | 1d_series | - | - | - |  - |  - | 3.40e-15 | perf |
 | demodipstat10 | 1d_series | 192.00 | 401.41 | 99.43 | :red_circle: 0.48 | :green_circle: 1.93 | 8.55e-15 | perf |
-| demodipstat11 | 1d_series | - | 900.23 | 179.74 |  - |  - | 2.15e-13 | perf |
-| demodipstat2 | 1d_series | - | - | - |  - |  - | 3.34e-15 | perf |
-| demodipstat3 | face | - | - | - |  - |  - | 8.89e-15 | perf |
-| demodipstat4 | 1d_series | - | 69.29 | 37.52 |  - |  - | 7.63e-13 | perf |
-| demodipstat5 | 1d_series | - | 9.54 | 7.07 |  - |  - | 3.08e-15 | perf |
+| demodipstat11 | 1d_series | 350.40 | 900.23 | 179.74 | :red_circle: 0.39 | :green_circle: 1.95 | 2.15e-13 | perf |
+| demodipstat2 | 1d_series | 73.70 | - | - |  - |  - | 3.34e-15 | perf |
+| demodipstat3 | face | 8.40 | - | - |  - |  - | 8.89e-15 | perf |
+| demodipstat4 | 1d_series | 67.50 | 69.29 | 37.52 | :red_circle: 0.97 | :green_circle: 1.80 | 7.63e-13 | perf |
+| demodipstat5 | 1d_series | 260.50 | 9.54 | 7.07 | :green_circle: 27.32 | :green_circle: 36.86 | 3.08e-15 | perf |
 | demodipstat6 | face | - | - | - |  - |  - | 5.34e-15 | perf |
 | demodipstat7 | 1d_series | - | 123.89 | 32.98 |  - |  - | 2.28e-14 | perf |
 | demodipstat8 | face | - | 16.30 | 7.48 |  - |  - | 1.92e-14 | perf |

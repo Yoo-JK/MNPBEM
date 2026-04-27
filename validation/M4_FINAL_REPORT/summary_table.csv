@@ -13,11 +13,11 @@ demodipret8,,,46.59,ok,52.08,ok,1d_series,3.761e-10,perf,,
 demodipret9,108.8,cached,,,,,1d_series,3.462e-09,perf,,
 demodipstat1,,,,,,,1d_series,3.4e-15,perf,,
 demodipstat10,192,ok,401.4,ok,99.43,ok,1d_series,8.546e-15,perf,0.4783,1.931
-demodipstat11,,,900.2,timeout,179.7,ok,1d_series,2.15e-13,perf,,
-demodipstat2,,,,,,,1d_series,3.336e-15,perf,,
-demodipstat3,,,,,,,face,8.894e-15,perf,,
-demodipstat4,,,69.29,ok,37.52,ok,1d_series,7.634e-13,perf,,
-demodipstat5,,,9.536,ok,7.066,ok,1d_series,3.083e-15,perf,,
+demodipstat11,350.4,ok,900.2,timeout,179.7,ok,1d_series,2.15e-13,perf,0.3892,1.949
+demodipstat2,73.7,ok,,,,,1d_series,3.336e-15,perf,,
+demodipstat3,8.4,ok,,,,,face,8.894e-15,perf,,
+demodipstat4,67.5,ok,69.29,ok,37.52,ok,1d_series,7.634e-13,perf,0.9741,1.799
+demodipstat5,260.5,ok,9.536,ok,7.066,ok,1d_series,3.083e-15,perf,27.32,36.86
 demodipstat6,,,,,,,face,5.343e-15,perf,,
 demodipstat7,,,123.9,ok,32.98,ok,1d_series,2.277e-14,perf,,
 demodipstat8,,,16.3,ok,7.479,ok,face,1.916e-14,perf,,

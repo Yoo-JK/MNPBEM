@@ -200,7 +200,7 @@ def dashboard(timings, acc_df):
         return
     cols = 6
     rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 2.2 * rows))
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows))
     if rows == 1:
         axes = np.array([axes])
     for i, demo in enumerate(demos):
@@ -223,17 +223,21 @@ def dashboard(timings, acc_df):
         t = timings.get(demo, {})
         m_t = t.get('matlab', float('nan'))
         c_t = t.get('cpu', float('nan'))
-        speedup = (m_t / c_t) if (m_t == m_t and c_t == c_t and c_t > 0) else float('nan')
-        title = demo
-        sub = ''
-        if speedup == speedup:
-            color = 'green' if speedup >= 1.0 else 'red'
-            sub = f'M={m_t:.1f}s C={c_t:.1f}s {speedup:.1f}x'
-            ax.set_title(title, fontsize=8)
-            ax.text(0.5, -0.25, sub, transform=ax.transAxes, fontsize=7,
-                    ha='center', color=color)
+        g_t = t.get('gpu', float('nan'))
+        speedup_c = (m_t / c_t) if (m_t == m_t and c_t == c_t and c_t > 0) else float('nan')
+        speedup_g = (m_t / g_t) if (m_t == m_t and g_t == g_t and g_t > 0) else float('nan')
+        ax.set_title(demo, fontsize=10)
+        if speedup_c == speedup_c:
+            color = 'green' if speedup_c >= 1.0 else 'red'
+            sub = f'M={m_t:.0f}s C={c_t:.0f}s ({speedup_c:.1f}x)'
+            ax.text(0.5, -0.18, sub, transform=ax.transAxes, fontsize=10,
+                    ha='center', color=color, fontweight='bold')
         else:
-            ax.set_title(title, fontsize=8)
+            cpu_label = f'C={c_t:.0f}s' if c_t == c_t and c_t > 0 else ''
+            gpu_label = f' G={g_t:.0f}s' if g_t == g_t and g_t > 0 else ''
+            if cpu_label or gpu_label:
+                ax.text(0.5, -0.18, (cpu_label + gpu_label).strip(),
+                        transform=ax.transAxes, fontsize=9, ha='center', color='gray')
         # accuracy
         if not acc_df.empty:
             sel = acc_df[acc_df['demo'] == demo]
@@ -241,8 +245,8 @@ def dashboard(timings, acc_df):
                 err = float(sel.iloc[0]['max_rel_err'])
                 err_color = 'green' if err < 1e-12 else 'orange' if err < 1e-3 else 'red'
                 ax.text(0.02, 0.98, f'err={err:.0e}', transform=ax.transAxes,
-                        fontsize=6, va='top', color=err_color)
-        ax.tick_params(labelsize=6)
+                        fontsize=8, va='top', color=err_color, fontweight='bold')
+        ax.tick_params(labelsize=7)
         ax.grid(True, alpha=0.2)
     # blank remaining
     for j in range(n, rows * cols):

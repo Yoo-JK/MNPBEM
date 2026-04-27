@@ -123,10 +123,12 @@ def main():
     rep_lines.append(f'**Total demos**: {n_total}')
     rep_lines.append('')
     rep_lines.append('## User requirements\n')
-    rep_lines.append('1. **GPU acceleration as opt-in** - DONE (MNPBEM_GPU=1 explicit)')
-    rep_lines.append(f'2. **Python (CPU) > MATLAB on every demo** - {n_cpu_win}/{n_cpu_compared} demos faster on Python CPU '
-                     f'(median {median_speedup:.2f}x speedup)')
-    rep_lines.append(f'3. **MATLAB == Python (1e-12)** - perf={n_perf} OK={n_ok} warn={n_warn} BAD={n_bad}')
+    rep_lines.append('1. **GPU acceleration as opt-in** - DONE (MNPBEM_GPU=1 explicit; default OFF)')
+    rep_lines.append(f'2. **Python (CPU) > MATLAB on every demo** - '
+                     f'{n_cpu_win}/{n_cpu_compared} demos faster on Python CPU (median {median_speedup:.2f}x speedup)')
+    rep_lines.append(f'   - MATLAB timing is being collected sequentially in the background;')
+    rep_lines.append(f'     this number grows as more demos complete.')
+    rep_lines.append(f'3. **MATLAB == Python (1e-12)** - perf={n_perf}, OK={n_ok}, warn={n_warn}, BAD={n_bad} (of 72 demos)')
     rep_lines.append('')
     rep_lines.append('## Timing summary')
     rep_lines.append('')
