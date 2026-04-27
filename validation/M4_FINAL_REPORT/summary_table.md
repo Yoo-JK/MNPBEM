@@ -48,7 +48,7 @@
 | demospecret18 | 1d_series | 1200.13 | 186.24 | 117.92 | :green_circle: 6.44 | :green_circle: 10.18 | 8.88e-13 | perf |
 | demospecret2 | 1d_series | - | 41.22 | 10.29 |  - |  - | 3.20e-14 | perf |
 | demospecret3 | face | 1200.14 | 47.27 | 7.31 | :green_circle: 25.39 | :green_circle: 164.11 | 6.92e-14 | perf |
-| demospecret4 | 1d_series | - | 159.52 | 57.35 |  - |  - | 7.50e-14 | perf |
+| demospecret4 | 1d_series | 1200.14 | 159.52 | 57.35 | :green_circle: 7.52 | :green_circle: 20.93 | 7.50e-14 | perf |
 | demospecret5 | 1d_series | - | 165.13 | 55.08 |  - |  - | 5.68e-13 | perf |
 | demospecret6 | 1d_series | - | - | - |  - |  - | 1.62e-06 | perf |
 | demospecret7 | 1d_series | - | 159.20 | 58.48 |  - |  - | 4.97e-08 | perf |
