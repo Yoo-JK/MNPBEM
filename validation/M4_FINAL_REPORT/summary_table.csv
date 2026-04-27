@@ -63,7 +63,7 @@ demospecstat17,1200,timeout,345.8,ok,359.8,ok,1d_series,7.903e-14,perf,3.471,3.3
 demospecstat18,1200,timeout,65.24,ok,30.89,ok,1d_series,3.615e-14,perf,18.39,38.85
 demospecstat19,1200,timeout,21.42,ok,3.05,ok,1d_series,3.499e-14,perf,56.03,393.5
 demospecstat2,1200,timeout,5.311,ok,1.766,ok,1d_series,1.06e-14,perf,226,679.7
-demospecstat20,,,99.78,ok,44.71,ok,1d_series,5.394e-14,perf,,
+demospecstat20,1200,timeout,99.78,ok,44.71,ok,1d_series,5.394e-14,perf,12.03,26.84
 demospecstat3,,,,,,,1d_series,1.628e-14,perf,,
 demospecstat4,,,,,,,face,8.01e-15,perf,,
 demospecstat5,,,19.85,ok,2.797,ok,1d_series,7.387e-15,perf,,
