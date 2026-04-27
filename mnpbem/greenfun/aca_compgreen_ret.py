@@ -4,7 +4,7 @@ import numpy as np
 from typing import Optional, Tuple, Any, List, Dict
 
 from .clustertree import ClusterTree
-from .hmatrix import HMatrix
+from .hmatrix import HMatrix, make_kaware_fadmiss
 from .compgreen_ret import CompGreenRet
 
 
@@ -22,6 +22,8 @@ class ACACompGreenRet(object):
             htol: float = 1e-6,
             kmax: int = 100,
             cleaf: int = 32,
+            fadmiss: Optional[Any] = None,
+            eta: float = 2.5,
             **options: Any):
 
         # MATLAB: +aca/@compgreenret/compgreenret.m -> init.m
@@ -38,9 +40,17 @@ class ACACompGreenRet(object):
         ipart_arr = self._build_ipart_arr(p)
         self.tree = ClusterTree(pos, cleaf = cleaf, ipart_arr = ipart_arr)
 
-        # Create template H-matrix
-        # MATLAB: obj.hmat = hmatrix(tree, varargin{:})
-        self.hmat_template = HMatrix(tree = self.tree, htol = htol, kmax = kmax)
+        # Create template H-matrix.  Note: for retarded kernels the template
+        # built here uses k=0 admissibility; per-call `eval` rebuilds the
+        # H-matrix tree with a wavenumber-aware fadmiss when ``enei`` is
+        # known so oscillating blocks are flagged as dense (preventing rank
+        # blow-up at large k*R).
+        self.eta = eta
+        self._user_fadmiss = fadmiss
+        self.hmat_template = HMatrix(
+            tree = self.tree, htol = htol, kmax = kmax,
+            fadmiss = fadmiss if fadmiss is not None else
+                (lambda r1, r2, d: eta * min(r1, r2) < d))
 
         # Cache for evaluated H-matrices keyed by (i, j, key, enei)
         self._cache = {}  # type: Dict[Tuple, HMatrix]
@@ -103,15 +113,17 @@ class ACACompGreenRet(object):
         def eval_func(row: np.ndarray, col: np.ndarray) -> np.ndarray:
             return self._eval_elements(i, j, key, enei, row, col)
 
-        # Create a fresh H-matrix from the template
-        hmat = HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax)
-        hmat.row1 = self.hmat_template.row1.copy()
-        hmat.col1 = self.hmat_template.col1.copy()
-        hmat.row2 = self.hmat_template.row2.copy()
-        hmat.col2 = self.hmat_template.col2.copy()
-        hmat.val = [None] * len(hmat.row1)
-        hmat.lhs = [None] * len(hmat.row2)
-        hmat.rhs = [None] * len(hmat.row2)
+        # Build a wavenumber-aware admissibility for this enei so retarded
+        # blocks with k*R ~ 1 are kept dense.  For the static k=0 limit this
+        # falls back to the standard eta-criterion.
+        if self._user_fadmiss is not None:
+            fadmiss = self._user_fadmiss
+        else:
+            k = 2.0 * np.pi / enei  # vacuum wavenumber (1/nm)
+            fadmiss = make_kaware_fadmiss(k, eta0 = self.eta)
+
+        hmat = HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax,
+                fadmiss = fadmiss)
 
         # Fill the H-matrix using ACA
         # MATLAB: hmat = fillval(hmat, fun) then ACA for low-rank blocks
