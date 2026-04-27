@@ -13,6 +13,8 @@ Matches MATLAB MNPBEM implementation exactly.
 
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
+
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
 from ..greenfun import CompGreenRet, CompStruct
 
 
@@ -217,12 +219,12 @@ class BEMRet(object):
         H2_mat = H22 - H12 if not (isinstance(H12, int) and H12 == 0) else H22
 
         # LU factorizations of Green functions
-        self.G1_lu = lu_factor(G1, check_finite=False)
-        self.G2_lu = lu_factor(G2, check_finite=False)
+        self.G1_lu = lu_factor_dispatch(G1)
+        self.G2_lu = lu_factor_dispatch(G2)
 
         # Compute inverses for intermediate matrix construction
-        G1i = lu_solve(self.G1_lu, np.eye(G1.shape[0]), check_finite=False)
-        G2i = lu_solve(self.G2_lu, np.eye(G2.shape[0]), check_finite=False)
+        G1i = lu_solve_dispatch(self.G1_lu, np.eye(G1.shape[0]))
+        G2i = lu_solve_dispatch(self.G2_lu, np.eye(G2.shape[0]))
 
         # L matrices [Eq. (22)]
         # MATLAB: if all(obj.g.con{1,2} == 0), L1 = eps1; L2 = eps2
@@ -249,8 +251,8 @@ class BEMRet(object):
 
         # LU factorization of Delta matrix
         Delta = self.Sigma1 - Sigma2
-        self.Delta_lu = lu_factor(Delta, check_finite=False, overwrite_a=True)
-        Deltai = lu_solve(self.Delta_lu, np.eye(Delta.shape[0]), check_finite=False)
+        self.Delta_lu = lu_factor_dispatch(Delta)
+        Deltai = lu_solve_dispatch(self.Delta_lu, np.eye(Delta.shape[0]))
 
         # Combined Sigma matrix [Eq. (21,22)]
         # Sigma = Sigma1*L1 - Sigma2*L2 + k²*(L*Deltai)*(nvec*nvec')*L
@@ -268,7 +270,7 @@ class BEMRet(object):
             Sigma = (self.Sigma1 @ self.L1 - Sigma2 @ self.L2 +
                      self.k**2 * ((L @ Deltai) * nvec_outer) @ L)
 
-        self.Sigma_lu = lu_factor(Sigma, check_finite=False, overwrite_a=True)
+        self.Sigma_lu = lu_factor_dispatch(Sigma)
 
         return self
 
@@ -551,6 +553,10 @@ class BEMRet(object):
         nfaces = self.p.nfaces
 
         def _ls(lu_piv, b):
+            if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu"):
+                if b.ndim == 1:
+                    return lu_solve_dispatch(lu_piv, b)
+                return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
             if b.ndim == 1:
                 return lu_solve(lu_piv, b, check_finite=False)
             return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(b.shape)

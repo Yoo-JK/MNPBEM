@@ -7,6 +7,7 @@ import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 
 from ..greenfun import CompGreenStatLayer, CompStruct
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
 
 
 class BEMStatLayer(object):
@@ -62,7 +63,7 @@ class BEMStatLayer(object):
         A = eps1[:, np.newaxis] * H1 - eps2[:, np.newaxis] * H2
         rhs_scale = eps1 - eps2  # per-face
 
-        self._A_lu = lu_factor(A, check_finite=False, overwrite_a=True)
+        self._A_lu = lu_factor_dispatch(A)
         self._rhs_scale = rhs_scale
         self.enei = enei
 
@@ -89,7 +90,7 @@ class BEMStatLayer(object):
 
         # MATLAB mat * phip = -inv(A) * diag(eps1 - eps2) * phip
         rhs = self._rhs_scale[:, np.newaxis] * phip_2d
-        sig_result = -lu_solve(self._A_lu, rhs, check_finite=False, overwrite_b=True)
+        sig_result = -lu_solve_dispatch(self._A_lu, rhs)
 
         if sig_result.shape != orig_shape:
             sig_result = sig_result.reshape(orig_shape)
