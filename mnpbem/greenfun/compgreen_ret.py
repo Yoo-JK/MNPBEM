@@ -703,6 +703,12 @@ class CompGreenRet(object):
         # MATLAB: h = cross(H1p, sig.h1) + cross(H2p, sig.h2)
         h = self._cross(H1p, sig.h1) + self._cross(H2p, sig.h2)
 
+        # Squeeze trailing singleton polarization axis on h to match e's shape.
+        # _cross() always introduces a trailing axis (siz=(n,1)) when h has only
+        # 2D, but _matmul leaves e without it. Fix B3-1.
+        if isinstance(h, np.ndarray) and isinstance(e, np.ndarray) and h.ndim == e.ndim + 1 and h.shape[-1] == 1:
+            h = h[..., 0]
+
         # Set output
         from .compgreen_stat import CompStruct
         field = CompStruct(self.p1, enei, e=e, h=h)
