@@ -8,7 +8,7 @@ import numpy as np
 from .compgreen_ret_layer import CompGreenRetLayer, _StructuredGreen
 from .compgreen_stat import CompStruct
 from .clustertree import ClusterTree
-from .hmatrix import HMatrix
+from .hmatrix import HMatrix, make_kaware_fadmiss
 
 
 class ACACompGreenRetLayer(object):
@@ -29,6 +29,8 @@ class ACACompGreenRetLayer(object):
             htol: float = 1e-6,
             kmax: int = 100,
             cleaf: int = 32,
+            fadmiss: Optional[Any] = None,
+            eta: float = 2.5,
             **options: Any) -> None:
 
         # MATLAB: compgreenretlayer.m + private/init.m
@@ -50,9 +52,15 @@ class ACACompGreenRetLayer(object):
         ipart_arr = self._build_ipart_arr(p)
         self.tree = ClusterTree(pos, cleaf = cleaf, ipart_arr = ipart_arr)
 
-        # Template H-matrix
-        # MATLAB: obj.hmat = hmatrix(tree, varargin{:})
-        self.hmat = HMatrix(tree = self.tree, htol = htol, kmax = kmax)
+        # Template H-matrix.  ``self.hmat`` keeps the static-limit block
+        # structure as a fall-back, while per-call eval rebuilds the tree
+        # using a wavenumber-aware fadmiss (see ``_make_fadmiss``).
+        self.eta = eta
+        self._user_fadmiss = fadmiss
+        default_fadmiss = (fadmiss if fadmiss is not None else
+                (lambda r1, r2, d: eta * min(r1, r2) < d))
+        self.hmat = HMatrix(tree = self.tree, htol = htol, kmax = kmax,
+                fadmiss = default_fadmiss)
 
         # Compute starting cluster index for each particle
         # MATLAB: obj.ind(i) = find(ind1==i & ind2==i, 1)
@@ -76,6 +84,18 @@ class ACACompGreenRetLayer(object):
 
         # Cache for dense matrices and H-matrices keyed by (i, j, key, enei)
         self._cache = {}
+
+    def _make_fadmiss(self, enei: float) -> Callable:
+        """Return wavenumber-aware admissibility for this wavelength."""
+        if self._user_fadmiss is not None:
+            return self._user_fadmiss
+        k = 2.0 * np.pi / enei
+        return make_kaware_fadmiss(k, eta0 = self.eta)
+
+    def _new_hmat(self, enei: float) -> HMatrix:
+        """Allocate a fresh H-matrix with k-aware admissibility."""
+        return HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax,
+                fadmiss = self._make_fadmiss(enei))
 
     def _build_ipart_arr(self, p: Any) -> Optional[np.ndarray]:
 
@@ -133,16 +153,8 @@ class ACACompGreenRetLayer(object):
                 return np.full(len(row), complex(dense_mat))
             return dense_mat[row, col]
 
-        # Create fresh H-matrix from template and fill via ACA
-        hmat_result = HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax)
-        hmat_result.row1 = self.hmat.row1.copy()
-        hmat_result.col1 = self.hmat.col1.copy()
-        hmat_result.row2 = self.hmat.row2.copy()
-        hmat_result.col2 = self.hmat.col2.copy()
-        hmat_result.val = [None] * len(hmat_result.row1)
-        hmat_result.lhs = [None] * len(hmat_result.row2)
-        hmat_result.rhs = [None] * len(hmat_result.row2)
-
+        # Create fresh H-matrix with k-aware admissibility for this enei.
+        hmat_result = self._new_hmat(enei)
         hmat_result.aca(eval_func)
 
         self._cache[cache_key] = hmat_result
@@ -207,15 +219,7 @@ class ACACompGreenRetLayer(object):
 
             eval_func = make_func(combined_mat)
 
-            hmat_comp = HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax)
-            hmat_comp.row1 = self.hmat.row1.copy()
-            hmat_comp.col1 = self.hmat.col1.copy()
-            hmat_comp.row2 = self.hmat.row2.copy()
-            hmat_comp.col2 = self.hmat.col2.copy()
-            hmat_comp.val = [None] * len(hmat_comp.row1)
-            hmat_comp.lhs = [None] * len(hmat_comp.row2)
-            hmat_comp.rhs = [None] * len(hmat_comp.row2)
-
+            hmat_comp = self._new_hmat(enei)
             hmat_comp.aca(eval_func)
 
             result[name] = hmat_comp

@@ -507,12 +507,26 @@ class CompGreenRetLayer(object):
     name = 'greenfunction'
     needs = {'sim': 'ret'}
 
+    def __new__(cls, p1, p2, layer, **options):
+        if options.get('hmatrix', False) and p1 is p2:
+            n_faces = getattr(p1, 'n', None)
+            if n_faces is None and hasattr(p1, 'p') and len(p1.p) > 0:
+                n_faces = sum(getattr(pp, 'n', 0) for pp in p1.p)
+            if n_faces is not None and n_faces > 1500:
+                from .aca_compgreen_ret_layer import ACACompGreenRetLayer
+                hmat_opts = {k: v for k, v in options.items() if k != 'hmatrix'}
+                return ACACompGreenRetLayer(p1, layer, **hmat_opts)
+        return object.__new__(cls)
+
     def __init__(self,
             p1: Any,
             p2: Any,
             layer: Any,
             **options: Any) -> None:
 
+        if not isinstance(self, CompGreenRetLayer):
+            return
+        options.pop('hmatrix', None)
         self.p1 = p1
         self.p2 = p2
         self.layer = layer
