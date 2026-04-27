@@ -51,6 +51,20 @@ class CompGreenStat(object):
     name = 'greenfunction'
     needs = {'sim': 'stat'}
 
+    def __new__(cls, p1, p2, **options):
+        # Optional H-matrix acceleration: when ``hmatrix=True`` and the mesh
+        # is large enough to benefit from ACA, return an ACACompGreenStat
+        # instance (drop-in replacement supporting .G/.F/.eval()/.potential()).
+        if options.get('hmatrix', False) and p1 is p2:
+            n_faces = getattr(p1, 'n', None)
+            if n_faces is None and hasattr(p1, 'p') and len(p1.p) > 0:
+                n_faces = sum(getattr(pp, 'n', 0) for pp in p1.p)
+            if n_faces is not None and n_faces > 1500:
+                from .aca_compgreen_stat import ACACompGreenStat
+                hmat_opts = {k: v for k, v in options.items() if k != 'hmatrix'}
+                return ACACompGreenStat(p1, **hmat_opts)
+        return object.__new__(cls)
+
     def __init__(self, p1, p2, **options):
         """
         Initialize Green functions for composite objects.
@@ -68,6 +82,9 @@ class CompGreenStat(object):
                 'cart' (Cartesian) or 'norm' (normal) derivative (default: 'norm')
             waitbar : int, optional
                 Show progress bar (default: 0)
+            hmatrix : bool, optional
+                Use ACA H-matrix acceleration when ``p1 is p2`` and the mesh
+                exceeds 1500 faces (default: False).  Ignored otherwise.
 
         Examples
         --------
@@ -79,6 +96,11 @@ class CompGreenStat(object):
         >>> cp = ComParticle(eps, [p], [[2, 1]])
         >>> g = CompGreenStat(cp, cp)
         """
+        # If __new__ returned an ACACompGreenStat replacement object, skip
+        # the dense initializer (it has already been constructed).
+        if not isinstance(self, CompGreenStat):
+            return
+        options.pop('hmatrix', None)
         self.p1 = p1
         self.p2 = p2
         self.deriv = options.get('deriv', 'cart')

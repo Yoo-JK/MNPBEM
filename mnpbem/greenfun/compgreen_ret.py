@@ -54,6 +54,17 @@ class CompGreenRet(object):
     name = 'greenfunction'
     needs = {'sim': 'ret'}
 
+    def __new__(cls, p1, p2, **options):
+        if options.get('hmatrix', False) and p1 is p2:
+            n_faces = getattr(p1, 'n', None)
+            if n_faces is None and hasattr(p1, 'p') and len(p1.p) > 0:
+                n_faces = sum(getattr(pp, 'n', 0) for pp in p1.p)
+            if n_faces is not None and n_faces > 1500:
+                from .aca_compgreen_ret import ACACompGreenRet
+                hmat_opts = {k: v for k, v in options.items() if k != 'hmatrix'}
+                return ACACompGreenRet(p1, **hmat_opts)
+        return object.__new__(cls)
+
     def __init__(self, p1, p2, **options):
         """
         Initialize Green functions for composite objects.
@@ -73,6 +84,9 @@ class CompGreenRet(object):
                 'aca1', 'aca2', 'svd' for hierarchical matrices (default: None)
             waitbar : int, optional
                 Show progress bar (default: 0)
+            hmatrix : bool, optional
+                Use ACA H-matrix acceleration when ``p1 is p2`` and the mesh
+                exceeds 1500 faces (default: False).
 
         Examples
         --------
@@ -84,6 +98,9 @@ class CompGreenRet(object):
         >>> cp = ComParticle(eps, [p], [[2, 1]])
         >>> g = CompGreenRet(cp, cp)
         """
+        if not isinstance(self, CompGreenRet):
+            return
+        options.pop('hmatrix', None)
         self.p1 = p1
         self.p2 = p2
         self.deriv = options.get('deriv', 'cart')

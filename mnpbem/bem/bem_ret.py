@@ -198,20 +198,22 @@ class BEMRet(object):
         # MATLAB: G1 = g{1,1}.G(enei) - g{2,1}.G(enei)
         #         G2 = g{2,2}.G(enei) - g{1,2}.G(enei)
         # Use region-based indexing: 0=inside, 1=outside
-        G11 = self.g.eval(0, 0, 'G', enei)  # inside → inside
-        G21 = self.g.eval(1, 0, 'G', enei)  # outside → inside
-        G22 = self.g.eval(1, 1, 'G', enei)  # outside → outside
-        G12 = self.g.eval(0, 1, 'G', enei)  # inside → outside
+        def _to_dense(x):
+            return x.full() if hasattr(x, 'full') and not isinstance(x, np.ndarray) else x
+        G11 = _to_dense(self.g.eval(0, 0, 'G', enei))  # inside → inside
+        G21 = _to_dense(self.g.eval(1, 0, 'G', enei))  # outside → inside
+        G22 = _to_dense(self.g.eval(1, 1, 'G', enei))  # outside → outside
+        G12 = _to_dense(self.g.eval(0, 1, 'G', enei))  # inside → outside
 
         # Compute differences (cross-terms are 0 for closed surface)
         G1 = G11 - G21 if not (isinstance(G21, int) and G21 == 0) else G11
         G2 = G22 - G12 if not (isinstance(G12, int) and G12 == 0) else G22
 
         # Same for H1 and H2
-        H11 = self.g.eval(0, 0, 'H1', enei)
-        H21 = self.g.eval(1, 0, 'H1', enei)
-        H22 = self.g.eval(1, 1, 'H2', enei)
-        H12 = self.g.eval(0, 1, 'H2', enei)
+        H11 = _to_dense(self.g.eval(0, 0, 'H1', enei))
+        H21 = _to_dense(self.g.eval(1, 0, 'H1', enei))
+        H22 = _to_dense(self.g.eval(1, 1, 'H2', enei))
+        H12 = _to_dense(self.g.eval(0, 1, 'H2', enei))
 
         H1_mat = H11 - H21 if not (isinstance(H21, int) and H21 == 0) else H11
         H2_mat = H22 - H12 if not (isinstance(H12, int) and H12 == 0) else H22

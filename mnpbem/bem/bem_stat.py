@@ -128,7 +128,12 @@ class BEMStat(object):
 
         # Surface derivative of Green function
         # MATLAB: obj.F = subsref(obj.g, substruct('.', 'F'))
-        self.F = self.g.F
+        F_obj = self.g.F
+        # If hmatrix=True swapped self.g for an ACACompGreenStat, F is an
+        # HMatrix; convert to dense so the standard LU solver works.
+        if hasattr(F_obj, 'full') and not isinstance(F_obj, np.ndarray):
+            F_obj = F_obj.full()
+        self.F = F_obj
 
         # Initialize for given wavelength
         # MATLAB: if exist('enei', 'var') && ~isempty(enei)
