@@ -12,6 +12,7 @@ Matches MATLAB MNPBEM @meshfield implementation.
 import numpy as np
 from ..geometry.compoint import ComPoint
 from ..greenfun.compgreen_stat import CompGreenStat, CompStruct
+from . import meshfield_fmm as _mf_fmm
 
 
 class MeshField(object):
@@ -195,7 +196,7 @@ class MeshField(object):
             from ..greenfun.compgreen_ret import CompGreenRet
             return CompGreenRet(pt, p, **options)
 
-    def field(self, sig, inout=2):
+    def field(self, sig, inout=2, fmm=False, fmm_eps=1e-12):
         """
         Compute electromagnetic fields at grid points.
 
@@ -208,6 +209,11 @@ class MeshField(object):
             or a CompStruct with pre-computed field 'e'
         inout : int, optional
             Fields inside (1) or outside (2, default) of particle surface
+        fmm : bool, optional
+            Use FMM (fmm3dpy) for free-space evaluation. Only valid for
+            ret simulation, single-region, no layer/mirror Green function.
+        fmm_eps : float, optional
+            FMM precision (default 1e-12)
 
         Returns
         -------
@@ -216,10 +222,87 @@ class MeshField(object):
         h : ndarray or None
             Magnetic field (None for quasistatic)
         """
+        if fmm and self._fmm_eligible(sig, inout):
+            return self._field_fmm(sig, inout, fmm_eps)
+
         if self.nmax is None:
             return self._field1(sig, inout)
         else:
             return self._field2(sig, inout)
+
+    def _fmm_eligible(self, sig, inout):
+        if not _mf_fmm.fmm_available():
+            return False
+        if self._sim != 'ret':
+            return False
+        if hasattr(sig, 'val') and 'e' in sig.val:
+            return False
+        cls_name = type(self.g).__name__ if self.g is not None else ''
+        if cls_name not in ('CompGreenRet',):
+            return False
+        if inout == 1:
+            return hasattr(sig, 'sig1') and hasattr(sig, 'h1')
+        if inout == 2:
+            ok2 = hasattr(sig, 'sig2') and hasattr(sig, 'h2')
+            ok1 = hasattr(sig, 'sig1') and hasattr(sig, 'h1')
+            return ok2 or ok1
+        return False
+
+    def _field_fmm(self, sig, inout, fmm_eps):
+        enei = sig.enei
+        k_vac = 2 * np.pi / enei
+
+        if inout == 1:
+            sig_scalar_raw = sig.sig1
+            h_raw = sig.h1
+        else:
+            sig_scalar_raw = getattr(sig, 'sig2', None)
+            h_raw = getattr(sig, 'h2', None)
+            if sig_scalar_raw is None or h_raw is None:
+                sig_scalar_raw = sig.sig1
+                h_raw = sig.h1
+
+        n_regions_p1 = len(self.g.con)
+        region_idx = min(inout - 1, n_regions_p1 - 1)
+        con_row = self.g.con[region_idx]
+        medium_one_based = None
+        for con_block in con_row:
+            if con_block is not None and isinstance(con_block, np.ndarray) and con_block.size > 0:
+                vals = con_block[con_block > 0]
+                if vals.size > 0:
+                    medium_one_based = int(vals.flat[0])
+                    break
+        if medium_one_based is None:
+            medium_one_based = inout
+        medium_idx = medium_one_based - 1
+
+        eps_func = self.p.eps[medium_idx]
+        _, k_wave = eps_func(enei)
+        zk = complex(k_wave)
+
+        src_pos = self.p.pos
+        src_area = self.p.area
+
+        sig_scalar = sig_scalar_raw
+        if isinstance(sig_scalar, np.ndarray) and sig_scalar.ndim > 1:
+            sig_scalar = sig_scalar[..., 0]
+
+        h_xyz = h_raw
+        if isinstance(h_xyz, np.ndarray) and h_xyz.ndim == 3 and h_xyz.shape[-1] == 1:
+            h_xyz = h_xyz[..., 0]
+
+        tgt_pos = self.pt.pos
+
+        e_flat, h_flat = _mf_fmm.eval_freespace_field(
+            zk, complex(k_vac), src_pos, src_area, tgt_pos,
+            sig_scalar, h_xyz, eps = fmm_eps)
+
+        e_full = self.pt(e_flat)
+        h_full = self.pt(h_flat)
+
+        e = self._reshape_field(e_full)
+        h = self._reshape_field(h_full)
+        return e, h
 
     def _field1(self, sig, inout=2):
         """
@@ -377,7 +460,7 @@ class MeshField(object):
         """Point positions."""
         return self.pt.pos
 
-    def __call__(self, sig, inout=2):
+    def __call__(self, sig, inout=2, fmm=False, fmm_eps=1e-12):
         """
         Compute fields (callable interface).
 
@@ -389,6 +472,10 @@ class MeshField(object):
             Surface charges or pre-computed fields
         inout : int, optional
             Inside (1) or outside (2, default)
+        fmm : bool, optional
+            Use FMM for free-space ret evaluation
+        fmm_eps : float, optional
+            FMM precision
 
         Returns
         -------
@@ -397,7 +484,7 @@ class MeshField(object):
         h : ndarray or None
             Magnetic field
         """
-        return self.field(sig, inout)
+        return self.field(sig, inout, fmm = fmm, fmm_eps = fmm_eps)
 
     def __repr__(self):
         return 'MeshField(x={}, y={}, z={}, p={})'.format(
