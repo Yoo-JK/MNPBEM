@@ -99,18 +99,33 @@ def main():
                 w.writerow([name, backend, f'{wall:.4f}', status, snippet[:300]])
         print(f'wrote {out_csv}')
     elif which == 'gpu':
-        env_extra = {'MNPBEM_GPU': '1', 'MNPBEM_NUMBA': '1'}
+        n_par = int(sys.argv[2]) if len(sys.argv) > 2 else 4
         backend = 'python_gpu'
         out_csv = os.path.join(OUT_DIR, f'timing_{backend}.csv')
-        print('Sequential GPU run')
+        print(f'Parallel GPU run: {n_par} workers (4 GPUs round-robin)')
+        threads = max(1, 16 // n_par)
+        # Build tasks: (demo, env_extra, threads) — CUDA_VISIBLE_DEVICES per task
+        tasks = []
+        for i, d in enumerate(demos):
+            gpu = i % n_par
+            env_extra = {'MNPBEM_GPU': '1', 'MNPBEM_NUMBA': '1',
+                         'CUDA_VISIBLE_DEVICES': str(gpu)}
+            tasks.append((d, env_extra, threads))
+        results = {}
+        with ProcessPoolExecutor(max_workers=n_par) as ex:
+            futs = {ex.submit(run_one, t): t[0] for t in tasks}
+            done = 0
+            for fut in as_completed(futs):
+                done += 1
+                name, wall, status, snippet = fut.result()
+                results[name] = (wall, status, snippet)
+                print(f'[{done}/{len(demos)}] {name}: {wall:.1f}s [{status}]', flush=True)
         with open(out_csv, 'w', newline='') as f:
             w = csv.writer(f)
             w.writerow(['demo', 'backend', 'wall_sec', 'status', 'tail'])
-            for i, d in enumerate(demos):
-                name, wall, status, snippet = run_one((d, env_extra, 8))
-                print(f'[{i+1}/{len(demos)}] {name}: {wall:.1f}s [{status}]', flush=True)
+            for name in sorted(results):
+                wall, status, snippet = results[name]
                 w.writerow([name, backend, f'{wall:.4f}', status, snippet[:300]])
-                f.flush()
         print(f'wrote {out_csv}')
 
 

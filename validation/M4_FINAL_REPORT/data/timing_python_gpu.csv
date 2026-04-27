@@ -1,2 +1,59 @@
 demo,backend,wall_sec,status,tail
-demodipret1,python_gpu,2.1255,ok,nfaces: 284 | DONE
+demodipret1,python_gpu,3.5683,ok,nfaces: 284 | DONE
+demodipret10,python_gpu,323.9374,ok,"  rad[ipos, idip] = rad[ipos, idip] / (0.5 * nb * gamma) | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_ret_layer.py:617: ComplexWarning: Casting co |   rad0[ipos, idip] = nb * gamma"
+demodipret11,python_gpu,7.0939,ok,Particle faces: 1037 | BEM solved (t=5.8s) | time=5.8s DONE
+demodipret12,python_gpu,6.1131,ok,"Particle faces (reduced): 126 | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demodipret12/python.csv | Shape: (51, 6)"
+demodipret2,python_gpu,45.2101,ok,nfaces: 900 | DONE
+demodipret3,python_gpu,87.1751,ok,"  tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma) | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_stat.py:401: ComplexWarning: Casting complex |   rad0[ipos, idip] = nb * gamma"
+demodipret4,python_gpu,175.6319,ok,"  wavelength 31/40: 362.20 nm |   wavelength 36/40: 331.19 nm | Shape: (40, 8) DONE"
+demodipret5,python_gpu,6.2397,ok,Particle faces: 700 | BEM solved (t=5.1s) | nfaces=700 time=5.1s DONE
+demodipret8,python_gpu,52.0784,ok,"  rad[ipos, idip] = rad[ipos, idip] / (0.5 * nb * gamma) | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_ret_layer.py:617: ComplexWarning: Casting co |   rad0[ipos, idip] = nb * gamma"
+demodipstat10,python_gpu,99.4347,ok,"  tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma) | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_stat.py:401: ComplexWarning: Casting complex |   rad0[ipos, idip] = nb * gamma"
+demodipstat11,python_gpu,179.7403,ok,"  tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma) | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_stat.py:401: ComplexWarning: Casting complex |   rad0[ipos, idip] = nb * gamma"
+demodipstat4,python_gpu,37.5176,ok,"  tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma) | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_stat.py:401: ComplexWarning: Casting complex |   rad0[ipos, idip] = nb * gamma"
+demodipstat5,python_gpu,7.0664,ok,"Shape: (51, 6) | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_stat_layer.py:257: ComplexWarning: Casting c |   rad[ipos, idip] = (sca / (2 * np.pi * k0)) / (0.5 * nb * gamma)"
+demodipstat7,python_gpu,32.9798,ok,"Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demodipstat7/python.csv | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_stat_layer.py:257: ComplexWarning: Casting c |   rad[ipos, idip] = (sca / (2 * np.pi * k0)) / (0.5 * nb * gamma)"
+demodipstat8,python_gpu,7.4786,ok,nfaces=1037 DONE
+demodipstat9,python_gpu,6.2152,ok,"  tot[ipos, idip] = 1 + np.imag(e_i @ dip) / (0.5 * nb * gamma) | /home/yoojk20/workspace/MNPBEM/mnpbem/simulation/dipole_stat.py:401: ComplexWarning: Casting complex |   rad0[ipos, idip] = nb * gamma"
+demoeelsret1,python_gpu,14.0318,ok,nfaces: 508 | DONE
+demoeelsret2,python_gpu,40.5378,ok,Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demoeelsret2/python.csv | Total time: 39.1s | DONE
+demoeelsret3,python_gpu,4.8764,ok,nfaces= 428 DONE
+demoeelsret4,python_gpu,28.2556,ok," | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demoeelsret4/python.csv | Shape: (40, 5)"
+demoeelsret5,python_gpu,35.0771,ok,  energy 3/4 done (7.7s) |   energy 4/4 done (7.5s) | time=34.2s DONE
+demoeelsret6,python_gpu,8.3710,ok,nfaces= 1252 DONE
+demoeelsret7,python_gpu,327.5311,ok,Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demoeelsret7/python.csv | Total time: 326.3s | DONE
+demoeelsret8,python_gpu,220.2516,ok,Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demoeelsret8/python.csv | Total time: 219.2s | DONE
+demoeelsstat1,python_gpu,1.4575,ok,nfaces: 284 | DONE
+demoeelsstat3,python_gpu,19.4009,ok,"DONE: shape=(4860, 4)"
+demospecret1,python_gpu,3.9104,ok,  k = 2 * np.pi / enei * np.sqrt(eps) | /home/yoojk20/workspace/MNPBEM/mnpbem/materials/eps_const.py:70: RuntimeWarning: invalid value encou |   k = 2 * np.pi / enei * np.sqrt(eps)
+demospecret10,python_gpu,18.1569,ok,nfaces= 1066 DONE
+demospecret11,python_gpu,146.3380,ok," | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demospecret11/python.csv | Shape: (20, 6)"
+demospecret12,python_gpu,12.8614,ok,"Shape: (2601, 3) | E_norm min/max: nan / nan | DONE"
+demospecret13,python_gpu,396.1967,ok," | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demospecret13/python.csv | Shape: (20, 6)"
+demospecret14,python_gpu,733.5003,ok,"  Wavelength 13/20: 726.3 nm |   Wavelength 17/20: 768.4 nm | Saved /home/yoojk20/scratch/mnpbem_demo_comparison/demospecret14/python.csv, shape (20, 11)"
+demospecret15,python_gpu,6.0831,ok,nfaces: 171 | DONE
+demospecret16,python_gpu,81.9874,ok,  Full 36/40 wl=724.4 | CPU time bemret:       65.86 | time=81.1s DONE
+demospecret17,python_gpu,10.4931,ok,  9/10 wl=855.6 |   10/10 wl=900.0 | time=9.5s DONE
+demospecret18,python_gpu,117.9182,ok,"  ext = 750.465, sca = 350.485 |  | Saved /home/yoojk20/scratch/mnpbem_demo_comparison/demospecret18/python.csv"
+demospecret2,python_gpu,10.2949,ok,"Particle faces: 428 | Shape: (40, 5) DONE"
+demospecret3,python_gpu,7.3128,ok,nfaces= 1104 DONE
+demospecret4,python_gpu,57.3539,ok,"  wl = 646 nm: sca_x = 10049.87, sca_y = 10057.10 |  | Done! CSV saved."
+demospecret5,python_gpu,55.0763,ok,  wl = 529 nm: sca = 39768.35 ext = 43060.86 |   wl = 619 nm: sca = 13262.97 ext = 13862.79 | Done!
+demospecret7,python_gpu,58.4850,ok,  11/30 wl=503.4 sca=4.522e+01 |   21/30 wl=606.9 sca=2.051e+01 | Done!
+demospecret8,python_gpu,27.7857,ok," | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demospecret8/python.csv | Shape: (20, 6)"
+demospecret9,python_gpu,27.3146,ok,"Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demospecret9/python.csv | Shape: (20, 6) | DONE"
+demospecstat10,python_gpu,2.9167,ok,BEM time: 1.29 s | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demospecstat10 | DONE
+demospecstat12,python_gpu,2.7743,ok,Created particle with 428 faces |  | Done! CSV saved.
+demospecstat13,python_gpu,3.8800,ok,nfaces= 428 DONE
+demospecstat15,python_gpu,10.7770,ok," | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demospecstat15/python.csv | Shape: (40, 5)"
+demospecstat16,python_gpu,7.2639,ok,"Shape: (4941, 3) | E_norm min/max: 1.4741e+00 / 1.7867e+01 | DONE"
+demospecstat17,python_gpu,359.7660,ok,"DONE | /home/yoojk20/scratch/mnpbem_demo_comparison/demospecstat17/run_python.py:26: ComplexWarning: Castin |   ext[ien, :] = exc.extinction(sig)"
+demospecstat18,python_gpu,30.8875,ok, | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demospecstat18/python.csv | DONE
+demospecstat19,python_gpu,3.0497,ok,  k = 2 * np.pi / enei * np.sqrt(eps) | /home/yoojk20/workspace/MNPBEM/mnpbem/materials/eps_const.py:70: RuntimeWarning: invalid value encou |   k = 2 * np.pi / enei * np.sqrt(eps)
+demospecstat2,python_gpu,1.7656,ok,  k = 2 * np.pi / enei * np.sqrt(eps) | /home/yoojk20/workspace/MNPBEM/mnpbem/materials/eps_const.py:70: RuntimeWarning: invalid value encou |   k = 2 * np.pi / enei * np.sqrt(eps)
+demospecstat20,python_gpu,44.7137,ok,  41/60 wl=942.4 |   51/60 wl=1078.0 | time=43.7s DONE
+demospecstat5,python_gpu,2.7969,ok,"Particle faces: 700 | Shape: (40, 3) DONE"
+demospecstat6,python_gpu,2.1730,ok,nfaces= 700 DONE
+demospecstat7,python_gpu,3.5758,ok,plasmonmode time: 2.09 s | Saved to /home/yoojk20/scratch/mnpbem_demo_comparison/demospecstat7 | DONE
+demospecstat8,python_gpu,8.0179,ok,"  wl = 692 nm: sca_x = 2.88e+01, sca_y = 5.42e+00 |  | Done! CSV saved."
+demospecstat9,python_gpu,4.4012,ok,nfaces= 1400 DONE
