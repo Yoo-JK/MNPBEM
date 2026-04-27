@@ -365,16 +365,10 @@ class BEMRet(object):
                 return nvec * (phi * eps)[:, np.newaxis]  # (nfaces, 3)
             else:
                 # phi is (nfaces, ...) with arbitrary trailing dims
-                orig_shape = phi.shape
-                nfaces = orig_shape[0]
-                # Flatten trailing dims: (nfaces, n_trailing)
-                phi_flat = phi.reshape(nfaces, -1)
-                n_trailing = phi_flat.shape[1]
-                result = np.zeros((nfaces, 3, n_trailing), dtype=complex)
-                for ipol in range(n_trailing):
-                    result[:, :, ipol] = nvec * (phi_flat[:, ipol] * eps)[:, np.newaxis]
-                # Reshape to (nfaces, 3, *trailing_dims)
-                return result.reshape(nfaces, 3, *orig_shape[1:])
+                # Vectorized: nvec[:, :, None] * (phi*eps[:, None])[:, None, :]
+                phi_eps = phi * eps[:, np.newaxis] if phi.ndim == 2 else phi * eps.reshape(-1, *([1] * (phi.ndim - 1)))
+                return nvec[:, :, np.newaxis] * phi_eps[:, np.newaxis, :] if phi.ndim == 2 \
+                    else nvec.reshape(nvec.shape[0], 3, *([1] * (phi.ndim - 1))) * phi_eps[:, np.newaxis]
         elif phi == 0:
             return 0
         else:
@@ -387,17 +381,9 @@ class BEMRet(object):
                 dot = np.sum(nvec * a, axis=1)  # (nfaces,)
                 return dot * eps
             else:
-                # a is (nfaces, 3, *trailing) — dot over axis=1
-                orig_shape = a.shape
-                nfaces = orig_shape[0]
-                trailing = orig_shape[2:]
-                a_flat = a.reshape(nfaces, 3, -1)
-                n_trailing = a_flat.shape[2]
-                result = np.zeros((nfaces, n_trailing), dtype=complex)
-                for ipol in range(n_trailing):
-                    dot = np.sum(nvec * a_flat[:, :, ipol], axis=1)
-                    result[:, ipol] = dot * eps
-                return result.reshape(nfaces, *trailing)
+                # a is (nfaces, 3, *trailing) — dot over axis=1, vectorized
+                dot = np.einsum('ij,ij...->i...', nvec, a)
+                return dot * eps.reshape(-1, *([1] * (a.ndim - 2)))
         elif isinstance(a, np.ndarray) and a.size == 0:
             return 0
         elif not isinstance(a, np.ndarray) and a == 0:
@@ -634,50 +620,62 @@ class BEMRet(object):
             h2_all = _ls(G2_lu, h2)
 
         else:
-            # Multiple polarizations
-            sig1_all = np.zeros((nfaces, npol), dtype=complex)
-            sig2_all = np.zeros((nfaces, npol), dtype=complex)
-            h1_all = np.zeros((nfaces, 3, npol), dtype=complex)
-            h2_all = np.zeros((nfaces, 3, npol), dtype=complex)
+            # Multiple polarizations - vectorized over npol axis (M4 Tier 2)
+            # phi: (n, npol), a: (n, 3, npol), alpha: (n, 3, npol), De: (n, npol)
+            # Broadcast nvec (n, 3) -> (n, 3, 1) when needed.
+            if phi.ndim == 1:
+                phi = np.broadcast_to(phi[:, np.newaxis], (nfaces, npol)).copy()
+            if a.ndim == 2:
+                a = np.broadcast_to(a[:, :, np.newaxis], (nfaces, 3, npol)).copy()
+            if alpha.ndim == 2:
+                alpha = np.broadcast_to(alpha[:, :, np.newaxis], (nfaces, 3, npol)).copy()
+            if De.ndim == 1:
+                De = np.broadcast_to(De[:, np.newaxis], (nfaces, npol)).copy()
 
-            for ipol in range(npol):
-                phi_i = phi[:, ipol] if phi.ndim > 1 else phi
-                a_i = a[:, :, ipol] if a.ndim > 2 else a
-                alpha_i = alpha[:, :, ipol] if alpha.ndim > 2 else alpha
-                De_i = De[:, ipol] if De.ndim > 1 else De
+            # L1 @ phi (n, npol); L1 @ a flattens over (3, npol)
+            if np.isscalar(L1):
+                L1_phi = L1 * phi
+                L1_a = L1 * a
+            else:
+                L1_phi = L1 @ phi
+                L1_a = (L1 @ a.reshape(nfaces, -1)).reshape(nfaces, 3, npol)
 
-                # Same computation as single polarization
-                if np.isscalar(L1):
-                    L1_phi = L1 * phi_i
-                    L1_a = L1 * a_i
-                else:
-                    L1_phi = L1 @ phi_i
-                    L1_a = L1 @ a_i
+            # alpha_mod = alpha - Sigma1 @ a + ik * nvec ⊗ (L1*phi)
+            Sigma1_a = (Sigma1 @ a.reshape(nfaces, -1)).reshape(nfaces, 3, npol)
+            alpha_mod = alpha - Sigma1_a + 1j * k * (nvec[:, :, np.newaxis] * L1_phi[:, np.newaxis, :])
 
-                alpha_mod = alpha_i - (Sigma1 @ a_i) + 1j * k * (nvec * L1_phi[:, np.newaxis])
-                if np.isscalar(L1):
-                    De_mod = De_i - Sigma1 @ (L1 * phi_i) + 1j * k * np.sum(nvec * L1_a, axis=1)
-                else:
-                    De_mod = De_i - Sigma1 @ L1 @ phi_i + 1j * k * np.sum(nvec * L1_a, axis=1)
+            # De_mod = De - Sigma1 @ (L1 phi) + ik * <nvec, L1 a>
+            if np.isscalar(L1):
+                Sigma1_L1_phi = Sigma1 @ (L1 * phi)
+            else:
+                Sigma1_L1_phi = Sigma1 @ (L1 @ phi)
+            De_mod = De - Sigma1_L1_phi + 1j * k * np.einsum('ij,ijk->ik', nvec, L1_a)
 
-                L_diff = L1 - L2
-                if np.isscalar(L_diff):
-                    inner_term = np.sum(nvec * (L_diff * _ls(Delta_lu, alpha_mod)), axis=1)
-                else:
-                    inner_term = np.sum(nvec * (L_diff @ _ls(Delta_lu, alpha_mod)), axis=1)
+            L_diff = L1 - L2
 
-                sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
+            # Eq. (19): surface charge sig2
+            # alpha_mod_solved: (n, 3, npol)
+            am_solved = _ls(Delta_lu, alpha_mod)
+            if np.isscalar(L_diff):
+                Ld_am = L_diff * am_solved
+            else:
+                Ld_am = (L_diff @ am_solved.reshape(nfaces, -1)).reshape(nfaces, 3, npol)
+            inner_term = np.einsum('ij,ijk->ik', nvec, Ld_am)
+            sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
 
-                if np.isscalar(L_diff):
-                    outer_term = nvec * (L_diff * sig2)[:, np.newaxis]
-                else:
-                    outer_term = nvec * (L_diff @ sig2)[:, np.newaxis]
-                h2 = _ls(Delta_lu, 1j * k * outer_term + alpha_mod)
+            # Eq. (20): surface current h2
+            if np.isscalar(L_diff):
+                Ld_sig2 = L_diff * sig2
+            else:
+                Ld_sig2 = L_diff @ sig2
+            outer_term = nvec[:, :, np.newaxis] * Ld_sig2[:, np.newaxis, :]
+            h2 = _ls(Delta_lu, 1j * k * outer_term + alpha_mod)
 
-                sig1_all[:, ipol] = _ls(G1_lu, sig2 + phi_i)
-                h1_all[:, :, ipol] = _ls(G1_lu, h2 + a_i)
-                sig2_all[:, ipol] = _ls(G2_lu, sig2)
-                h2_all[:, :, ipol] = _ls(G2_lu, h2)
+            # Surface charges and currents [from Eqs. (10-11)]
+            sig1_all = _ls(G1_lu, sig2 + phi)
+            h1_all = _ls(G1_lu, h2 + a)
+            sig2_all = _ls(G2_lu, sig2)
+            h2_all = _ls(G2_lu, h2)
 
         # MATLAB: sig = compstruct(obj.p, exc.enei, 'sig1', sig1, 'sig2', sig2, 'h1', h1, 'h2', h2)
         from ..greenfun import CompStruct
