@@ -64,7 +64,7 @@ class BEMStatMirror(object):
         self.mat_lu = []
         for i in range(len(self.F)):
             # BEM resolvent matrix
-            self.mat_lu.append(lu_factor(-(np.diag(lambda_diag) + self.F[i])))
+            self.mat_lu.append(lu_factor(-(np.diag(lambda_diag) + self.F[i]), check_finite=False, overwrite_a=True))
 
         self.enei = enei
         return self
@@ -157,10 +157,10 @@ class BEMStatMirror(object):
 def _lu_solve_multi(lu_piv: Tuple, b: Any) -> Any:
     if isinstance(b, np.ndarray):
         if b.ndim == 1:
-            return lu_solve(lu_piv, b)
+            return lu_solve(lu_piv, b, check_finite=False)
         else:
-            return lu_solve(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
-    return lu_solve(lu_piv, np.asarray(b))
+            return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(b.shape)
+    return lu_solve(lu_piv, np.asarray(b), check_finite=False)
 
 
 def _matmul(a: Any, x: Any) -> Any:
