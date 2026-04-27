@@ -37,6 +37,12 @@ class EpsConst(object):
         eps : float or complex
             Dielectric constant value
         """
+        if eps is None:
+            raise ValueError("EpsConst: 'eps' must be a numeric value, got None.")
+        if not isinstance(eps, (int, float, complex, np.integer, np.floating, np.complexfloating)):
+            raise TypeError(
+                "EpsConst: 'eps' must be a numeric (int/float/complex) value, "
+                "got {!r}.".format(type(eps).__name__))
         self.eps = eps
 
     def __call__(self, enei):
@@ -60,8 +66,8 @@ class EpsConst(object):
         # Dielectric constant (broadcast to enei shape)
         eps = np.full_like(enei, self.eps, dtype=complex)
 
-        # Wavenumber: k = 2π/λ × √ε
-        k = 2 * np.pi / enei * np.sqrt(self.eps)
+        # Wavenumber: k = 2π/λ × √ε  (use complex eps so negative real eps gives imaginary k)
+        k = 2 * np.pi / enei * np.sqrt(eps)
 
         return eps, k
 
@@ -80,7 +86,8 @@ class EpsConst(object):
             Wavenumber in medium (1/nm)
         """
         enei = np.asarray(enei)
-        return 2 * np.pi / enei * np.sqrt(self.eps)
+        eps_complex = np.array(self.eps, dtype = complex)
+        return 2 * np.pi / enei * np.sqrt(eps_complex)
 
     def __repr__(self):
         return "EpsConst(eps = {})".format(self.eps)
