@@ -206,6 +206,7 @@ class CompGreenStat(object):
         """
         import copy
         from .utils import refinematrix
+        from ._numba_kernels import green_stat_assemble
 
         # Sync verts2 with verts if they have drifted apart.
         # Work on deep copies so that the original particle objects are
@@ -235,24 +236,20 @@ class CompGreenStat(object):
         # Store refinement indices
         self.ind = np.array(ir.nonzero()).T  # Array of (row, col) pairs
 
-        # Compute distances: r[i,j,:] = pos1[i] - pos2[j]
-        r = pos1[:, np.newaxis, :] - pos2[np.newaxis, :, :]  # (n1, n2, 3)
-        d = np.linalg.norm(r, axis=2)  # (n1, n2)
-        d_safe = np.maximum(d, np.finfo(float).eps)
-
-        # Initialize G and F matrices
-        # G matrix: G[i,j] = 1/d * area[j]
-        self.G = (1.0 / d_safe) * area2[np.newaxis, :]
-
-        # F matrix: F[i,j] = - nvec1[i]·r[i,j] / d³ * area[j]
-        # NOTE: F is ALWAYS 2D (surface normal derivative)
-        n_dot_r = np.sum(nvec1[:, np.newaxis, :] * r, axis=2)  # (n1, n2)
-        self.F = -n_dot_r / (d_safe ** 3) * area2[np.newaxis, :]
-
-        if self.deriv == 'cart':
-            # Also store Gp (Cartesian derivative) — used by _eval_Gp
-            self._Gp_raw = -r / (d_safe[:, :, np.newaxis] ** 3) * area2[np.newaxis, :, np.newaxis]
-            self._Gp_raw = np.transpose(self._Gp_raw, (0, 2, 1))  # (n1, 3, n2)
+        # Assemble G, F (and Gp when deriv == 'cart').  When p1 is p2
+        # the kernel zeros the diagonal so that the refinement /
+        # analytical-correction path below can fill the self-term.
+        # Otherwise the i == j entry is treated as a regular far-field
+        # element (matching the original numpy broadcasting behavior).
+        same_block = (p1 is p2)
+        want_gp = self.deriv == 'cart'
+        G_full, F_full, Gp_full = green_stat_assemble(
+            pos1, pos2, nvec1, area2, same_block, want_gp
+        )
+        self.G = G_full
+        self.F = F_full
+        if want_gp:
+            self._Gp_raw = Gp_full
 
         # Apply refinement if needed
         if len(self.ind) > 0:
