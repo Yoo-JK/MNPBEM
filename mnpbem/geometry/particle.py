@@ -328,12 +328,28 @@ class Particle(object):
 
         verts = np.asarray(verts, dtype=float)
 
+        # Validate verts shape: must be (N, 3). Bare 1D vector is treated as a
+        # degenerate "no-faces" stub but never produces faces.
+        if verts.ndim == 1:
+            if verts.size != 3 and faces is not None:
+                raise ValueError(
+                    "Particle: 1D 'verts' is only valid as a single point "
+                    "(length 3) or with faces=None; got length {} with faces."
+                    .format(verts.size))
+            verts = verts.reshape(1, 3) if verts.size == 3 else verts.reshape(0, 3)
+        elif verts.ndim != 2 or verts.shape[1] != 3:
+            raise ValueError(
+                "Particle: 'verts' must have shape (N, 3); got {}.".format(verts.shape))
+
         # Handle face format
         if faces is None:
             self.verts = verts
             self.faces = np.array([]).reshape(0, 4)
         else:
             faces = np.asarray(faces, dtype=float)
+            if faces.ndim != 2:
+                raise ValueError(
+                    "Particle: 'faces' must be 2D; got {}D.".format(faces.ndim))
 
             if faces.shape[1] == 3:
                 # Only triangular elements - add NaN column

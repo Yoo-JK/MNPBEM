@@ -41,6 +41,18 @@ def trisphere(n, diameter=1.0, **kwargs):
     >>> sphere = trisphere(144, 80.0)
     >>> print("Vertices: {}, Faces: {}".format(sphere.nverts, sphere.nfaces))
     """
+    # Validate inputs
+    if n is None:
+        raise ValueError("trisphere: 'n' must be a positive integer, got None.")
+    try:
+        n_int = int(n)
+    except (TypeError, ValueError):
+        raise ValueError("trisphere: 'n' must be a positive integer, got {!r}.".format(n))
+    if n_int <= 0:
+        raise ValueError("trisphere: 'n' must be > 0, got {}.".format(n_int))
+    if not np.isfinite(diameter) or diameter <= 0:
+        raise ValueError("trisphere: 'diameter' must be a positive finite float, got {!r}.".format(diameter))
+
     # Saved vertex counts in MATLAB trisphere.mat
     # MATLAB: trisphere.m line 20-21
     nsav = np.array([32, 60, 144, 169, 225, 256, 289, 324, 361, 400, 441, 484,
