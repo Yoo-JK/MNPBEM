@@ -304,18 +304,29 @@ class GreenRetRefined(object):
         """Build and cache wavelength-independent distance quantities."""
         if self._d_cache is not None:
             return
+        from ._numba_ret_kernels import green_ret_distances, numba_enabled
+
         pos1 = self.p1.pos
         pos2 = self.p2.pos
-        x = pos1[:, 0:1] - pos2[:, 0]  # (n1, n2)
-        y = pos1[:, 1:2] - pos2[:, 1]
-        z = pos1[:, 2:3] - pos2[:, 2]
-        d = np.sqrt(x**2 + y**2 + z**2)
-        d = np.maximum(d, np.finfo(float).eps)
-        inv_d = 1.0 / d
-        inv_d2 = inv_d * inv_d
         area2 = self.p2.area
         nvec1 = self.p1.nvec
-        n_dot_r = (nvec1[:, 0:1] * x + nvec1[:, 1:2] * y + nvec1[:, 2:3] * z)
+        same = self.p1 is self.p2
+
+        if numba_enabled():
+            d, inv_d, n_dot_r, x, y, z = green_ret_distances(
+                pos1, pos2, nvec1, area2, same = same, want_r = True
+            )
+            inv_d2 = inv_d * inv_d
+        else:
+            x = pos1[:, 0:1] - pos2[:, 0]  # (n1, n2)
+            y = pos1[:, 1:2] - pos2[:, 1]
+            z = pos1[:, 2:3] - pos2[:, 2]
+            d = np.sqrt(x**2 + y**2 + z**2)
+            d = np.maximum(d, np.finfo(float).eps)
+            inv_d = 1.0 / d
+            inv_d2 = inv_d * inv_d
+            n_dot_r = (nvec1[:, 0:1] * x + nvec1[:, 1:2] * y + nvec1[:, 2:3] * z)
+
         self._d_cache = {
             'x': x, 'y': y, 'z': z, 'd': d,
             'inv_d': inv_d, 'inv_d2': inv_d2,
