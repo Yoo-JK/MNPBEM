@@ -17,6 +17,7 @@ import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 from ..greenfun import CompGreenStat, CompStruct
 from ..utils.matlab_compat import msqrt
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
 
 
 class BEMStat(object):
@@ -161,7 +162,7 @@ class BEMStat(object):
             # BEM resolvent matrix
             # MATLAB: obj.mat = -inv(diag(lambda) + obj.F)
             Lambda = np.diag(lambda_diag)
-            self.mat_lu = lu_factor(-(Lambda + self.F), check_finite=False, overwrite_a=True)
+            self.mat_lu = lu_factor_dispatch(-(Lambda + self.F))
 
             # Save energy
             # MATLAB: obj.enei = enei
@@ -408,6 +409,10 @@ class BEMStat(object):
 
     @staticmethod
     def _lu_solve(lu_piv, b):
+        if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu"):
+            if b.ndim == 1:
+                return lu_solve_dispatch(lu_piv, b)
+            return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
         if b.ndim == 1:
             return lu_solve(lu_piv, b, check_finite=False)
         else:
