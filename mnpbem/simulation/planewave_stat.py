@@ -83,9 +83,26 @@ class PlaneWaveStat(object):
             Additional options (for compatibility)
         """
         # MATLAB: init.m line 16
+        if pol is None:
+            raise ValueError("PlaneWaveStat: 'pol' must be a polarization vector, got None.")
         self.pol = np.asarray(pol)
+        if self.pol.dtype == object or self.pol.size == 0:
+            raise ValueError(
+                "PlaneWaveStat: 'pol' must be a numeric array of shape (3,) or (npol, 3).")
         if self.pol.ndim == 1:
+            if self.pol.size != 3:
+                raise ValueError(
+                    "PlaneWaveStat: 1D 'pol' must have length 3, got length {}."
+                    .format(self.pol.size))
             self.pol = self.pol.reshape(1, -1)
+        elif self.pol.ndim == 2:
+            if self.pol.shape[1] != 3:
+                raise ValueError(
+                    "PlaneWaveStat: 2D 'pol' must have shape (npol, 3), got {}."
+                    .format(self.pol.shape))
+        else:
+            raise ValueError(
+                "PlaneWaveStat: 'pol' must be 1D or 2D, got {}D.".format(self.pol.ndim))
 
         # MATLAB: init.m line 32
         self.medium = options.get('medium', medium)
