@@ -105,6 +105,16 @@ class BEMStat(object):
         >>> bem = BEMStat(p)
         >>> bem = BEMStat(p, enei=600.0)
         """
+        # Validate particle
+        if p is None:
+            raise ValueError(
+                "BEMStat: 'p' must be a ComParticle (or compatible particle "
+                "object), got None.")
+        if not (hasattr(p, 'pos') and hasattr(p, 'nvec') and hasattr(p, 'eps')):
+            raise TypeError(
+                "BEMStat: 'p' must expose ComParticle-like attributes "
+                "(pos, nvec, eps); got {!r}.".format(type(p).__name__))
+
         # Save particle
         self.p = p
 

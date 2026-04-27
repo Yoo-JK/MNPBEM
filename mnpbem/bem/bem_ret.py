@@ -96,6 +96,15 @@ class BEMRet(object):
         enei : float, optional
             Photon energy (eV) or wavelength (nm) for pre-initialization
         """
+        if p is None:
+            raise ValueError(
+                "BEMRet: 'p' must be a ComParticle (or compatible particle "
+                "object), got None.")
+        if not (hasattr(p, 'pos') and hasattr(p, 'nvec') and hasattr(p, 'eps')):
+            raise TypeError(
+                "BEMRet: 'p' must expose ComParticle-like attributes "
+                "(pos, nvec, eps); got {!r}.".format(type(p).__name__))
+
         self.p = p
         self.enei = None
 
