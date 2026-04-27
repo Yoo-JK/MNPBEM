@@ -52,7 +52,7 @@ demospecret7,,,159.2,ok,58.48,ok,1d_series,4.969e-08,perf,,
 demospecret8,138,cached,136.3,ok,27.79,ok,1d_series,2.882e-08,perf,1.013,4.967
 demospecret9,927.1,cached,128.9,ok,27.31,ok,1d_series,4.769e-08,perf,7.193,33.94
 demospecstat1,,,,,,,1d_series,1.028e-14,perf,,
-demospecstat10,,,13.5,ok,2.917,ok,1d_series,7.226e-13,perf,,
+demospecstat10,1200,timeout,13.5,ok,2.917,ok,1d_series,7.226e-13,perf,88.92,411.5
 demospecstat11,,,,,,,face,3.367e-15,perf,,
 demospecstat12,,,22.38,ok,2.774,ok,1d_series,6.301e-15,perf,,
 demospecstat13,,,25.51,ok,3.88,ok,face,3.858e-15,perf,,
