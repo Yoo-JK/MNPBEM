@@ -15,7 +15,7 @@ except ImportError:
 if _HAS_NUMBA:
     @numba.njit(cache=True)
     def _aca_subtract_row(U_mat, V_mat, rank, pivot_row, row_vals):
-        """Subtract previous approximants from a row (Numba-accelerated)."""
+        """Subtract previous approximants from a row (Numba-accelerated, real)."""
         for j in range(rank):
             scale = U_mat[pivot_row, j]
             for i in range(len(row_vals)):
@@ -24,7 +24,7 @@ if _HAS_NUMBA:
 
     @numba.njit(cache=True)
     def _aca_subtract_col(U_mat, V_mat, rank, pivot_col, col_vals):
-        """Subtract previous approximants from a column (Numba-accelerated)."""
+        """Subtract previous approximants from a column (Numba-accelerated, real)."""
         for j in range(rank):
             scale = V_mat[pivot_col, j]
             for i in range(len(col_vals)):
@@ -33,7 +33,7 @@ if _HAS_NUMBA:
 
     @numba.njit(cache=True)
     def _aca_cross_terms(U_mat, V_mat, rank, u_new, v_new):
-        """Compute cross-terms for Frobenius norm (Numba-accelerated)."""
+        """Compute cross-terms for Frobenius norm (Numba-accelerated, real)."""
         cross = 0.0
         m = len(u_new)
         n = len(v_new)
@@ -46,6 +46,49 @@ if _HAS_NUMBA:
                 dot_v += V_mat[i, j] * v_new[i]
             cross += 2.0 * dot_u * dot_v
         return cross
+
+    # ----------------------------------------------------------------
+    # Complex128 ACA kernels (separate compiled paths so retarded /
+    # layered Green functions also benefit from numba acceleration).
+    # ----------------------------------------------------------------
+    @numba.njit(cache=True)
+    def _aca_subtract_row_c(U_mat, V_mat, rank, pivot_row, row_vals):
+        """Subtract previous approximants from a row (Numba, complex128)."""
+        for j in range(rank):
+            scale = U_mat[pivot_row, j]
+            for i in range(len(row_vals)):
+                row_vals[i] -= scale * V_mat[i, j]
+        return row_vals
+
+    @numba.njit(cache=True)
+    def _aca_subtract_col_c(U_mat, V_mat, rank, pivot_col, col_vals):
+        """Subtract previous approximants from a column (Numba, complex128)."""
+        for j in range(rank):
+            scale = V_mat[pivot_col, j]
+            for i in range(len(col_vals)):
+                col_vals[i] -= scale * U_mat[i, j]
+        return col_vals
+
+    @numba.njit(cache=True)
+    def _aca_cross_terms_c(U_mat, V_mat, rank, u_new, v_new):
+        """Cross-terms for Frobenius norm (Numba, complex128).
+
+        For complex matrices the residual Frobenius norm uses Hermitian inner
+        products: <U_j, u_new> = sum conj(U_j) * u_new.  Returning the real
+        part keeps frobenius_sq real while remaining mathematically correct.
+        """
+        cross = 0.0 + 0.0j
+        m = len(u_new)
+        n = len(v_new)
+        for j in range(rank - 1):
+            dot_u = 0.0 + 0.0j
+            dot_v = 0.0 + 0.0j
+            for i in range(m):
+                dot_u += np.conj(U_mat[i, j]) * u_new[i]
+            for i in range(n):
+                dot_v += np.conj(V_mat[i, j]) * v_new[i]
+            cross += 2.0 * (dot_u * dot_v).real
+        return cross.real
 
 
 class HMatrix(object):
@@ -189,6 +232,8 @@ class HMatrix(object):
             if rank > 0:
                 if _HAS_NUMBA and out_dtype == np.float64:
                     row_vals = _aca_subtract_row(U_mat, V_mat, rank, pivot_row_local, row_vals)
+                elif _HAS_NUMBA and out_dtype == np.complex128:
+                    row_vals = _aca_subtract_row_c(U_mat, V_mat, rank, pivot_row_local, row_vals)
                 else:
                     row_vals -= V_mat[:, :rank] @ U_mat[pivot_row_local, :rank]
 
@@ -210,6 +255,8 @@ class HMatrix(object):
             if rank > 0:
                 if _HAS_NUMBA and out_dtype == np.float64:
                     col_vals = _aca_subtract_col(U_mat, V_mat, rank, pivot_col_local, col_vals)
+                elif _HAS_NUMBA and out_dtype == np.complex128:
+                    col_vals = _aca_subtract_col_c(U_mat, V_mat, rank, pivot_col_local, col_vals)
                 else:
                     col_vals -= U_mat[:, :rank] @ V_mat[pivot_col_local, :rank]
 
@@ -224,15 +271,26 @@ class HMatrix(object):
             used_row_mask[pivot_row_local] = True
             used_col_mask[pivot_col_local] = True
 
-            # Convergence check
-            u_norm_sq = np.sum(u_new ** 2)
-            v_norm_sq = np.sum(v_new ** 2)
+            # Convergence check.  For complex matrices Frobenius norm uses
+            # |u|^2 = <u,u> with Hermitian inner product, so use vdot.
+            if out_dtype == np.complex128:
+                u_norm_sq = np.vdot(u_new, u_new).real
+                v_norm_sq = np.vdot(v_new, v_new).real
+            else:
+                u_norm_sq = float(np.sum(u_new * u_new))
+                v_norm_sq = float(np.sum(v_new * v_new))
             new_term_sq = u_norm_sq * v_norm_sq
 
             # Cross-terms
             if rank > 1:
                 if _HAS_NUMBA and out_dtype == np.float64:
                     cross_terms = _aca_cross_terms(U_mat, V_mat, rank, u_new, v_new)
+                elif _HAS_NUMBA and out_dtype == np.complex128:
+                    cross_terms = _aca_cross_terms_c(U_mat, V_mat, rank, u_new, v_new)
+                elif out_dtype == np.complex128:
+                    dot_u = np.conj(U_mat[:, :rank - 1].T) @ u_new
+                    dot_v = np.conj(V_mat[:, :rank - 1].T) @ v_new
+                    cross_terms = 2.0 * float(np.real(np.dot(dot_u, dot_v)))
                 else:
                     cross_terms = 2.0 * np.dot(
                         U_mat[:, :rank - 1].T @ u_new,
@@ -1050,3 +1108,33 @@ class HMatrix(object):
         hmat = HMatrix(tree = tree, htol = htol, kmax = kmax, fadmiss = fadmiss)
         hmat.aca(fun)
         return hmat
+
+
+def make_kaware_fadmiss(k: float, eta0: float = 2.5) -> Callable:
+    """Return an admissibility predicate aware of the wavenumber ``k``.
+
+    For static problems (k=0) this reproduces the standard Boerm criterion
+    ``eta0 * min(rad1, rad2) < dist``.  For retarded problems the kernel
+    e^{i k R}/R oscillates and ACA rank grows like (k * diam)^{d}.  To keep
+    the rank bounded we tighten the criterion when ``k * min(rad)`` exceeds
+    one wavelength, requiring ``dist`` to also exceed a few wavelengths
+    ``2*pi/k``.  This avoids the rank blow-up reported when wavelength is
+    comparable to the cluster diameter.
+    """
+    if k is None or not np.isfinite(k) or abs(k) < 1e-12:
+        return lambda rad1, rad2, dist: eta0 * min(rad1, rad2) < dist
+
+    k_abs = abs(complex(k))
+    wavelength = 2.0 * np.pi / k_abs
+    def fadmiss(rad1: float, rad2: float, dist: float) -> bool:
+        rmin = min(rad1, rad2)
+        # Standard geometric admissibility
+        if eta0 * rmin >= dist:
+            return False
+        # Wavelength constraint: when cluster spans many wavelengths the
+        # block can still be highly oscillatory; require dist > one
+        # wavelength so that exp(i k R) is well-resolved by low rank.
+        if k_abs * rmin > 1.0 and dist < wavelength:
+            return False
+        return True
+    return fadmiss
