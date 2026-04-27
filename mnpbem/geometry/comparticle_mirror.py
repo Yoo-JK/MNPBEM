@@ -144,6 +144,10 @@ class ComParticleMirror(object):
             closed_args = tuple(sym) if hasattr(sym, '__iter__') else (sym,)
             sym = kwargs.pop('sym', 'x')
 
+        if sym not in ('x', 'y', 'xy'):
+            raise ValueError(
+                "ComParticleMirror: 'sym' must be one of 'x', 'y', 'xy'; got {!r}.".format(sym))
+
         self.eps = eps
         self.p = list(particles)
         self.inout = np.atleast_2d(inout)
