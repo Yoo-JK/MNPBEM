@@ -555,6 +555,9 @@ class BEMRetLayerIter(BEMIter):
         def mul(x: Any, y: np.ndarray) -> np.ndarray:
             if np.isscalar(x):
                 return x * y
+            # x is array with leading dim n; y is 1-D (n,) diag or has matching shape.
+            if y.ndim == 1 and x.ndim > 1:
+                return x * y.reshape(-1, *([1] * (x.ndim - 1)))
             if y.ndim == 1:
                 return x * y
             return x[:, np.newaxis] * y if x.ndim == 1 else x * y
@@ -628,9 +631,10 @@ class BEMRetLayerIter(BEMIter):
             aperp = a[:, 2, :]
 
         def matmul1(a_mat: np.ndarray, b: np.ndarray) -> np.ndarray:
+            # Multiply (n, n) matrix with (n, ...) array, preserving trailing dims.
             if b.ndim == 1:
                 return a_mat @ b
-            n_rows = a_mat.shape[0]
+            n_rows = a_mat.shape[0] if not np.isscalar(a_mat) else b.shape[0]
             return (a_mat @ b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
 
         def _ls(lu_piv, b):
@@ -639,8 +643,16 @@ class BEMRetLayerIter(BEMIter):
             n_rows = b.shape[0]
             return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
 
+        def matmul_eps(eps_mat: Any, b: np.ndarray) -> np.ndarray:
+            # Apply diagonal eps (scalar / (n,n) diag matrix) to (n, ...) array.
+            if np.isscalar(eps_mat):
+                return eps_mat * b
+            if b.ndim == 1:
+                return eps_mat @ b
+            return (eps_mat @ b.reshape(b.shape[0], -1)).reshape(b.shape)
+
         # Modify alpha
-        alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, eps1 @ phi if phi.ndim <= 1 else eps1 @ phi)
+        alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, matmul_eps(eps1, phi))
         if alpha.ndim == 2:
             alphapar = alpha[:, :2]
             alphaperp = alpha[:, 2]
@@ -649,8 +661,8 @@ class BEMRetLayerIter(BEMIter):
             alphaperp = alpha[:, 2, :]
 
         # Modify De
-        De = De - eps1 @ Sigma1 @ phi + \
-            1j * k * self._inner(nvec, matmul1(eps1, a)) + \
+        De = De - matmul_eps(eps1, matmul1(Sigma1, phi)) + \
+            1j * k * self._inner(nvec, matmul_eps(eps1, a)) + \
             1j * k * self._inner(npar, matmul1(deps @ Gamma, alphapar))
 
         # Solve Eq. (10) using block LU
