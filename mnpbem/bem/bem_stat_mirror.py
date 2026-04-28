@@ -1,10 +1,10 @@
 import numpy as np
-from scipy.linalg import lu_factor, lu_solve
 from typing import Optional, List, Tuple, Any, Union
 
 from ..greenfun import CompStruct
 from ..greenfun.compgreen_stat_mirror import CompGreenStatMirror
 from ..geometry.comparticle_mirror import CompStructMirror
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
 
 
 class BEMStatMirror(object):
@@ -64,7 +64,7 @@ class BEMStatMirror(object):
         self.mat_lu = []
         for i in range(len(self.F)):
             # BEM resolvent matrix
-            self.mat_lu.append(lu_factor(-(np.diag(lambda_diag) + self.F[i]), check_finite=False, overwrite_a=True))
+            self.mat_lu.append(lu_factor_dispatch(-(np.diag(lambda_diag) + self.F[i])))
 
         self.enei = enei
         return self
@@ -157,10 +157,10 @@ class BEMStatMirror(object):
 def _lu_solve_multi(lu_piv: Tuple, b: Any) -> Any:
     if isinstance(b, np.ndarray):
         if b.ndim == 1:
-            return lu_solve(lu_piv, b, check_finite=False)
+            return lu_solve_dispatch(lu_piv, b)
         else:
-            return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(b.shape)
-    return lu_solve(lu_piv, np.asarray(b), check_finite=False)
+            return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
+    return lu_solve_dispatch(lu_piv, np.asarray(b))
 
 
 def _matmul(a: Any, x: Any) -> Any:
