@@ -4,10 +4,10 @@ import sys
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
-from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
 from ..utils.matlab_compat import msqrt
 from .bem_iter import BEMIter
 
@@ -95,11 +95,11 @@ class BEMStatIter(BEMIter):
 
             if self.precond == 'hmat':
                 # MATLAB: obj.mat = lu(-lambda - F)
-                self._mat_lu = lu_factor(-Lambda - F, check_finite=False, overwrite_a=True)
+                self._mat_lu = lu_factor_dispatch(-Lambda - F)
 
             elif self.precond == 'full':
                 # MATLAB: obj.mat = inv(-lambda - full(F))
-                self._mat_lu = lu_factor(-Lambda - F, check_finite=False, overwrite_a=True)
+                self._mat_lu = lu_factor_dispatch(-Lambda - F)
 
             else:
                 raise ValueError('[error] preconditioner not known: <{}>'.format(self.precond))
@@ -130,7 +130,7 @@ class BEMStatIter(BEMIter):
 
         if self.precond == 'hmat' or self.precond == 'full':
             # MATLAB: vec = solve(obj.mat, vec) or obj.mat * vec
-            result = lu_solve(self._mat_lu, vec_2d, check_finite=False)
+            result = lu_solve_dispatch(self._mat_lu, vec_2d)
         else:
             result = vec_2d
 

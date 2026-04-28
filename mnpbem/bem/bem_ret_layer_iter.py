@@ -4,10 +4,10 @@ import sys
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
-from scipy.linalg import lu_factor, lu_solve
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
 from ..utils.matlab_compat import msqrt
 from .bem_iter import BEMIter
 
@@ -206,10 +206,10 @@ class BEMRetLayerIter(BEMIter):
         H2_p = H2.p if hasattr(H2, 'p') else (H2['p'] if isinstance(H2, dict) else H2)
 
         # LU factorizations of G1 and parallel component
-        G1_lu = lu_factor(G1, check_finite=False)
-        G2p_lu = lu_factor(G2_p, check_finite=False)
-        G1i = lu_solve(G1_lu, np.eye(G1.shape[0]), check_finite=False, overwrite_b=True)
-        G2pi = lu_solve(G2p_lu, np.eye(G2_p.shape[0]), check_finite=False, overwrite_b=True)
+        G1_lu = lu_factor_dispatch(G1)
+        G2p_lu = lu_factor_dispatch(G2_p)
+        G1i = lu_solve_dispatch(G1_lu, np.eye(G1.shape[0]))
+        G2pi = lu_solve_dispatch(G2p_lu, np.eye(G2_p.shape[0]))
 
         # Sigma matrices [Eq. (21)]
         Sigma1 = H1 @ G1i
@@ -219,8 +219,8 @@ class BEMRetLayerIter(BEMIter):
         nperp_diag = np.diag(nvec[:, 3 - 1])  # nvec(:,3)
 
         # Gamma matrix
-        Gamma_lu = lu_factor(Sigma1 - Sigma2p, check_finite=False, overwrite_a=True)
-        Gamma = lu_solve(Gamma_lu, np.eye(Sigma1.shape[0]), check_finite=False, overwrite_b=True)
+        Gamma_lu = lu_factor_dispatch(Sigma1 - Sigma2p)
+        Gamma = lu_solve_dispatch(Gamma_lu, np.eye(Sigma1.shape[0]))
 
         # Gammapar with only parallel normal vector components
         Gammapar = ikdeps @ self._decorate_gamma(Gamma, nvec)
@@ -243,16 +243,16 @@ class BEMRetLayerIter(BEMIter):
 
         # LU decomposition as block inverse
         # L11 * U11 = M11
-        m11_lu = lu_factor(m11, check_finite=False, overwrite_a=True)
-        im11 = lu_solve(m11_lu, np.eye(m11.shape[0]), check_finite=False, overwrite_b=True)
+        m11_lu = lu_factor_dispatch(m11)
+        im11 = lu_solve_dispatch(m11_lu, np.eye(m11.shape[0]))
         # L11 * U12 = M12 -> U12 = inv(L11) * M12
         im12 = im11 @ m12
         # L21 * U11 = M21 -> L21 = M21 * inv(U11)
         im21 = m21 @ im11
         # L22 * U22 = M22 - L21 * U12
         schur = m22 - im21 @ m12
-        schur_lu = lu_factor(schur, check_finite=False, overwrite_a=True)
-        im22 = lu_solve(schur_lu, np.eye(schur.shape[0]), check_finite=False, overwrite_b=True)
+        schur_lu = lu_factor_dispatch(schur)
+        im22 = lu_solve_dispatch(schur_lu, np.eye(schur.shape[0]))
 
         # Save variables
         sav = {}
@@ -635,9 +635,9 @@ class BEMRetLayerIter(BEMIter):
 
         def _ls(lu_piv, b):
             if b.ndim == 1:
-                return lu_solve(lu_piv, b, check_finite=False)
-            n_rows = lu_piv[0].shape[0]
-            return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(n_rows, *b.shape[1:])
+                return lu_solve_dispatch(lu_piv, b)
+            n_rows = b.shape[0]
+            return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
 
         # Modify alpha
         alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, eps1 @ phi if phi.ndim <= 1 else eps1 @ phi)
@@ -657,7 +657,8 @@ class BEMRetLayerIter(BEMIter):
         sig2, h2perp = self._solve_block_lu(im, De, alphaperp)
 
         # Get G2 components
-        n_g = G1_lu[0].shape[0]
+        # G1_lu = ("cpu"/"gpu", lu_matrix, piv) — index 1 holds the LU matrix.
+        n_g = G1_lu[1].shape[0]
         G2_ss = G2.ss if hasattr(G2, 'ss') else (G2['ss'] if isinstance(G2, dict) else G2)
         G2_sh = G2.sh if hasattr(G2, 'sh') else (G2['sh'] if isinstance(G2, dict) else np.zeros((n_g, n_g)))
         G2_p = G2.p if hasattr(G2, 'p') else (G2['p'] if isinstance(G2, dict) else G2)

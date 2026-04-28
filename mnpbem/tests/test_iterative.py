@@ -593,7 +593,9 @@ class TestBEMStatIter(object):
         bem = _make_stat_iter(particle, solver='gmres', precond='hmat')
         bem._init_matrices(500.0)
         assert bem._mat_lu is not None
-        assert bem._mat_lu[0].shape == (particle.n, particle.n)
+        # dispatch package format: (tag, lu_matrix, piv)
+        assert bem._mat_lu[0] in ('cpu', 'gpu')
+        assert bem._mat_lu[1].shape == (particle.n, particle.n)
 
     def test_init_matrices_precond_full(self, particle):
         """
@@ -662,9 +664,9 @@ class TestBEMStatIter(object):
         vec = np.ones(n, dtype=complex)
         result = bem._mfun(vec)
         assert result.shape == (n,)
-        # result = lu_solve(mat_lu, vec)
-        from scipy.linalg import lu_solve
-        expected = lu_solve(bem._mat_lu, vec.reshape(n, -1))
+        # result = lu_solve_dispatch(mat_lu, vec)
+        from mnpbem.utils.gpu import lu_solve_dispatch
+        expected = lu_solve_dispatch(bem._mat_lu, vec.reshape(n, -1))
         np.testing.assert_allclose(result, expected.reshape(-1))
 
     def test_mfun_full(self, particle):

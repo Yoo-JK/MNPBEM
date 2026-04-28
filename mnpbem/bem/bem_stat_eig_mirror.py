@@ -5,6 +5,7 @@ from typing import Optional, List, Tuple, Any, Union
 from ..greenfun import CompStruct
 from ..greenfun.compgreen_stat_mirror import CompGreenStatMirror
 from ..geometry.comparticle_mirror import CompStructMirror
+from ..utils.gpu import matmul_dispatch, solve_dispatch
 
 
 class BEMStatEigMirror(object):
@@ -111,7 +112,10 @@ class BEMStatEigMirror(object):
             unit_lambda = self.unit[i] @ Lambda[:]  # (nev^2,)
             unit_lambda_mat = unit_lambda.reshape(self.nev, self.nev)
             resolvent = unit_lambda_mat + self.ene[i]
-            self.mat.append(-self.ur[i] @ np.linalg.solve(resolvent, self.ul[i]))
+            # resolvent is (nev, nev) — small; the ur @ (...) GEMM dominates
+            # for large mesh and benefits from GPU dispatch.
+            inv_ul = solve_dispatch(resolvent, self.ul[i])
+            self.mat.append(-matmul_dispatch(self.ur[i], inv_ul))
 
         self.enei = enei
         return self
