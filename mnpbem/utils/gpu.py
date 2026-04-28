@@ -19,11 +19,12 @@ device.
 from __future__ import annotations
 
 import os
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 from scipy.linalg import lu_factor as _scipy_lu_factor
 from scipy.linalg import lu_solve as _scipy_lu_solve
+from scipy.linalg import solve as _scipy_solve
 
 USE_GPU: bool = os.environ.get("MNPBEM_GPU", "0") == "1"
 GPU_THRESHOLD: int = int(os.environ.get("MNPBEM_GPU_THRESHOLD", "1500"))
@@ -74,3 +75,49 @@ def lu_solve_dispatch(piv_pkg: Tuple, b: np.ndarray, **kwargs: Any) -> np.ndarra
 
 def lu_backend(piv_pkg: Tuple) -> str:
     return piv_pkg[0]
+
+
+def solve_dispatch(A: np.ndarray, b: np.ndarray, **kwargs: Any) -> np.ndarray:
+    """One-shot Ax=b: dense solve on GPU when beneficial, else CPU.
+
+    Used by code paths that build a small dense system on the fly without
+    reusing the factorization.  Falls back to ``scipy.linalg.solve`` below
+    threshold or when CuPy is unavailable.
+    """
+    if _CUPY_OK and USE_GPU and A.shape[0] >= GPU_THRESHOLD:
+        A_gpu = _cp.asarray(A)
+        b_gpu = _cp.asarray(b)
+        x_gpu = _cp.linalg.solve(A_gpu, b_gpu)
+        return _cp.asnumpy(x_gpu)
+    kwargs.setdefault("check_finite", False)
+    return _scipy_solve(A, b, **kwargs)
+
+
+def eigh_dispatch(A: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, np.ndarray]:
+    """Hermitian eigendecomposition on GPU when beneficial, else CPU.
+
+    Returns ``(w, v)`` as host NumPy arrays regardless of backend.  Routes
+    to ``cupy.linalg.eigh`` when GPU is enabled and the matrix is at least
+    ``GPU_THRESHOLD`` rows.
+    """
+    if _CUPY_OK and USE_GPU and A.shape[0] >= GPU_THRESHOLD:
+        A_gpu = _cp.asarray(A)
+        w_gpu, v_gpu = _cp.linalg.eigh(A_gpu)
+        return _cp.asnumpy(w_gpu), _cp.asnumpy(v_gpu)
+    from scipy.linalg import eigh as _scipy_eigh
+    kwargs.setdefault("check_finite", False)
+    return _scipy_eigh(A, **kwargs)
+
+
+def matmul_dispatch(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+    """Dense matrix product on GPU when beneficial, else CPU.
+
+    Used by field-application code paths where a single big dense GEMM
+    dominates and the inputs are still on the host.
+    """
+    if _CUPY_OK and USE_GPU and A.shape[0] >= GPU_THRESHOLD:
+        A_gpu = _cp.asarray(A)
+        B_gpu = _cp.asarray(B)
+        C_gpu = A_gpu @ B_gpu
+        return _cp.asnumpy(C_gpu)
+    return A @ B
