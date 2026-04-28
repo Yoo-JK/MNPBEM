@@ -401,7 +401,10 @@ class BEMRetIter(BEMIter):
                 return a_val * b
             if b.ndim == 1:
                 return a_val * b
-            return a_val[:, np.newaxis] * b if a_val.ndim == 1 else a_val * b
+            if a_val.ndim == 1:
+                # Reshape a_val to (n, 1, 1, ...) to broadcast against trailing dims of b.
+                return a_val.reshape(-1, *([1] * (b.ndim - 1))) * b
+            return a_val * b
 
         # Eq. (10)
         phi = Gsig1 - Gsig2
@@ -438,38 +441,37 @@ class BEMRetIter(BEMIter):
         Sigma_lu = sav['Sigma_lu']
 
         def matmul1(a_mat: np.ndarray, b: np.ndarray) -> np.ndarray:
+            # Multiply (n, n) matrix with (n, ...) array, preserving trailing dims.
             if b.ndim == 1:
                 return a_mat @ b
-            return a_mat @ b.reshape(b.shape[0], -1)
+            n_rows = a_mat.shape[0] if not np.isscalar(a_mat) else b.shape[0]
+            return (a_mat @ b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
 
         def _ls(lu_piv, b):
             if b.ndim == 1:
                 return lu_solve_dispatch(lu_piv, b)
             return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
 
+        def matmul_eps(eps_mat: Any, b: np.ndarray) -> np.ndarray:
+            # Apply diagonal eps (scalar / (n,n) diag matrix) to (n, ...) array.
+            if np.isscalar(eps_mat):
+                return eps_mat * b
+            if b.ndim == 1:
+                return eps_mat @ b
+            return (eps_mat @ b.reshape(b.shape[0], -1)).reshape(b.shape)
+
         # Modify alpha and De
         # MATLAB: alpha = alpha - matmul1(Sigma1, a) + 1i*k*outer(nvec, eps1*phi)
-        if np.isscalar(eps1):
-            alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, eps1 * phi)
-            De = De - eps1 * matmul1(Sigma1, phi) + 1j * k * eps1 * self._inner(nvec, a)
-        else:
-            alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, eps1 @ phi if phi.ndim > 1 else eps1 @ phi)
-            De = De - eps1 @ matmul1(Sigma1, phi) + 1j * k * self._inner(nvec, eps1 @ a if a.ndim <= 2 else a)
+        alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, matmul_eps(eps1, phi))
+        De = De - matmul_eps(eps1, matmul1(Sigma1, phi)) + 1j * k * self._inner(nvec, matmul_eps(eps1, a))
 
         # Eq. (19)
         deps = eps1 - eps2
-        if np.isscalar(deps):
-            inner_alpha = self._inner(nvec, _ls(Delta_lu, alpha))
-            sig2 = _ls(Sigma_lu, De + 1j * k * deps * inner_alpha)
-        else:
-            inner_alpha = self._inner(nvec, _ls(Delta_lu, alpha))
-            sig2 = _ls(Sigma_lu, De + 1j * k * deps @ inner_alpha if inner_alpha.ndim <= 1 else De + 1j * k * (deps @ inner_alpha))
+        inner_alpha = self._inner(nvec, _ls(Delta_lu, alpha))
+        sig2 = _ls(Sigma_lu, De + 1j * k * matmul_eps(deps, inner_alpha))
 
         # Eq. (20)
-        if np.isscalar(deps):
-            h2 = _ls(Delta_lu, 1j * k * self._outer(nvec, deps * sig2) + alpha)
-        else:
-            h2 = _ls(Delta_lu, 1j * k * self._outer(nvec, deps @ sig2 if sig2.ndim <= 1 else deps @ sig2) + alpha)
+        h2 = _ls(Delta_lu, 1j * k * self._outer(nvec, matmul_eps(deps, sig2)) + alpha)
 
         # Surface charges and currents
         sig1 = _ls(G1_lu, sig2 + phi)
