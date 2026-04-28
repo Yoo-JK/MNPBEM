@@ -12,10 +12,10 @@ Reference:
 """
 
 import numpy as np
-from scipy.linalg import solve as scipy_solve
 from typing import Optional, Tuple, Any
 
 from ..greenfun import CompGreenStat, CompStruct
+from ..utils.gpu import matmul_dispatch, solve_dispatch
 from .plasmonmode import plasmonmode
 
 
@@ -189,7 +189,10 @@ class BEMStatEig(object):
         resolvent = unit_lambda_mat + self.ene  # (nev, nev)
 
         # mat = -ur @ inv(resolvent) @ ul
-        self.mat = -self.ur @ scipy_solve(resolvent, self.ul, check_finite=False, overwrite_a=True, overwrite_b=True)
+        # resolvent is (nev, nev) — small, so solve is CPU-bound; the leading
+        # ur @ (...) GEMM dominates at large mesh and benefits from GPU.
+        inv_ul = solve_dispatch(resolvent, self.ul)
+        self.mat = -matmul_dispatch(self.ur, inv_ul)
 
         self.enei = enei
         return self
