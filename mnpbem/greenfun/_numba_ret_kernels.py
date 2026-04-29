@@ -51,6 +51,20 @@ def gpu_enabled():
     return os.environ.get('MNPBEM_GPU', '0') == '1'
 
 
+def gpu_native_enabled():
+    """Return True iff GPU-native cupy passthrough is enabled.
+
+    Phase 3: when MNPBEM_GPU=1 AND MNPBEM_GPU_NATIVE=1, GreenRetRefined and
+    BEMRet keep G/H/sig matrices on the GPU end-to-end, eliminating the
+    PCIe round-trips that dominate the dimer-scale solve loop.
+    """
+    if not CUPY_AVAILABLE:
+        return False
+    if os.environ.get('MNPBEM_GPU', '0') != '1':
+        return False
+    return os.environ.get('MNPBEM_GPU_NATIVE', '0') == '1'
+
+
 if NUMBA_AVAILABLE:
 
     @njit(parallel = True, fastmath = False, cache = True)

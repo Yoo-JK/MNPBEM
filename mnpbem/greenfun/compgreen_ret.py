@@ -572,11 +572,19 @@ class CompGreenRet(object):
             eps_val, k_val = eps_func(enei)
             k_list.append(k_val)
 
+        # When GPU_NATIVE mode is active and the underlying eval returns
+        # cupy ndarrays, allocate the assembly buffer on the GPU too so the
+        # block assignments stay on-device.  Detection is delayed until we
+        # see the first non-trivial block, then we allocate accordingly.
+        try:
+            import cupy as _cp_local  # type: ignore
+        except Exception:
+            _cp_local = None
+
         # Evaluate G, F, H1, H2
         if key not in ['Gp', 'H1p', 'H2p']:
-            # Allocate array
-            # MATLAB line 24: g = zeros(obj.p1.n, obj.p2.n)
-            g = np.zeros((self.p1.n, self.p2.n), dtype=complex)
+            g = None
+            xp = np
 
             # Loop over composite particles
             # MATLAB lines 26-33: for i1 = 1:size(con,1); for i2 = 1:size(con,2)
@@ -597,16 +605,22 @@ class CompGreenRet(object):
                         # Add Green function
                         # MATLAB line 31: eval(obj.g{i1, i2}, k(con(i1,i2)), key)
                         g_block = self.g[i1][i2].eval(k_block, key)
-                        g[np.ix_(idx1, idx2)] = g_block
+                        if g is None:
+                            if _cp_local is not None and isinstance(g_block, _cp_local.ndarray):
+                                xp = _cp_local
+                            g = xp.zeros((self.p1.n, self.p2.n), dtype=complex)
+                        if xp is np and _cp_local is not None and isinstance(g_block, _cp_local.ndarray):
+                            g_block = _cp_local.asnumpy(g_block)
+                        elif xp is _cp_local and not isinstance(g_block, _cp_local.ndarray):
+                            g_block = _cp_local.asarray(g_block)
+                        g[xp.ix_(idx1, idx2)] = g_block
+            if g is None:
+                g = np.zeros((self.p1.n, self.p2.n), dtype=complex)
 
         # Evaluate Gp, H1p, H2p
         else:
-            # Allocate array
-            # MATLAB line 38: g = zeros(obj.p1.n, 3, obj.p2.n)
-            g = np.zeros((self.p1.n, 3, self.p2.n), dtype=complex)
-
-            # Loop over composite particles
-            # MATLAB lines 40-47
+            g = None
+            xp = np
             npart1, npart2 = con.shape
 
             for i1 in range(npart1):
@@ -623,12 +637,28 @@ class CompGreenRet(object):
                         # Add Green function
                         # MATLAB line 45: eval(obj.g{i1, i2}, k(con(i1,i2)), key)
                         g_block = self.g[i1][i2].eval(k_block, key)
-                        g[np.ix_(idx1, range(3), idx2)] = g_block
+                        if g is None:
+                            if _cp_local is not None and isinstance(g_block, _cp_local.ndarray):
+                                xp = _cp_local
+                            g = xp.zeros((self.p1.n, 3, self.p2.n), dtype=complex)
+                        if xp is np and _cp_local is not None and isinstance(g_block, _cp_local.ndarray):
+                            g_block = _cp_local.asnumpy(g_block)
+                        elif xp is _cp_local and not isinstance(g_block, _cp_local.ndarray):
+                            g_block = _cp_local.asarray(g_block)
+                        g[xp.ix_(idx1, range(3), idx2)] = g_block
+            if g is None:
+                g = np.zeros((self.p1.n, 3, self.p2.n), dtype=complex)
 
         # Return zero if all elements are zero
         # MATLAB line 51: if all(g(:) == 0); g = 0; end
-        if np.all(g == 0):
-            return 0
+        if xp is np:
+            if np.all(g == 0):
+                return 0
+        else:
+            # cupy: avoid forcing host sync for the all-zero check; instead
+            # rely on the fact that GPU paths only build g for connected
+            # region pairs (con > 0), so g always has non-zero entries.
+            pass
 
         return g
 

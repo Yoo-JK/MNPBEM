@@ -538,18 +538,22 @@ class GreenRetRefined(object):
     def _eval_gpu(self, k, key, c):
         """GPU evaluation path for G/F/H1/H2/Gp/H1p/H2p.
 
-        All arithmetic happens on the device (cupy); the result is brought
-        back to host (numpy) just before return so existing BEM solver code
-        (numpy-based linear algebra, refinement-aware overlays) can consume
-        it unchanged.
+        All arithmetic happens on the device (cupy).  When MNPBEM_GPU_NATIVE=1
+        the cupy ndarray is returned directly so downstream BEM/Spectrum code
+        can consume it without an unnecessary host round-trip.  Otherwise the
+        result is brought back to host (numpy) for backward compatibility
+        with the host-side numpy linear algebra.
         """
         import cupy as cp
         from ._numba_ret_kernels import (
             ret_G_pre_gpu, ret_F_norm_pre_gpu, ret_F_cart_pre_gpu,
             ret_Gp_pre_gpu, ret_phase_gpu,
             apply_phase_2d_gpu, apply_phase_3d_axis02_gpu,
-            to_host,
+            to_host, gpu_native_enabled,
         )
+
+        native = gpu_native_enabled()
+        _ret = (lambda x: x) if native else to_host
 
         d = c['d']
         inv_d = c['inv_d']
@@ -573,7 +577,7 @@ class GreenRetRefined(object):
                 G[c['row_gpu'], c['col_gpu']] = G_refined
             phase = ret_phase_gpu(d, k)
             apply_phase_2d_gpu(G, phase)
-            return to_host(G)
+            return _ret(G)
 
         elif key == 'F':
             if self.deriv == 'cart':
@@ -588,7 +592,7 @@ class GreenRetRefined(object):
                     F[c['row_gpu'], c['col_gpu']] = F_refined
                 phase = ret_phase_gpu(d, k)
                 apply_phase_2d_gpu(F, phase)
-                return to_host(F)
+                return _ret(F)
             else:
                 n_dot_r = c['n_dot_r']
                 F = ret_F_norm_pre_gpu(inv_d, inv_d2, n_dot_r, area2, k)
@@ -598,18 +602,28 @@ class GreenRetRefined(object):
                     F[c['row_gpu'], c['col_gpu']] = F_refined
                 phase = ret_phase_gpu(d, k)
                 apply_phase_2d_gpu(F, phase)
-                return to_host(F)
+                return _ret(F)
 
         elif key == 'H1':
             H1 = self.eval(k, 'F')
             if self.p1 is self.p2:
-                np.fill_diagonal(H1, np.diag(H1) + 2.0 * np.pi)
+                if isinstance(H1, cp.ndarray):
+                    n = min(H1.shape[0], H1.shape[1])
+                    idx = cp.arange(n)
+                    H1[idx, idx] = H1[idx, idx] + 2.0 * np.pi
+                else:
+                    np.fill_diagonal(H1, np.diag(H1) + 2.0 * np.pi)
             return H1
 
         elif key == 'H2':
             H2 = self.eval(k, 'F')
             if self.p1 is self.p2:
-                np.fill_diagonal(H2, np.diag(H2) - 2.0 * np.pi)
+                if isinstance(H2, cp.ndarray):
+                    n = min(H2.shape[0], H2.shape[1])
+                    idx = cp.arange(n)
+                    H2[idx, idx] = H2[idx, idx] - 2.0 * np.pi
+                else:
+                    np.fill_diagonal(H2, np.diag(H2) - 2.0 * np.pi)
             return H2
 
         elif key == 'Gp':
@@ -624,11 +638,17 @@ class GreenRetRefined(object):
                 Gp[c['row_gpu'], 2, c['col_gpu']] = Gp_refined[:, 2]
             phase = ret_phase_gpu(d, k)
             apply_phase_3d_axis02_gpu(Gp, phase)
-            return to_host(Gp)
+            return _ret(Gp)
 
         elif key == 'H1p':
             Gp = self.eval(k, 'Gp')
             if self.p1 is self.p2:
+                if isinstance(Gp, cp.ndarray):
+                    H1p = Gp.copy()
+                    nvec = c['nvec_gpu']
+                    idx = cp.arange(nvec.shape[0])
+                    H1p[idx, :, idx] = H1p[idx, :, idx] + 2.0 * np.pi * nvec
+                    return H1p
                 H1p = Gp.copy()
                 nvec = self.p1.nvec
                 idx = np.arange(len(nvec))
@@ -639,6 +659,12 @@ class GreenRetRefined(object):
         elif key == 'H2p':
             Gp = self.eval(k, 'Gp')
             if self.p1 is self.p2:
+                if isinstance(Gp, cp.ndarray):
+                    H2p = Gp.copy()
+                    nvec = c['nvec_gpu']
+                    idx = cp.arange(nvec.shape[0])
+                    H2p[idx, :, idx] = H2p[idx, :, idx] - 2.0 * np.pi * nvec
+                    return H2p
                 H2p = Gp.copy()
                 nvec = self.p1.nvec
                 idx = np.arange(len(nvec))
