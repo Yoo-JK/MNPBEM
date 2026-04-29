@@ -1325,18 +1325,19 @@ class LayerStructure(object):
         # MATLAB-bitexact complex exp on CPU.  The big elementwise outer-product
         # below is what dominates _reflection_subs_batch wall time and is a
         # candidate for GPU dispatch, but g1/g2 themselves are small (M*n).
-        g1 = m_exp_c(1j * kz_i1 * abs_z1f)  # (M, n1)
-        g2 = m_exp_c(1j * kz_i2 * abs_z2f)  # (M, n2)
-        g1z = g1 * sign_z1f
-
-        # Lane C GPU acceleration: when MNPBEM_GPU_LAYER=1 (default ON if
-        # MNPBEM_GPU=1) and the full-flat fan-out is large, route the (M,
-        # n_flat) elementwise multiplications through CuPy.  All inputs above
-        # this point retain MATLAB-bitexact CPU ordering; only the redundant
-        # broadcast multiplies move to the device.
+        # In GPU mode the bit-exact MATLAB libmwmathutil exp is replaced by
+        # numpy's vectorized cexp (still ULP-equivalent for our demos) so that
+        # ctypes call overhead does not dominate the (M, n) propagation step.
         n_flat_total = (M * (ind1.size * ind2.size if not same_size else ind1.size))
         use_gpu = layer_gpu_active(n_flat_total)
         xp, asnumpy, _ = get_layer_xp(n_flat_total)
+        if use_gpu:
+            g1 = np.exp(1j * kz_i1 * abs_z1f)
+            g2 = np.exp(1j * kz_i2 * abs_z2f)
+        else:
+            g1 = m_exp_c(1j * kz_i1 * abs_z1f)  # (M, n1)
+            g2 = m_exp_c(1j * kz_i2 * abs_z2f)  # (M, n2)
+        g1z = g1 * sign_z1f
 
         refl_out: Dict[str, np.ndarray] = {}
         reflz_out: Dict[str, np.ndarray] = {}
@@ -1384,8 +1385,13 @@ class LayerStructure(object):
     def _intbessel_batch(self,
             kpar_arr: np.ndarray,
             ctx: Dict[str, Any],
-            ind: np.ndarray) -> np.ndarray:
-        # Batched _intbessel over an array of kpar values. Returns (M, 15*n).
+            ind: np.ndarray,
+            weights: Optional[np.ndarray] = None) -> np.ndarray:
+        # Batched _intbessel over an array of kpar values.  Returns (M, 15*n)
+        # when ``weights`` is None.  When ``weights`` is provided (shape (M,)),
+        # the routine performs ``sum_m weights[m] * y[m, :]`` directly and
+        # returns a (15*n,) vector — this lets the GPU path keep the dense
+        # intermediate on-device and avoid one extra round-trip.
         kpar_arr = np.asarray(kpar_arr)
         M = kpar_arr.size
         n = len(ind)
@@ -1429,6 +1435,30 @@ class LayerStructure(object):
             kpar_col_d = xp.asarray(kpar_col)
             kpar_sq_col_d = xp.asarray(kpar_sq_col)
             kz_ind_d = xp.asarray(kz_ind)
+            if weights is not None:
+                # Reduce on-device.  We accumulate weighted sums per name
+                # block to avoid materializing the full (M, 15*n) intermediate.
+                w_d = xp.asarray(weights)
+                acc = xp.zeros(15 * n, dtype = xp.complex128)
+                for iname, name in enumerate(names):
+                    rr = refl[name]
+                    rrz = reflz[name]
+                    if rr.ndim > 2:
+                        rr = rr.reshape(M, -1)[:, ind]
+                        rrz = rrz.reshape(M, -1)[:, ind]
+                    else:
+                        rr = rr[:, ind]
+                        rrz = rrz[:, ind]
+                    rr_d = xp.asarray(rr)
+                    rrz_d = xp.asarray(rrz)
+                    base = iname * 3 * n
+                    block_a = 1j * (j0_d * (rr_d * (kpar_col_d / kz_ind_d)))
+                    block_b = 1j * (j1_d * (rr_d * (-kpar_sq_col_d / kz_ind_d)))
+                    block_c = 1j * (j0_d * (1j * (rrz_d * kpar_col_d)))
+                    acc[base:base + n] = (w_d[:, None] * block_a).sum(axis = 0)
+                    acc[base + n:base + 2 * n] = (w_d[:, None] * block_b).sum(axis = 0)
+                    acc[base + 2 * n:base + 3 * n] = (w_d[:, None] * block_c).sum(axis = 0)
+                return asnumpy(acc)
             y_d = xp.empty((M, 15 * n), dtype = xp.complex128)
             for iname, name in enumerate(names):
                 rr = refl[name]
@@ -1466,13 +1496,19 @@ class LayerStructure(object):
             # 1i * j0 .* (1i * rrz .* kpar)
             y[:, base + 2 * n:base + 3 * n] = 1j * (j0 * (1j * (rrz * kpar_col)))
 
+        if weights is not None:
+            # CPU reduction matches the original caller-side weighted-sum path.
+            return (np.asarray(weights)[:, np.newaxis] * y).sum(axis = 0)
         return y
 
     def _inthankel_batch(self,
             kpar_arr: np.ndarray,
             ctx: Dict[str, Any],
-            ind: np.ndarray) -> np.ndarray:
-        # Batched _inthankel over an array of complex kpar. Returns (M, 15*n).
+            ind: np.ndarray,
+            weights: Optional[np.ndarray] = None) -> np.ndarray:
+        # Batched _inthankel over an array of complex kpar.  Returns (M, 15*n)
+        # when ``weights`` is None, otherwise the weighted on-device sum
+        # ``sum_m weights[m] * y[m, :]`` of shape (15*n,).
         kpar_arr = np.asarray(kpar_arr)
         M = kpar_arr.size
         n = len(ind)
@@ -1529,6 +1565,45 @@ class LayerStructure(object):
             kpar2_sq_col_d = xp.asarray(kpar2_sq_col)
             kz1_ind_d = xp.asarray(kz1_ind)
             kz2_ind_d = xp.asarray(kz2_ind)
+            if weights is not None:
+                w_d = xp.asarray(weights)
+                acc = xp.zeros(15 * n, dtype = xp.complex128)
+                for iname, name in enumerate(names):
+                    rr1 = refl1[name]
+                    rr1z = refl1z[name]
+                    rr2 = refl2[name]
+                    rr2z = refl2z[name]
+                    if rr1.ndim > 2:
+                        rr1 = rr1.reshape(M, -1)[:, ind]
+                        rr1z = rr1z.reshape(M, -1)[:, ind]
+                        rr2 = rr2.reshape(M, -1)[:, ind]
+                        rr2z = rr2z.reshape(M, -1)[:, ind]
+                    else:
+                        rr1 = rr1[:, ind]
+                        rr1z = rr1z[:, ind]
+                        rr2 = rr2[:, ind]
+                        rr2z = rr2z[:, ind]
+                    rr1_d = xp.asarray(rr1)
+                    rr1z_d = xp.asarray(rr1z)
+                    rr2_d = xp.asarray(rr2)
+                    rr2z_d = xp.asarray(rr2z)
+                    base = iname * 3 * n
+                    block_a = (
+                        0.5j * (h0_d * (rr1_d * (kpar1_col_d / kz1_ind_d)))
+                        - 0.5j * (h0c_d * (rr2_d * (kpar2_col_d / kz2_ind_d)))
+                    )
+                    block_b = (
+                        0.5j * (h1_d * (rr1_d * (-kpar1_sq_col_d / kz1_ind_d)))
+                        - 0.5j * (h1c_d * (rr2_d * (-kpar2_sq_col_d / kz2_ind_d)))
+                    )
+                    block_c = (
+                        0.5j * (h0_d * (1j * (rr1z_d * kpar1_col_d)))
+                        - 0.5j * (h0c_d * (1j * (rr2z_d * kpar2_col_d)))
+                    )
+                    acc[base:base + n] = (w_d[:, None] * block_a).sum(axis = 0)
+                    acc[base + n:base + 2 * n] = (w_d[:, None] * block_b).sum(axis = 0)
+                    acc[base + 2 * n:base + 3 * n] = (w_d[:, None] * block_c).sum(axis = 0)
+                return asnumpy(acc)
             y_d = xp.empty((M, 15 * n), dtype = xp.complex128)
             for iname, name in enumerate(names):
                 rr1 = refl1[name]
@@ -1594,6 +1669,8 @@ class LayerStructure(object):
                 - 0.5j * (h0_conj * (1j * (rr2z * kpar2_col)))
             )
 
+        if weights is not None:
+            return (np.asarray(weights)[:, np.newaxis] * y).sum(axis = 0)
         return y
 
     # Cache Gauss-Legendre nodes/weights per order.
@@ -1643,9 +1720,7 @@ class LayerStructure(object):
         kr_arr = k1max * (1 - mcos(xs) - 1j * semi * msin(xs))
         dkr_arr = k1max * (msin(xs) - 1j * semi * mcos(xs))
 
-        y_batch = self._intbessel_batch(kr_arr, ctx, ind_full)
-        weighted = (ws * dkr_arr)[:, np.newaxis] * y_batch
-        return weighted.sum(axis = 0)
+        return self._intbessel_batch(kr_arr, ctx, ind_full, weights = ws * dkr_arr)
 
     def _integrate_semiellipse_ode(self,
             enei: float,
@@ -1723,9 +1798,7 @@ class LayerStructure(object):
         kr_arr = 2 * k1max / xs
         fac_arr = -2 * k1max / (xs ** 2)
 
-        y_batch = self._intbessel_batch(kr_arr, ctx, ind)
-        weighted = (ws * fac_arr)[:, np.newaxis] * y_batch
-        return -weighted.sum(axis = 0)
+        return -self._intbessel_batch(kr_arr, ctx, ind, weights = ws * fac_arr)
 
     def _integrate_real_ode(self,
             enei: float,
@@ -1794,9 +1867,7 @@ class LayerStructure(object):
         kr_arr = 2 * k1max * (1 - 1j + 1j / xs)
         fac_arr = -2j * k1max / (xs ** 2)
 
-        y_batch = self._inthankel_batch(kr_arr, ctx, ind)
-        weighted = (ws * fac_arr)[:, np.newaxis] * y_batch
-        return -weighted.sum(axis = 0)
+        return -self._inthankel_batch(kr_arr, ctx, ind, weights = ws * fac_arr)
 
     def _integrate_imag_ode(self,
             enei: float,
