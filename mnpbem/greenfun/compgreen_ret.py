@@ -197,6 +197,16 @@ class CompGreenRet(object):
 
         For a closed particle the surface integral of -F should give 2*pi
         See R. Fuchs and S. H. Liu, Phys. Rev. B 14, 5521 (1976).
+
+        Wave 23 fix: when ``p1.closed`` is all-None (typical Python user
+        omits the explicit closed args that MATLAB scripts always pass),
+        default each sub-particle to be its own closed surface. This
+        matches the MATLAB convention ``comparticle(eps, p, inout, 1, 2,
+        ..., op)`` that every demo and example uses, and is required for
+        the Fuchs-Liu surface integral identity to hold. Without this
+        default the F (surface derivative) diagonal differs by 1-3% per
+        face -> propagates to ~1.6% extinction drift on Au dimer cube
+        (advanced_dimer_cube test).
         """
         # Full particle in case of mirror symmetry
         full1 = p1
@@ -210,6 +220,14 @@ class CompGreenRet(object):
         # MATLAB: initclosed.m uses p1.pfull for mirror particles but
         # does NOT skip the closed surface correction.
         if hasattr(full1, 'closed') and (full1 is p2 or full1 == p2):
+            # Default-closed: if user did not pass closed args, treat each
+            # sub-particle as its own closed surface (MATLAB convention).
+            if (full1.closed is not None
+                and len(full1.closed) > 0
+                and all(c is None for c in full1.closed)):
+                for k in range(len(full1.closed)):
+                    full1.closed[k] = [k + 1]
+
             if full1.closed is not None and any(c is not None for c in full1.closed):
                 # Loop over particles
                 for i in range(len(p1.p)):
