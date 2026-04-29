@@ -113,6 +113,11 @@ class ComParticle(object):
         self._mask = list(range(len(self.p)))
 
         # Initialize closed surfaces (MATLAB: init.m)
+        # Note: MATLAB demos always pass per-sub-particle closed args
+        # (e.g. ``comparticle(eps, {p1, p2}, [...], 1, 2, op)``). When
+        # closed_args is empty here, ``compgreen_ret._initclosed`` applies a
+        # default per-sub-particle closed convention so the Fuchs-Liu
+        # surface-integral identity (-2*pi for closed surface) holds.
         self.closed = [None] * len(self.p)
         if len(closed_args) > 0:
             self.set_closed(*closed_args)
@@ -244,9 +249,11 @@ class ComParticle(object):
 
                 for ind in indices:
                     ind_abs = abs(ind)
-                    # Set closed property if not previously set (1-indexed!)
+                    # Set closed property if not previously set (1-indexed!).
+                    # Store a copy so subsequent mutations of the input or of
+                    # one entry's list do not alias other sub-particles.
                     if self.closed[ind_abs - 1] is None:
-                        self.closed[ind_abs - 1] = indices
+                        self.closed[ind_abs - 1] = list(indices)
             # Input is an additional particle
             else:
                 idx = arg[0] if np.isscalar(arg[0]) else arg[0][0]
