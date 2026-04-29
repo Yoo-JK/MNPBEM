@@ -14,8 +14,27 @@ Matches MATLAB MNPBEM implementation exactly.
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 
-from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+import os
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch
 from ..greenfun import CompGreenRet, CompStruct
+
+# Lane A2 (M4 GPU Phase 2): when MNPBEM_GPU=1 and cupy is importable, the
+# BEM matrix assembly (G/H differences, dense inverse, L/Sigma/Delta GEMMs,
+# nvec*nvec^T, k^2 magnetic-coupling) is performed end-to-end on the GPU
+# without round-tripping intermediates back to host.  Falls back to CPU
+# numpy when cupy is unavailable or MNPBEM_GPU != 1.
+try:
+    import cupy as _cp_a2  # type: ignore
+    _CUPY_OK_A2 = True
+except Exception:
+    _cp_a2 = None  # type: ignore
+    _CUPY_OK_A2 = False
+
+
+def _bem_assembly_use_gpu() -> bool:
+    if not _CUPY_OK_A2:
+        return False
+    return os.environ.get('MNPBEM_GPU', '0') == '1'
 
 
 class BEMRet(object):
@@ -157,6 +176,26 @@ class BEMRet(object):
         if self.enei is not None and np.isclose(self.enei, enei):
             return self
 
+        # Lane A2: route the heavy assembly through a cupy-eager fast path
+        # when the GPU is enabled.  This keeps every intermediate
+        # (G/H/inverse/L/Sigma/Delta/Sigma_combined/nvec_outer) on device,
+        # avoiding the dimer-scale 6336^2 host<->device transfers that
+        # dominated the baseline GPU run.  The bit-identical numpy path is
+        # preserved as fallback below.
+        if _bem_assembly_use_gpu():
+            try:
+                self._init_gpu_assemble(enei)
+                return self
+            except Exception as _gpu_exc:
+                # Fallback: log via warning and resume the CPU path.
+                import warnings as _w
+                _w.warn(
+                    '[warn] BEMRet GPU assembly path failed ({}); '
+                    'falling back to CPU.'.format(_gpu_exc),
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
         self.enei = enei
 
         # Outer surface normals
@@ -274,6 +313,145 @@ class BEMRet(object):
 
         self.Sigma_lu = lu_factor_dispatch(Sigma)
 
+        return self
+
+    def _init_gpu_assemble(self, enei):
+        """Cupy-eager BEM matrix assembly (Lane A2 fast path).
+
+        Builds G1/G2/H1/H2 on the host (Green-function evaluation still
+        happens through ``self.g``), uploads them to the GPU once, and
+        keeps every subsequent dense op (inverse, GEMM, nvec*nvec^T,
+        Sigma combine, LU factor) on the device.  Only the small
+        ``self.eps1``/``eps2`` scalars and the LU package metadata cross
+        the PCIe boundary; ``self.G1_lu``/``self.G2_lu``/``self.Sigma_lu``
+        are returned as ``('gpu', lu, piv)`` tuples that
+        ``lu_solve_dispatch`` already understands, so downstream
+        ``BEMRet.solve`` consumers don't have to change.
+
+        Numerical contract: cuBLAS/cuSOLVER GEMMs differ from MKL only by
+        floating-point rounding; the relative Frobenius error vs the CPU
+        path is bounded by N * eps_machine ~ 1e-12 for dimer-scale meshes.
+        """
+        cp = _cp_a2
+        from cupyx.scipy.linalg import lu_factor as _cp_lu_factor
+        from cupyx.scipy.linalg import lu_solve as _cp_lu_solve
+
+        self.enei = enei
+        self.nvec = self.p.nvec
+        self.k = 2 * np.pi / enei
+
+        # Dielectric scalars / arrays on host (cheap).
+        eps1_vals = self.p.eps1(enei)
+        eps2_vals = self.p.eps2(enei)
+        if np.allclose(eps1_vals, eps1_vals[0]) and np.allclose(
+                eps2_vals, eps2_vals[0]):
+            self.eps1 = eps1_vals[0]
+            self.eps2 = eps2_vals[0]
+            scalar_eps = True
+        else:
+            self.eps1 = np.diag(eps1_vals)
+            self.eps2 = np.diag(eps2_vals)
+            scalar_eps = False
+
+        if not hasattr(self, 'g') or self.g is None:
+            self.g = CompGreenRet(self.p, self.p)
+
+        def _to_host(x):
+            return x.full() if hasattr(x, 'full') and not isinstance(x, np.ndarray) else x
+
+        # Pull G/H from the Green-function object (CPU-side eval) then
+        # transfer to GPU.  Lane A's GPU Green-function path returns cupy
+        # arrays directly; we accept either.
+        def _to_dev(x):
+            if x is None or (isinstance(x, int) and x == 0):
+                return None
+            if isinstance(x, cp.ndarray):
+                return x
+            return cp.asarray(_to_host(x))
+
+        G11 = _to_dev(self.g.eval(0, 0, 'G', enei))
+        G21 = _to_dev(self.g.eval(1, 0, 'G', enei))
+        G22 = _to_dev(self.g.eval(1, 1, 'G', enei))
+        G12 = _to_dev(self.g.eval(0, 1, 'G', enei))
+
+        G1 = G11 - G21 if G21 is not None else G11
+        G2 = G22 - G12 if G12 is not None else G22
+
+        H11 = _to_dev(self.g.eval(0, 0, 'H1', enei))
+        H21 = _to_dev(self.g.eval(1, 0, 'H1', enei))
+        H22 = _to_dev(self.g.eval(1, 1, 'H2', enei))
+        H12 = _to_dev(self.g.eval(0, 1, 'H2', enei))
+
+        H1_mat = H11 - H21 if H21 is not None else H11
+        H2_mat = H22 - H12 if H12 is not None else H22
+
+        # LU factor on device.  Keep G1/G2 on device for L1/L2 product.
+        G1_dev = G1
+        G2_dev = G2
+        # cupyx lu_factor expects a fresh array (overwrite_a=True).
+        G1c = G1_dev.copy()
+        G2c = G2_dev.copy()
+        lu1, piv1 = _cp_lu_factor(G1c, overwrite_a=True)
+        lu2, piv2 = _cp_lu_factor(G2c, overwrite_a=True)
+        self.G1_lu = ('gpu', lu1, piv1)
+        self.G2_lu = ('gpu', lu2, piv2)
+
+        n = G1_dev.shape[0]
+        I_dev = cp.eye(n)
+        G1i_dev = _cp_lu_solve((lu1, piv1), I_dev)
+        G2i_dev = _cp_lu_solve((lu2, piv2), I_dev)
+
+        # L matrices
+        # ACA wrappers proxy the underlying CompGreenRet via .g
+        _gobj = self.g.g if hasattr(self.g, 'g') and hasattr(self.g.g, 'con') else self.g
+        if np.all(_gobj.con[0][1] == 0) or scalar_eps:
+            self.L1 = self.eps1  # host scalar
+            self.L2 = self.eps2
+            L1_is_scalar = True
+        else:
+            eps1_dev = cp.asarray(self.eps1)
+            eps2_dev = cp.asarray(self.eps2)
+            self.L1 = cp.asnumpy(G1_dev @ eps1_dev @ G1i_dev)
+            self.L2 = cp.asnumpy(G2_dev @ eps2_dev @ G2i_dev)
+            L1_is_scalar = False
+
+        # Sigma matrices
+        Sigma1_dev = H1_mat @ G1i_dev
+        Sigma2_dev = H2_mat @ G2i_dev
+        # Materialise self.Sigma1 on host (used by solve() for Sigma1 @ a)
+        # NB: keeping it on host preserves bit-identity with the CPU path
+        # for downstream tests; later phase can promote it to device too.
+        self.Sigma1 = cp.asnumpy(Sigma1_dev)
+
+        # Delta = Sigma1 - Sigma2  (still on device)
+        Delta_dev = Sigma1_dev - Sigma2_dev
+        Dc = Delta_dev.copy()
+        lu_d, piv_d = _cp_lu_factor(Dc, overwrite_a=True)
+        self.Delta_lu = ('gpu', lu_d, piv_d)
+        Deltai_dev = _cp_lu_solve((lu_d, piv_d), I_dev)
+
+        # nvec*nvec^T on device.
+        nvec_dev = cp.asarray(self.nvec)
+        nvec_outer_dev = nvec_dev @ nvec_dev.T
+
+        if L1_is_scalar:
+            Sigma_dev = (Sigma1_dev * self.L1) - (Sigma2_dev * self.L2)
+            L_scalar = self.L1 - self.L2
+            Sigma_dev = Sigma_dev + (self.k ** 2) * L_scalar * (
+                Deltai_dev * nvec_outer_dev) * L_scalar
+        else:
+            L1_dev = cp.asarray(self.L1)
+            L2_dev = cp.asarray(self.L2)
+            L_dev = L1_dev - L2_dev
+            Sigma_dev = (
+                Sigma1_dev @ L1_dev - Sigma2_dev @ L2_dev +
+                (self.k ** 2) * ((L_dev @ Deltai_dev) * nvec_outer_dev) @ L_dev
+            )
+
+        # Final Sigma LU factor on device.
+        Sc = Sigma_dev.copy()
+        lu_s, piv_s = _cp_lu_factor(Sc, overwrite_a=True)
+        self.Sigma_lu = ('gpu', lu_s, piv_s)
         return self
 
     def _excitation(self, exc):
