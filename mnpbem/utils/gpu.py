@@ -121,3 +121,45 @@ def matmul_dispatch(A: np.ndarray, B: np.ndarray) -> np.ndarray:
         C_gpu = A_gpu @ B_gpu
         return _cp.asnumpy(C_gpu)
     return A @ B
+
+
+# ---------------------------------------------------------------------------
+# Lane C — layer-Green / Sommerfeld integral GPU helpers
+#
+# These do NOT participate in the BLAS-level dispatch; they are designed for
+# the elementwise-heavy kernels (outer products, propagation factors, weighted
+# sum reductions) that dominate ``_intbessel_batch`` / ``_inthankel_batch`` in
+# layer_structure.py.  Activation is tied to ``MNPBEM_GPU=1`` AND a separate
+# ``MNPBEM_GPU_LAYER`` flag so the BEM-solver dispatch above can be tuned
+# independently of the layer-Green path.
+# ---------------------------------------------------------------------------
+
+LAYER_GPU: bool = (
+    USE_GPU and os.environ.get("MNPBEM_GPU_LAYER", "1").strip() not in ("", "0", "false", "False")
+)
+LAYER_GPU_THRESHOLD: int = int(os.environ.get("MNPBEM_GPU_LAYER_THRESHOLD", "5000"))
+
+
+def layer_gpu_available() -> bool:
+    return _CUPY_OK and LAYER_GPU
+
+
+def layer_gpu_active(n_flat: int) -> bool:
+    """Decide whether to route a layer-Green elementwise kernel to GPU.
+
+    ``n_flat`` is the size of the flattened (n1*n2) array.  The host->device
+    copy and kernel launch overhead make GPU profitable only above a few
+    thousand entries; below that NumPy wins.
+    """
+    return _CUPY_OK and LAYER_GPU and n_flat >= LAYER_GPU_THRESHOLD
+
+
+def get_layer_xp(n_flat: int):
+    """Return (xp, asnumpy, on_gpu) for layer-Green elementwise kernels.
+
+    ``xp`` is either ``cupy`` or ``numpy``; ``asnumpy(arr)`` materializes
+    arrays on the host; ``on_gpu`` is a boolean for the active backend.
+    """
+    if layer_gpu_active(n_flat):
+        return _cp, _cp.asnumpy, True
+    return np, (lambda a: np.asarray(a)), False

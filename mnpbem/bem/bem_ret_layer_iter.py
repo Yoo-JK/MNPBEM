@@ -7,7 +7,7 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
-from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch
 from ..utils.matlab_compat import msqrt
 from .bem_iter import BEMIter
 
@@ -212,8 +212,8 @@ class BEMRetLayerIter(BEMIter):
         G2pi = lu_solve_dispatch(G2p_lu, np.eye(G2_p.shape[0]))
 
         # Sigma matrices [Eq. (21)]
-        Sigma1 = H1 @ G1i
-        Sigma2p = H2_p @ G2pi
+        Sigma1 = matmul_dispatch(H1, G1i)
+        Sigma2p = matmul_dispatch(H2_p, G2pi)
 
         # Perpendicular component of normal vector
         nperp_diag = np.diag(nvec[:, 3 - 1])  # nvec(:,3)
@@ -236,21 +236,28 @@ class BEMRetLayerIter(BEMIter):
         H2_hh = H2.hh if hasattr(H2, 'hh') else (H2['hh'] if isinstance(H2, dict) else H2)
 
         # Set up full matrix, Eq. (10)
-        m11 = (eps1_diag @ Sigma1 - Gammapar @ ikdeps) @ G2_ss - eps2_diag @ H2_ss - (nperp_diag @ ikdeps) @ G2_hs
-        m12 = (eps1_diag @ Sigma1 - Gammapar @ ikdeps) @ G2_sh - eps2_diag @ H2_sh - (nperp_diag @ ikdeps) @ G2_hh
-        m21 = Sigma1 @ G2_hs - H2_hs - nperp_diag @ ikdeps @ G2_ss
-        m22 = Sigma1 @ G2_hh - H2_hh - nperp_diag @ ikdeps @ G2_sh
+        eps1_Sigma1 = matmul_dispatch(eps1_diag, Sigma1)
+        Gammapar_ikdeps = matmul_dispatch(Gammapar, ikdeps)
+        nperp_ikdeps = matmul_dispatch(nperp_diag, ikdeps)
+        m11 = (matmul_dispatch(eps1_Sigma1 - Gammapar_ikdeps, G2_ss)
+            - matmul_dispatch(eps2_diag, H2_ss)
+            - matmul_dispatch(nperp_ikdeps, G2_hs))
+        m12 = (matmul_dispatch(eps1_Sigma1 - Gammapar_ikdeps, G2_sh)
+            - matmul_dispatch(eps2_diag, H2_sh)
+            - matmul_dispatch(nperp_ikdeps, G2_hh))
+        m21 = matmul_dispatch(Sigma1, G2_hs) - H2_hs - matmul_dispatch(nperp_ikdeps, G2_ss)
+        m22 = matmul_dispatch(Sigma1, G2_hh) - H2_hh - matmul_dispatch(nperp_ikdeps, G2_sh)
 
         # LU decomposition as block inverse
         # L11 * U11 = M11
         m11_lu = lu_factor_dispatch(m11)
         im11 = lu_solve_dispatch(m11_lu, np.eye(m11.shape[0]))
         # L11 * U12 = M12 -> U12 = inv(L11) * M12
-        im12 = im11 @ m12
+        im12 = matmul_dispatch(im11, m12)
         # L21 * U11 = M21 -> L21 = M21 * inv(U11)
-        im21 = m21 @ im11
+        im21 = matmul_dispatch(m21, im11)
         # L22 * U22 = M22 - L21 * U12
-        schur = m22 - im21 @ m12
+        schur = m22 - matmul_dispatch(im21, m12)
         schur_lu = lu_factor_dispatch(schur)
         im22 = lu_solve_dispatch(schur_lu, np.eye(schur.shape[0]))
 

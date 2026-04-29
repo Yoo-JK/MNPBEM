@@ -27,6 +27,7 @@ from ..utils.matlab_compat import (
     m_exp_c, m_sqrt_c,
 )
 from ..utils.matlab_ode45 import matlab_ode45
+from ..utils.gpu import layer_gpu_active, get_layer_xp
 
 
 class LayerStructure(object):
@@ -1249,7 +1250,8 @@ class LayerStructure(object):
         kpar_arr = np.asarray(kpar_arr)
         M = kpar_arr.size
 
-        # kz shape (M, 2)
+        # kz shape (M, 2) — small (2 layers); compute on CPU with MATLAB-bitexact
+        # m_sqrt_c so that the reflection coefficients keep their reference values.
         kz = m_sqrt_c(k_vals[np.newaxis, :] ** 2 - kpar_arr[:, np.newaxis] ** 2)
         kz = kz * np.sign(np.imag(kz + 1e-10j))
 
@@ -1320,27 +1322,62 @@ class LayerStructure(object):
             abs_z2f = abs_z2
             sign_z1f = sign_z1
 
+        # MATLAB-bitexact complex exp on CPU.  The big elementwise outer-product
+        # below is what dominates _reflection_subs_batch wall time and is a
+        # candidate for GPU dispatch, but g1/g2 themselves are small (M*n).
         g1 = m_exp_c(1j * kz_i1 * abs_z1f)  # (M, n1)
         g2 = m_exp_c(1j * kz_i2 * abs_z2f)  # (M, n2)
         g1z = g1 * sign_z1f
+
+        # Lane C GPU acceleration: when MNPBEM_GPU_LAYER=1 (default ON if
+        # MNPBEM_GPU=1) and the full-flat fan-out is large, route the (M,
+        # n_flat) elementwise multiplications through CuPy.  All inputs above
+        # this point retain MATLAB-bitexact CPU ordering; only the redundant
+        # broadcast multiplies move to the device.
+        n_flat_total = (M * (ind1.size * ind2.size if not same_size else ind1.size))
+        use_gpu = layer_gpu_active(n_flat_total)
+        xp, asnumpy, _ = get_layer_xp(n_flat_total)
 
         refl_out: Dict[str, np.ndarray] = {}
         reflz_out: Dict[str, np.ndarray] = {}
         if same_size:
             i1m = ind1 - 1
             i2m = ind2 - 1
-            for name, rr in mats.items():
-                rr_sel = rr[:, i1m, i2m]  # (M, n_flat)
-                base = rr_sel * g2
-                refl_out[name] = g1 * base
-                reflz_out[name] = g1z * base
+            if use_gpu:
+                g1_d = xp.asarray(g1)
+                g2_d = xp.asarray(g2)
+                g1z_d = xp.asarray(g1z)
+                for name, rr in mats.items():
+                    rr_d = xp.asarray(rr)
+                    rr_sel_d = rr_d[:, i1m, i2m]
+                    base_d = rr_sel_d * g2_d
+                    refl_out[name] = asnumpy(g1_d * base_d)
+                    reflz_out[name] = asnumpy(g1z_d * base_d)
+            else:
+                for name, rr in mats.items():
+                    rr_sel = rr[:, i1m, i2m]
+                    base = rr_sel * g2
+                    refl_out[name] = g1 * base
+                    reflz_out[name] = g1z * base
         else:
-            for name, rr in mats.items():
-                sel = rr[:, ind1 - 1, :][:, :, ind2 - 1]  # (M, n1, n2)
-                outer_g = g1[:, :, np.newaxis] * g2[:, np.newaxis, :]
-                outer_gz = g1z[:, :, np.newaxis] * g2[:, np.newaxis, :]
-                refl_out[name] = sel * outer_g
-                reflz_out[name] = sel * outer_gz
+            if use_gpu:
+                g1_d = xp.asarray(g1)
+                g2_d = xp.asarray(g2)
+                g1z_d = xp.asarray(g1z)
+                outer_g_d = g1_d[:, :, None] * g2_d[:, None, :]
+                outer_gz_d = g1z_d[:, :, None] * g2_d[:, None, :]
+                for name, rr in mats.items():
+                    sel = rr[:, ind1 - 1, :][:, :, ind2 - 1]
+                    sel_d = xp.asarray(sel)
+                    refl_out[name] = asnumpy(sel_d * outer_g_d)
+                    reflz_out[name] = asnumpy(sel_d * outer_gz_d)
+            else:
+                for name, rr in mats.items():
+                    sel = rr[:, ind1 - 1, :][:, :, ind2 - 1]
+                    outer_g = g1[:, :, np.newaxis] * g2[:, np.newaxis, :]
+                    outer_gz = g1z[:, :, np.newaxis] * g2[:, np.newaxis, :]
+                    refl_out[name] = sel * outer_g
+                    reflz_out[name] = sel * outer_gz
 
         return refl_out, reflz_out, kz
 
@@ -1376,11 +1413,41 @@ class LayerStructure(object):
 
         # Wave 49: match MATLAB intbessel.m FP ordering exactly.
         # MATLAB: 1i * j0 .* (rr .* (kpar ./ kz))  - inner factor (rr*kpar/kz) first.
-        y = np.empty((M, 15 * n), dtype = complex)
         kpar_col = kpar_arr[:, np.newaxis]
         kpar_sq_col = (kpar_arr ** 2)[:, np.newaxis]
 
         names = ('p', 'ss', 'hs', 'sh', 'hh')
+
+        # Lane C GPU acceleration: the outer (M, n) = O(M * n_flat) elementwise
+        # multiply / assemble dominates this routine.  Move everything onto the
+        # device when MNPBEM_GPU_LAYER is active and the workload is large.
+        use_gpu = layer_gpu_active(M * n)
+        xp, asnumpy, _ = get_layer_xp(M * n)
+        if use_gpu:
+            j0_d = xp.asarray(j0)
+            j1_d = xp.asarray(j1)
+            kpar_col_d = xp.asarray(kpar_col)
+            kpar_sq_col_d = xp.asarray(kpar_sq_col)
+            kz_ind_d = xp.asarray(kz_ind)
+            y_d = xp.empty((M, 15 * n), dtype = xp.complex128)
+            for iname, name in enumerate(names):
+                rr = refl[name]
+                rrz = reflz[name]
+                if rr.ndim > 2:
+                    rr = rr.reshape(M, -1)[:, ind]
+                    rrz = rrz.reshape(M, -1)[:, ind]
+                else:
+                    rr = rr[:, ind]
+                    rrz = rrz[:, ind]
+                rr_d = xp.asarray(rr)
+                rrz_d = xp.asarray(rrz)
+                base = iname * 3 * n
+                y_d[:, base:base + n] = 1j * (j0_d * (rr_d * (kpar_col_d / kz_ind_d)))
+                y_d[:, base + n:base + 2 * n] = 1j * (j1_d * (rr_d * (-kpar_sq_col_d / kz_ind_d)))
+                y_d[:, base + 2 * n:base + 3 * n] = 1j * (j0_d * (1j * (rrz_d * kpar_col_d)))
+            return asnumpy(y_d)
+
+        y = np.empty((M, 15 * n), dtype = complex)
         for iname, name in enumerate(names):
             rr = refl[name]
             rrz = reflz[name]
@@ -1438,13 +1505,66 @@ class LayerStructure(object):
         h1_conj = np.conj(h1)
 
         # Wave 49: match MATLAB inthankel.m FP ordering exactly.
-        y = np.empty((M, 15 * n), dtype = complex)
         kpar1_col = kpar1[:, np.newaxis]
         kpar2_col = kpar2[:, np.newaxis]
         kpar1_sq_col = (kpar1 ** 2)[:, np.newaxis]
         kpar2_sq_col = (kpar2 ** 2)[:, np.newaxis]
 
         names = ('p', 'ss', 'hs', 'sh', 'hh')
+
+        # Lane C GPU acceleration — same pattern as _intbessel_batch.  hankel1
+        # is not exposed by cupyx.scipy.special, so we evaluate it on the CPU
+        # and only ship the dense (M, n_flat) elementwise/reduce work to the
+        # device.
+        use_gpu = layer_gpu_active(M * n)
+        xp, asnumpy, _ = get_layer_xp(M * n)
+        if use_gpu:
+            h0_d = xp.asarray(h0)
+            h1_d = xp.asarray(h1)
+            h0c_d = xp.asarray(h0_conj)
+            h1c_d = xp.asarray(h1_conj)
+            kpar1_col_d = xp.asarray(kpar1_col)
+            kpar2_col_d = xp.asarray(kpar2_col)
+            kpar1_sq_col_d = xp.asarray(kpar1_sq_col)
+            kpar2_sq_col_d = xp.asarray(kpar2_sq_col)
+            kz1_ind_d = xp.asarray(kz1_ind)
+            kz2_ind_d = xp.asarray(kz2_ind)
+            y_d = xp.empty((M, 15 * n), dtype = xp.complex128)
+            for iname, name in enumerate(names):
+                rr1 = refl1[name]
+                rr1z = refl1z[name]
+                rr2 = refl2[name]
+                rr2z = refl2z[name]
+                if rr1.ndim > 2:
+                    rr1 = rr1.reshape(M, -1)[:, ind]
+                    rr1z = rr1z.reshape(M, -1)[:, ind]
+                    rr2 = rr2.reshape(M, -1)[:, ind]
+                    rr2z = rr2z.reshape(M, -1)[:, ind]
+                else:
+                    rr1 = rr1[:, ind]
+                    rr1z = rr1z[:, ind]
+                    rr2 = rr2[:, ind]
+                    rr2z = rr2z[:, ind]
+                rr1_d = xp.asarray(rr1)
+                rr1z_d = xp.asarray(rr1z)
+                rr2_d = xp.asarray(rr2)
+                rr2z_d = xp.asarray(rr2z)
+                base = iname * 3 * n
+                y_d[:, base:base + n] = (
+                    0.5j * (h0_d * (rr1_d * (kpar1_col_d / kz1_ind_d)))
+                    - 0.5j * (h0c_d * (rr2_d * (kpar2_col_d / kz2_ind_d)))
+                )
+                y_d[:, base + n:base + 2 * n] = (
+                    0.5j * (h1_d * (rr1_d * (-kpar1_sq_col_d / kz1_ind_d)))
+                    - 0.5j * (h1c_d * (rr2_d * (-kpar2_sq_col_d / kz2_ind_d)))
+                )
+                y_d[:, base + 2 * n:base + 3 * n] = (
+                    0.5j * (h0_d * (1j * (rr1z_d * kpar1_col_d)))
+                    - 0.5j * (h0c_d * (1j * (rr2z_d * kpar2_col_d)))
+                )
+            return asnumpy(y_d)
+
+        y = np.empty((M, 15 * n), dtype = complex)
         for iname, name in enumerate(names):
             rr1 = refl1[name]
             rr1z = refl1z[name]

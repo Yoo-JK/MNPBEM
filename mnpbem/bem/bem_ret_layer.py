@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 
-from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch
 
 from ..greenfun import CompGreenRetLayer, CompStruct
 
@@ -257,13 +257,13 @@ class BEMRetLayer(object):
             G2pi = lu_solve_dispatch(self._G2p_lu, np.eye(G2['p'].shape[0]))
 
             # Sigma matrices [Eq.(21)]
-            Sigma1 = H1 @ G1i
-            Sigma1e = H1e @ G1i
-            Sigma2p = H2['p'] @ G2pi
+            Sigma1 = matmul_dispatch(H1, G1i)
+            Sigma1e = matmul_dispatch(H1e, G1i)
+            Sigma2p = matmul_dispatch(H2['p'], G2pi)
 
             # Auxiliary dielectric function matrices
-            L1 = G1e @ G1i
-            L2p = G2e['p'] @ G2pi
+            L1 = matmul_dispatch(G1e, G1i)
+            L2p = matmul_dispatch(G2e['p'], G2pi)
 
             # Gamma matrix
             self._Gamma_lu = lu_factor_dispatch(Sigma1 - Sigma2p)
@@ -272,22 +272,22 @@ class BEMRetLayer(object):
             # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
             # Element-wise multiply with outer product of parallel normals
             npar_outer = npar @ npar.T  # (n, n)
-            Gammapar = 1j * k * (L1 - L2p) @ Gamma * npar_outer
+            Gammapar = 1j * k * matmul_dispatch(L1 - L2p, Gamma) * npar_outer
 
             # ---- Set up 2x2 block response matrix (MATLAB initmat.m lines 72-77) ----
             # m{1,1} = Sigma1e*G2.ss - H2e.ss - ik*(Gammapar*(L1*G2.ss - G2e.ss)
             #          + bsxfun(@times, L1*G2.sh - G2e.sh, nperp))
-            diff_ss = L1 @ G2['ss'] - G2e['ss']
-            diff_sh = L1 @ G2['sh'] - G2e['sh']
-            diff_hh = L1 @ G2['hh'] - G2e['hh']
+            diff_ss = matmul_dispatch(L1, G2['ss']) - G2e['ss']
+            diff_sh = matmul_dispatch(L1, G2['sh']) - G2e['sh']
+            diff_hh = matmul_dispatch(L1, G2['hh']) - G2e['hh']
 
-            m11 = (Sigma1e @ G2['ss'] - H2e['ss']
-                - 1j * k * (Gammapar @ diff_ss + diff_sh * nperp[:, np.newaxis]))
-            m12 = (Sigma1e @ G2['sh'] - H2e['sh']
-                - 1j * k * (Gammapar @ diff_sh + diff_hh * nperp[:, np.newaxis]))
-            m21 = (Sigma1 @ G2['hs'] - H2['hs']
+            m11 = (matmul_dispatch(Sigma1e, G2['ss']) - H2e['ss']
+                - 1j * k * (matmul_dispatch(Gammapar, diff_ss) + diff_sh * nperp[:, np.newaxis]))
+            m12 = (matmul_dispatch(Sigma1e, G2['sh']) - H2e['sh']
+                - 1j * k * (matmul_dispatch(Gammapar, diff_sh) + diff_hh * nperp[:, np.newaxis]))
+            m21 = (matmul_dispatch(Sigma1, G2['hs']) - H2['hs']
                 - 1j * k * diff_ss * nperp[:, np.newaxis])
-            m22 = (Sigma1 @ G2['hh'] - H2['hh']
+            m22 = (matmul_dispatch(Sigma1, G2['hh']) - H2['hh']
                 - 1j * k * diff_sh * nperp[:, np.newaxis])
 
             # Assemble 2x2 block matrix (2n x 2n) and LU factorize
@@ -648,10 +648,10 @@ class BEMRetLayer(object):
         # Parallel component of surface current (MATLAB mldivide.m line 60-62)
         # h2par = matmul(G2pi*Gamma, alphapar + ik*outer(npar,
         #           matmul(L1*G2.ss - G2e.ss, sig2) + matmul(L1*G2.sh - G2e.sh, h2perp)))
-        diff_ss = L1 @ G2['ss'] - G2e['ss']
-        diff_sh = L1 @ G2['sh'] - G2e['sh']
+        diff_ss = matmul_dispatch(L1, G2['ss']) - G2e['ss']
+        diff_sh = matmul_dispatch(L1, G2['sh']) - G2e['sh']
         inner_par = _matmul(diff_ss, sig2) + _matmul(diff_sh, h2perp)
-        h2par = _matmul(G2pi @ Gamma, alphapar + 1j * k * _outer(npar, inner_par))
+        h2par = _matmul(matmul_dispatch(G2pi, Gamma), alphapar + 1j * k * _outer(npar, inner_par))
 
         # Surface current h2 = h2par + outer(zunit, h2perp)
         h2 = h2par + _outer(zunit, h2perp)
