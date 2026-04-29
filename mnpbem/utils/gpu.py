@@ -73,6 +73,29 @@ def lu_solve_dispatch(piv_pkg: Tuple, b: np.ndarray, **kwargs: Any) -> np.ndarra
     return _scipy_lu_solve((piv_pkg[1], piv_pkg[2]), b, **kwargs)
 
 
+def lu_solve_native(piv_pkg: Tuple, b: Any, **kwargs: Any):
+    """Cupy-passthrough variant of ``lu_solve_dispatch``.
+
+    When the LU package is on GPU and ``b`` is a cupy ndarray, returns a
+    cupy ndarray (no host round-trip).  Otherwise behaves like
+    ``lu_solve_dispatch``.
+    """
+    tag = piv_pkg[0]
+    if tag == "gpu":
+        if _CUPY_OK and isinstance(b, _cp.ndarray):
+            return _cp_lu_solve((piv_pkg[1], piv_pkg[2]), b)
+        b_gpu = _cp.asarray(b)
+        x_gpu = _cp_lu_solve((piv_pkg[1], piv_pkg[2]), b_gpu)
+        if _CUPY_OK and isinstance(b, _cp.ndarray):
+            return x_gpu
+        return _cp.asnumpy(x_gpu)
+    # CPU LU: if b is cupy, bring it to host
+    if _CUPY_OK and isinstance(b, _cp.ndarray):
+        b = _cp.asnumpy(b)
+    kwargs.setdefault("check_finite", False)
+    return _scipy_lu_solve((piv_pkg[1], piv_pkg[2]), b, **kwargs)
+
+
 def lu_backend(piv_pkg: Tuple) -> str:
     return piv_pkg[0]
 

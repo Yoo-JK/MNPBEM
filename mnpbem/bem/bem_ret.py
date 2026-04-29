@@ -15,7 +15,9 @@ import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 
 import os
-from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch
+from ..utils.gpu import (
+    lu_factor_dispatch, lu_solve_dispatch, lu_solve_native, matmul_dispatch,
+)
 from ..greenfun import CompGreenRet, CompStruct
 
 # Lane A2 (M4 GPU Phase 2): when MNPBEM_GPU=1 and cupy is importable, the
@@ -35,6 +37,20 @@ def _bem_assembly_use_gpu() -> bool:
     if not _CUPY_OK_A2:
         return False
     return os.environ.get('MNPBEM_GPU', '0') == '1'
+
+
+def _bem_native_gpu() -> bool:
+    """Phase 3: keep BEMRet matrices (Sigma1, L1/L2) on device when set.
+
+    Requires MNPBEM_GPU=1.  Used in conjunction with GreenRetRefined's
+    GPU_NATIVE return path so the entire BEM pipeline (Green eval ->
+    BEM assembly -> solve) avoids host round-trips.
+    """
+    if not _CUPY_OK_A2:
+        return False
+    if os.environ.get('MNPBEM_GPU', '0') != '1':
+        return False
+    return os.environ.get('MNPBEM_GPU_NATIVE', '0') == '1'
 
 
 class BEMRet(object):
@@ -398,30 +414,53 @@ class BEMRet(object):
 
         n = G1_dev.shape[0]
         I_dev = cp.eye(n)
-        G1i_dev = _cp_lu_solve((lu1, piv1), I_dev)
-        G2i_dev = _cp_lu_solve((lu2, piv2), I_dev)
 
         # L matrices
         # ACA wrappers proxy the underlying CompGreenRet via .g
         _gobj = self.g.g if hasattr(self.g, 'g') and hasattr(self.g.g, 'con') else self.g
+        native = _bem_native_gpu()
         if np.all(_gobj.con[0][1] == 0) or scalar_eps:
             self.L1 = self.eps1  # host scalar
             self.L2 = self.eps2
             L1_is_scalar = True
+            # Avoid computing the full G1i / G2i inverses when L is scalar:
+            # Sigma1 = H1 @ G1^-1 can be obtained directly via lu_solve on
+            # the right (solve G1^T x^T = H1^T).  This trims two N^3 GEMMs
+            # per wavelength.
+            G1i_dev = None
+            G2i_dev = None
         else:
+            G1i_dev = _cp_lu_solve((lu1, piv1), I_dev)
+            G2i_dev = _cp_lu_solve((lu2, piv2), I_dev)
             eps1_dev = cp.asarray(self.eps1)
             eps2_dev = cp.asarray(self.eps2)
-            self.L1 = cp.asnumpy(G1_dev @ eps1_dev @ G1i_dev)
-            self.L2 = cp.asnumpy(G2_dev @ eps2_dev @ G2i_dev)
+            L1_dev_full = G1_dev @ eps1_dev @ G1i_dev
+            L2_dev_full = G2_dev @ eps2_dev @ G2i_dev
+            if native:
+                # Phase 3: keep L1/L2 on device.
+                self.L1 = L1_dev_full
+                self.L2 = L2_dev_full
+            else:
+                self.L1 = cp.asnumpy(L1_dev_full)
+                self.L2 = cp.asnumpy(L2_dev_full)
             L1_is_scalar = False
 
-        # Sigma matrices
-        Sigma1_dev = H1_mat @ G1i_dev
-        Sigma2_dev = H2_mat @ G2i_dev
-        # Materialise self.Sigma1 on host (used by solve() for Sigma1 @ a)
-        # NB: keeping it on host preserves bit-identity with the CPU path
-        # for downstream tests; later phase can promote it to device too.
-        self.Sigma1 = cp.asnumpy(Sigma1_dev)
+        # Sigma matrices: Sigma_i = H_i @ G_i^-1.
+        # Use right-hand-side lu_solve when possible to skip the full
+        # inverse construction.
+        if G1i_dev is not None:
+            Sigma1_dev = H1_mat @ G1i_dev
+            Sigma2_dev = H2_mat @ G2i_dev
+        else:
+            # Sigma1 @ G1 = H1  =>  G1^T @ Sigma1^T = H1^T
+            Sigma1_dev = _cp_lu_solve((lu1, piv1), H1_mat.T, trans=1).T
+            Sigma2_dev = _cp_lu_solve((lu2, piv2), H2_mat.T, trans=1).T
+        # Phase 3: keep Sigma1 on device when GPU_NATIVE is enabled so the
+        # downstream solve() can do Sigma1 @ a entirely on the GPU.
+        if native:
+            self.Sigma1 = Sigma1_dev
+        else:
+            self.Sigma1 = cp.asnumpy(Sigma1_dev)
 
         # Delta = Sigma1 - Sigma2  (still on device)
         Delta_dev = Sigma1_dev - Sigma2_dev
@@ -718,8 +757,26 @@ class BEMRet(object):
         Sigma_lu = self.Sigma_lu
         nfaces = self.p.nfaces
 
+        # Phase 3: GPU_NATIVE — keep tensors on device end-to-end.
+        native = _bem_native_gpu()
+        if native:
+            cp = _cp_a2
+            xp = cp
+            nvec = cp.asarray(nvec)
+        else:
+            xp = np
+
+        def _to_xp(x):
+            if native and not isinstance(x, cp.ndarray):
+                return cp.asarray(x)
+            return x
+
         def _ls(lu_piv, b):
             if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu"):
+                if native:
+                    if b.ndim == 1:
+                        return lu_solve_native(lu_piv, b)
+                    return lu_solve_native(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
                 if b.ndim == 1:
                     return lu_solve_dispatch(lu_piv, b)
                 return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
@@ -729,42 +786,49 @@ class BEMRet(object):
 
         # Ensure phi, a have proper shapes
         if not isinstance(phi, np.ndarray) or phi.ndim == 0 or (isinstance(phi, np.ndarray) and phi.size == 1 and phi == 0):
-            phi = np.zeros(nfaces, dtype=complex)
+            phi = xp.zeros(nfaces, dtype=complex)
         if not isinstance(a, np.ndarray) or a.ndim == 0 or (isinstance(a, np.ndarray) and a.size == 1 and a == 0):
-            a = np.zeros((nfaces, 3), dtype=complex)
+            a = xp.zeros((nfaces, 3), dtype=complex)
         if not isinstance(alpha, np.ndarray):
-            alpha = np.zeros((nfaces, 3), dtype=complex)
+            alpha = xp.zeros((nfaces, 3), dtype=complex)
         if not isinstance(De, np.ndarray):
-            De = np.zeros(nfaces, dtype=complex)
+            De = xp.zeros(nfaces, dtype=complex)
+
+        # Promote any host arrays to GPU when native mode is active.
+        if native:
+            phi = _to_xp(phi)
+            a = _to_xp(a)
+            alpha = _to_xp(alpha)
+            De = _to_xp(De)
 
         # Determine number of polarizations from array with most dimensions
         npol = 1
-        if isinstance(a, np.ndarray) and a.ndim == 3:
+        if hasattr(a, 'ndim') and a.ndim == 3:
             npol = a.shape[2]
-        elif isinstance(alpha, np.ndarray) and alpha.ndim == 3:
+        elif hasattr(alpha, 'ndim') and alpha.ndim == 3:
             npol = alpha.shape[2]
-        elif isinstance(phi, np.ndarray) and phi.ndim == 2:
+        elif hasattr(phi, 'ndim') and phi.ndim == 2:
             npol = phi.shape[1]
-        elif isinstance(De, np.ndarray) and De.ndim == 2:
+        elif hasattr(De, 'ndim') and De.ndim == 2:
             npol = De.shape[1]
 
         # Squeeze arrays if npol == 1 (single polarization case)
         if npol == 1:
-            if isinstance(a, np.ndarray) and a.ndim == 3:
+            if hasattr(a, 'ndim') and a.ndim == 3:
                 a = a[:, :, 0]
-            if isinstance(alpha, np.ndarray) and alpha.ndim == 3:
+            if hasattr(alpha, 'ndim') and alpha.ndim == 3:
                 alpha = alpha[:, :, 0]
-            if isinstance(phi, np.ndarray) and phi.ndim == 2:
+            if hasattr(phi, 'ndim') and phi.ndim == 2:
                 phi = phi[:, 0]
-            if isinstance(De, np.ndarray) and De.ndim == 2:
+            if hasattr(De, 'ndim') and De.ndim == 2:
                 De = De[:, 0]
 
         # Allocate output arrays
         if npol == 1:
-            sig1_all = np.zeros(nfaces, dtype=complex)
-            sig2_all = np.zeros(nfaces, dtype=complex)
-            h1_all = np.zeros((nfaces, 3), dtype=complex)
-            h2_all = np.zeros((nfaces, 3), dtype=complex)
+            sig1_all = xp.zeros(nfaces, dtype=complex)
+            sig2_all = xp.zeros(nfaces, dtype=complex)
+            h1_all = xp.zeros((nfaces, 3), dtype=complex)
+            h2_all = xp.zeros((nfaces, 3), dtype=complex)
 
             # Modify alpha and De [Eqs. before (19)]
             # MATLAB: L1_phi = matmul(L1, phi)
@@ -776,27 +840,27 @@ class BEMRet(object):
                 L1_a = L1 @ a
 
             # alpha = alpha - matmul(Sigma1, a) + 1i*k*outer(nvec, L1*phi)
-            alpha_mod = alpha - (Sigma1 @ a) + 1j * k * (nvec * L1_phi[:, np.newaxis])
+            alpha_mod = alpha - (Sigma1 @ a) + 1j * k * (nvec * L1_phi[:, xp.newaxis])
             # De = De - matmul(Sigma1, matmul(L1, phi)) + 1i*k*inner(nvec, L1*a)
             if np.isscalar(L1):
-                De_mod = De - Sigma1 @ (L1 * phi) + 1j * k * np.sum(nvec * L1_a, axis=1)
+                De_mod = De - Sigma1 @ (L1 * phi) + 1j * k * xp.sum(nvec * L1_a, axis=1)
             else:
-                De_mod = De - Sigma1 @ L1 @ phi + 1j * k * np.sum(nvec * L1_a, axis=1)
+                De_mod = De - Sigma1 @ L1 @ phi + 1j * k * xp.sum(nvec * L1_a, axis=1)
 
             # Eq. (19): surface charge
             L_diff = L1 - L2
             if np.isscalar(L_diff):
-                inner_term = np.sum(nvec * (L_diff * _ls(Delta_lu, alpha_mod)), axis=1)
+                inner_term = xp.sum(nvec * (L_diff * _ls(Delta_lu, alpha_mod)), axis=1)
             else:
-                inner_term = np.sum(nvec * (L_diff @ _ls(Delta_lu, alpha_mod)), axis=1)
+                inner_term = xp.sum(nvec * (L_diff @ _ls(Delta_lu, alpha_mod)), axis=1)
 
             sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
 
             # Eq. (20): surface current
             if np.isscalar(L_diff):
-                outer_term = nvec * (L_diff * sig2)[:, np.newaxis]
+                outer_term = nvec * (L_diff * sig2)[:, xp.newaxis]
             else:
-                outer_term = nvec * (L_diff @ sig2)[:, np.newaxis]
+                outer_term = nvec * (L_diff @ sig2)[:, xp.newaxis]
             h2 = _ls(Delta_lu, 1j * k * outer_term + alpha_mod)
 
             # Surface charges and currents [from Eqs. (10-11)]
@@ -810,13 +874,13 @@ class BEMRet(object):
             # phi: (n, npol), a: (n, 3, npol), alpha: (n, 3, npol), De: (n, npol)
             # Broadcast nvec (n, 3) -> (n, 3, 1) when needed.
             if phi.ndim == 1:
-                phi = np.broadcast_to(phi[:, np.newaxis], (nfaces, npol)).copy()
+                phi = xp.broadcast_to(phi[:, xp.newaxis], (nfaces, npol)).copy()
             if a.ndim == 2:
-                a = np.broadcast_to(a[:, :, np.newaxis], (nfaces, 3, npol)).copy()
+                a = xp.broadcast_to(a[:, :, xp.newaxis], (nfaces, 3, npol)).copy()
             if alpha.ndim == 2:
-                alpha = np.broadcast_to(alpha[:, :, np.newaxis], (nfaces, 3, npol)).copy()
+                alpha = xp.broadcast_to(alpha[:, :, xp.newaxis], (nfaces, 3, npol)).copy()
             if De.ndim == 1:
-                De = np.broadcast_to(De[:, np.newaxis], (nfaces, npol)).copy()
+                De = xp.broadcast_to(De[:, xp.newaxis], (nfaces, npol)).copy()
 
             # L1 @ phi (n, npol); L1 @ a flattens over (3, npol)
             if np.isscalar(L1):
@@ -828,14 +892,14 @@ class BEMRet(object):
 
             # alpha_mod = alpha - Sigma1 @ a + ik * nvec ⊗ (L1*phi)
             Sigma1_a = (Sigma1 @ a.reshape(nfaces, -1)).reshape(nfaces, 3, npol)
-            alpha_mod = alpha - Sigma1_a + 1j * k * (nvec[:, :, np.newaxis] * L1_phi[:, np.newaxis, :])
+            alpha_mod = alpha - Sigma1_a + 1j * k * (nvec[:, :, xp.newaxis] * L1_phi[:, xp.newaxis, :])
 
             # De_mod = De - Sigma1 @ (L1 phi) + ik * <nvec, L1 a>
             if np.isscalar(L1):
                 Sigma1_L1_phi = Sigma1 @ (L1 * phi)
             else:
                 Sigma1_L1_phi = Sigma1 @ (L1 @ phi)
-            De_mod = De - Sigma1_L1_phi + 1j * k * np.einsum('ij,ijk->ik', nvec, L1_a)
+            De_mod = De - Sigma1_L1_phi + 1j * k * xp.einsum('ij,ijk->ik', nvec, L1_a)
 
             L_diff = L1 - L2
 
@@ -846,7 +910,7 @@ class BEMRet(object):
                 Ld_am = L_diff * am_solved
             else:
                 Ld_am = (L_diff @ am_solved.reshape(nfaces, -1)).reshape(nfaces, 3, npol)
-            inner_term = np.einsum('ij,ijk->ik', nvec, Ld_am)
+            inner_term = xp.einsum('ij,ijk->ik', nvec, Ld_am)
             sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
 
             # Eq. (20): surface current h2
@@ -854,7 +918,7 @@ class BEMRet(object):
                 Ld_sig2 = L_diff * sig2
             else:
                 Ld_sig2 = L_diff @ sig2
-            outer_term = nvec[:, :, np.newaxis] * Ld_sig2[:, np.newaxis, :]
+            outer_term = nvec[:, :, xp.newaxis] * Ld_sig2[:, xp.newaxis, :]
             h2 = _ls(Delta_lu, 1j * k * outer_term + alpha_mod)
 
             # Surface charges and currents [from Eqs. (10-11)]
