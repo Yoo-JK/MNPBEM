@@ -292,7 +292,13 @@ def _farfield(self, sig, direction=None):
     # Outside contribution: faces where outside == medium
     ind2 = np.where(inout_faces[:, 1] == self.medium)[0]
 
-    use_gpu_path = _CUPY_OK and USE_GPU
+    # Phase 3: route to GPU when EITHER the env flag is on OR the
+    # incoming charges/currents already live on the device (which happens
+    # when MNPBEM_GPU_NATIVE=1 keeps the BEM solve result on GPU).
+    inputs_are_cupy = _CUPY_OK and (
+        isinstance(sig1, _cp.ndarray) or isinstance(sig2, _cp.ndarray)
+        or isinstance(h1, _cp.ndarray) or isinstance(h2, _cp.ndarray))
+    use_gpu_path = (_CUPY_OK and USE_GPU) or inputs_are_cupy
 
     if use_gpu_path:
         direction_g = _cp.asarray(direction)
@@ -422,7 +428,9 @@ def _scattering(self, sig):
     # dsca = 0.5 * real(nvec · (E × conj(H)))
     dsca_arr = np.zeros((self.ndir, npol))
 
-    use_gpu_path = _CUPY_OK and USE_GPU
+    inputs_are_cupy = _CUPY_OK and (
+        isinstance(e, _cp.ndarray) or isinstance(h, _cp.ndarray))
+    use_gpu_path = (_CUPY_OK and USE_GPU) or inputs_are_cupy
     if use_gpu_path:
         e_g = _cp.asarray(e)
         h_g = _cp.asarray(h)
