@@ -29,7 +29,7 @@ def numba_enabled():
 
 if NUMBA_AVAILABLE:
 
-    @njit(parallel=True, fastmath=True, cache=True)
+    @njit(parallel=True, fastmath=False, cache=True)
     def _green_stat_GF(pos1, pos2, nvec1, area2, same):
         """
         Build G and F matrices for quasistatic Green function.
@@ -67,7 +67,7 @@ if NUMBA_AVAILABLE:
                 F[i, j] = -ndotr * aj / (d * d * d)
         return G, F
 
-    @njit(parallel=True, fastmath=True, cache=True)
+    @njit(parallel=True, fastmath=False, cache=True)
     def _green_stat_GF_Gp(pos1, pos2, nvec1, area2, same):
         """
         Build G, F and Gp matrices in a single pass.
