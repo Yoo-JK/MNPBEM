@@ -11,6 +11,7 @@ Matches MATLAB MNPBEM implementation exactly.
 
 import numpy as np
 from ..greenfun import CompStruct
+from ..utils.gpu import _CUPY_OK, USE_GPU, _cp
 
 
 class PlaneWaveRet(object):
@@ -218,19 +219,32 @@ class PlaneWaveRet(object):
 
         # MATLAB: field.m lines 40-46
         if len(ind) > 0:
-            for i in range(npol):
-                # Phase factor: exp(i k r·dir)
-                phase = np.exp(1j * k * p.pos[ind, :] @ dir[i, :]) / (1j * k0)
+            use_gpu_path = _CUPY_OK and USE_GPU
+            if use_gpu_path:
+                pos_g = _cp.asarray(p.pos[ind, :])
+                dir_g = _cp.asarray(dir)
+                pol_g = _cp.asarray(pol)
+                for i in range(npol):
+                    phase_g = _cp.exp(1j * k * (pos_g @ dir_g[i, :])) / (1j * k0)
+                    e_block = 1j * k0 * phase_g[:, None] * pol_g[i, :]
+                    e[ind, :, i] = _cp.asnumpy(e_block)
+                    e_full = e[:, :, i]
+                    dir_rep = np.tile(dir[i, :], (p.n, 1))
+                    h[:, :, i] = nb * np.cross(dir_rep, e_full)
+            else:
+                for i in range(npol):
+                    # Phase factor: exp(i k r·dir)
+                    phase = np.exp(1j * k * p.pos[ind, :] @ dir[i, :]) / (1j * k0)
 
-                # MATLAB: field.m line 43
-                # Electric field: E = i k₀ phase * pol
-                e[ind, :, i] = 1j * k0 * phase[:, np.newaxis] * pol[i, :]
+                    # MATLAB: field.m line 43
+                    # Electric field: E = i k₀ phase * pol
+                    e[ind, :, i] = 1j * k0 * phase[:, np.newaxis] * pol[i, :]
 
-                # MATLAB: field.m lines 44-45
-                # Magnetic field: H = n_b dir × E
-                e_full = e[:, :, i]
-                dir_rep = np.tile(dir[i, :], (p.n, 1))
-                h[:, :, i] = nb * np.cross(dir_rep, e_full)
+                    # MATLAB: field.m lines 44-45
+                    # Magnetic field: H = n_b dir × E
+                    e_full = e[:, :, i]
+                    dir_rep = np.tile(dir[i, :], (p.n, 1))
+                    h[:, :, i] = nb * np.cross(dir_rep, e_full)
 
         # Squeeze if only one polarization
         if npol == 1:
@@ -305,19 +319,33 @@ class PlaneWaveRet(object):
 
             # MATLAB: potential.m line 40-48
             if len(ind) > 0:
-                for i in range(npol):
-                    # MATLAB: potential.m line 42
-                    # Phase factor
-                    phase = np.exp(1j * k * p.pos[ind, :] @ dir[i, :]) / (1j * k0)
+                use_gpu_path = _CUPY_OK and USE_GPU
+                if use_gpu_path:
+                    pos_g = _cp.asarray(p.pos[ind, :])
+                    nvec_g = _cp.asarray(p.nvec[ind, :])
+                    dir_g = _cp.asarray(dir)
+                    pol_g = _cp.asarray(pol)
+                    for i in range(npol):
+                        phase_g = _cp.exp(1j * k * (pos_g @ dir_g[i, :])) / (1j * k0)
+                        nvec_dot_dir_g = nvec_g @ dir_g[i, :]
+                        a_block = phase_g[:, None] * pol_g[i, :]
+                        ap_block = (1j * k * nvec_dot_dir_g)[:, None] * phase_g[:, None] * pol_g[i, :]
+                        a[ind, :, i] = _cp.asnumpy(a_block)
+                        ap[ind, :, i] = _cp.asnumpy(ap_block)
+                else:
+                    for i in range(npol):
+                        # MATLAB: potential.m line 42
+                        # Phase factor
+                        phase = np.exp(1j * k * p.pos[ind, :] @ dir[i, :]) / (1j * k0)
 
-                    # MATLAB: potential.m line 44
-                    # Vector potential: A = phase * pol
-                    a[ind, :, i] = phase[:, np.newaxis] * pol[i, :]
+                        # MATLAB: potential.m line 44
+                        # Vector potential: A = phase * pol
+                        a[ind, :, i] = phase[:, np.newaxis] * pol[i, :]
 
-                    # MATLAB: potential.m lines 45-46
-                    # Surface derivative: A' = (i k nvec·dir) * phase * pol
-                    nvec_dot_dir = p.nvec[ind, :] @ dir[i, :]
-                    ap[ind, :, i] = (1j * k * nvec_dot_dir)[:, np.newaxis] * phase[:, np.newaxis] * pol[i, :]
+                        # MATLAB: potential.m lines 45-46
+                        # Surface derivative: A' = (i k nvec·dir) * phase * pol
+                        nvec_dot_dir = p.nvec[ind, :] @ dir[i, :]
+                        ap[ind, :, i] = (1j * k * nvec_dot_dir)[:, np.newaxis] * phase[:, np.newaxis] * pol[i, :]
 
             # Squeeze if single polarization
             if npol == 1:
