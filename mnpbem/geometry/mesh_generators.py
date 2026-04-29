@@ -476,27 +476,35 @@ def triellipsoid(n, axes):
 def _surf2patch(x, y, z, triangles = False):
     # Python equivalent of MATLAB surf2patch(x, y, z) / surf2patch(x, y, z, 'triangles')
     # x, y, z are 2D arrays of shape (m, n). Returns (faces, verts).
+    # Output bit-matches MATLAB surf2patch:
+    #   quad      : [v00, v01, v11, v10] per cell, looping (j outer, i inner)
+    #   triangles : all "first" triangles [v00, v01, v11] in order, then all
+    #               "second" triangles [v00, v11, v10] (MATLAB groups, not interleaves)
     m, n = x.shape
     verts = np.column_stack([x.ravel(order = 'F'), y.ravel(order = 'F'), z.ravel(order = 'F')])
 
-    faces_list = []
-    for j in range(n - 1):
-        for i in range(m - 1):
-            # Vertex indices (column-major order like MATLAB)
-            v00 = j * m + i
-            v10 = j * m + (i + 1)
-            v01 = (j + 1) * m + i
-            v11 = (j + 1) * m + (i + 1)
+    if triangles:
+        tri1, tri2 = [], []
+        for j in range(n - 1):
+            for i in range(m - 1):
+                v00 = j * m + i
+                v10 = j * m + (i + 1)
+                v01 = (j + 1) * m + i
+                v11 = (j + 1) * m + (i + 1)
+                tri1.append([v00, v01, v11])
+                tri2.append([v00, v11, v10])
+        faces = np.array(tri1 + tri2, dtype = int)
+    else:
+        faces_list = []
+        for j in range(n - 1):
+            for i in range(m - 1):
+                v00 = j * m + i
+                v10 = j * m + (i + 1)
+                v01 = (j + 1) * m + i
+                v11 = (j + 1) * m + (i + 1)
+                faces_list.append([v00, v01, v11, v10])
+        faces = np.array(faces_list, dtype = int)
 
-            if triangles:
-                # Two triangles per quad
-                faces_list.append([v00, v10, v11])
-                faces_list.append([v00, v11, v01])
-            else:
-                # Quadrilateral
-                faces_list.append([v00, v10, v11, v01])
-
-    faces = np.array(faces_list, dtype = int)
     return faces, verts
 
 
@@ -521,9 +529,9 @@ def fvgrid(x: np.ndarray,
     # Use surf2patch equivalent
     faces, verts = _surf2patch(x, y, z, triangles = triangles)
 
-    # NOTE: MATLAB fvgrid uses fliplr(faces) on surf2patch output.
-    # Python _surf2patch already produces opposite winding from MATLAB surf2patch,
-    # so we do NOT flip here — the winding already matches MATLAB's fliplr result.
+    # MATLAB fvgrid applies fliplr() on surf2patch output. Mirror that here so
+    # the resulting (verts, faces) is bit-identical to MATLAB's fvgrid output.
+    faces = faces[:, ::-1]
 
     # Create particle with norm='off'
     p = Particle(verts, faces, norm = 'off')
@@ -556,15 +564,8 @@ def trispheresegment(phi: np.ndarray,
     z = diameter / 2.0 * mcos(theta_grid)
 
     # Use surf2patch to create faces
-    # Convert Python _surf2patch winding [v00,v10,v11,v01] to
-    # MATLAB surf2patch winding [v00,v01,v11,v10] = cols [0,3,2,1]
-    if triangles:
-        faces, verts = _surf2patch(x, y, z, triangles = True)
-        # For triangles: [v00,v10,v11] + [v00,v11,v01] → flip each
-        faces = faces[:, ::-1]
-    else:
-        faces, verts = _surf2patch(x, y, z, triangles = False)
-        faces = faces[:, [0, 3, 2, 1]]
+    # _surf2patch already matches MATLAB surf2patch winding; no permutation needed
+    faces, verts = _surf2patch(x, y, z, triangles = triangles)
 
     p = Particle(verts, faces)
     p = p.clean()
