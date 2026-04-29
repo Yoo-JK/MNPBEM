@@ -42,15 +42,14 @@ def _bem_assembly_use_gpu() -> bool:
 def _bem_native_gpu() -> bool:
     """Phase 3: keep BEMRet matrices (Sigma1, L1/L2) on device when set.
 
-    Requires MNPBEM_GPU=1.  Used in conjunction with GreenRetRefined's
-    GPU_NATIVE return path so the entire BEM pipeline (Green eval ->
-    BEM assembly -> solve) avoids host round-trips.
+    Default ON when MNPBEM_GPU=1 (Phase 3 native path verified bit-identical).
+    Set MNPBEM_GPU_NATIVE=0 to opt out (escape hatch for regression suspicion).
     """
     if not _CUPY_OK_A2:
         return False
     if os.environ.get('MNPBEM_GPU', '0') != '1':
         return False
-    return os.environ.get('MNPBEM_GPU_NATIVE', '0') == '1'
+    return os.environ.get('MNPBEM_GPU_NATIVE', '1') != '0'
 
 
 class BEMRet(object):
