@@ -401,8 +401,15 @@ class CompGreenStat(object):
             # Returns: pos (n_total, 3), w_sparse (n_faces, n_total), iface
             pos_quad, w_sparse, _ = p2.quad_integration(unique_refine_faces)
 
-            # Convert sparse to dense for easier processing
-            w_dense = w_sparse.toarray()  # (n_faces, n_total)
+            # Use the CSR layout directly to avoid materializing a dense
+            # (n_faces, n_total) array that blows up memory for large meshes
+            # (e.g. 25k faces × 12.7M points ~ 2.4 TiB).  Each face occupies
+            # a disjoint slice of integration points, so per-row iteration
+            # over indptr/indices/data gives us the same (pos_i, w_i) pair.
+            w_csr = w_sparse.tocsr()
+            indptr = w_csr.indptr
+            indices = w_csr.indices
+            data = w_csr.data
 
             # Process each unique face
             for i, face2 in enumerate(unique_refine_faces):
@@ -411,15 +418,23 @@ class CompGreenStat(object):
                 if len(nb) == 0:
                     continue
 
-                # Get integration points and weights for this face
-                # Find non-zero weights for this face
-                w = w_dense[i]
-                mask = w > 0
-                pos = pos_quad[mask]
-                w = w[mask]
-
-                if len(w) == 0:
+                # Get integration points and weights for this face directly
+                # from the CSR row slice (avoids dense conversion).
+                row_start, row_end = indptr[i], indptr[i + 1]
+                if row_end == row_start:
                     continue
+                cols_i = indices[row_start:row_end]
+                w_row = data[row_start:row_end]
+                # Drop any explicitly stored zero weights to match the
+                # previous ``mask = w > 0`` semantics.
+                nz = w_row > 0
+                if not np.all(nz):
+                    cols_i = cols_i[nz]
+                    w_row = w_row[nz]
+                if len(w_row) == 0:
+                    continue
+                pos = pos_quad[cols_i]
+                w = w_row
 
                 # Difference vectors: centroids - integration points
                 # pos1[nb] shape: (len(nb), 3)
