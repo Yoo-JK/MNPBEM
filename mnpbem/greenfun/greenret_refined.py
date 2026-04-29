@@ -304,7 +304,10 @@ class GreenRetRefined(object):
         """Build and cache wavelength-independent distance quantities."""
         if self._d_cache is not None:
             return
-        from ._numba_ret_kernels import green_ret_distances, numba_enabled
+        from ._numba_ret_kernels import (
+            green_ret_distances, numba_enabled,
+            gpu_enabled, green_ret_distances_gpu,
+        )
 
         pos1 = self.p1.pos
         pos2 = self.p2.pos
@@ -312,7 +315,13 @@ class GreenRetRefined(object):
         nvec1 = self.p1.nvec
         same = self.p1 is self.p2
 
-        if numba_enabled():
+        on_gpu = gpu_enabled()
+        if on_gpu:
+            d, inv_d, n_dot_r, x, y, z = green_ret_distances_gpu(
+                pos1, pos2, nvec1, area2, same=same, want_r=True
+            )
+            inv_d2 = inv_d * inv_d
+        elif numba_enabled():
             d, inv_d, n_dot_r, x, y, z = green_ret_distances(
                 pos1, pos2, nvec1, area2, same = same, want_r = True
             )
@@ -331,6 +340,7 @@ class GreenRetRefined(object):
             'x': x, 'y': y, 'z': z, 'd': d,
             'inv_d': inv_d, 'inv_d2': inv_d2,
             'area2': area2, 'n_dot_r': n_dot_r,
+            'on_gpu': on_gpu,
         }
 
     def eval(self, k, key):
@@ -360,6 +370,15 @@ class GreenRetRefined(object):
         inv_d = c['inv_d']
         inv_d2 = c['inv_d2']
         area2 = c['area2']
+        on_gpu = c.get('on_gpu', False)
+
+        # GPU fast path -- assemble pre-phase matrix on device, apply
+        # refinement overlay on device, multiply phase on device, then
+        # bring back to host so callers (BEM matrix builders) stay
+        # backward-compatible with numpy arrays. Stage 2 will keep the
+        # result on device when callers are GPU-aware too.
+        if on_gpu:
+            return self._eval_gpu(k, key, c)
 
         # Numba fast path for distinct-particle (meshfield / observer) case.
         # Refinement overrides act on the *pre-phase* matrix, so the kernel
@@ -492,6 +511,120 @@ class GreenRetRefined(object):
             Gp_x *= phase; Gp_y *= phase; Gp_z *= phase
             Gp = np.stack([Gp_x, Gp_y, Gp_z], axis=1)  # (n1, 3, n2)
             return Gp
+
+        elif key == 'H1p':
+            Gp = self.eval(k, 'Gp')
+            if self.p1 is self.p2:
+                H1p = Gp.copy()
+                nvec = self.p1.nvec
+                idx = np.arange(len(nvec))
+                H1p[idx, :, idx] += 2.0 * np.pi * nvec.T
+                return H1p
+            return Gp
+
+        elif key == 'H2p':
+            Gp = self.eval(k, 'Gp')
+            if self.p1 is self.p2:
+                H2p = Gp.copy()
+                nvec = self.p1.nvec
+                idx = np.arange(len(nvec))
+                H2p[idx, :, idx] -= 2.0 * np.pi * nvec.T
+                return H2p
+            return Gp
+
+        else:
+            raise ValueError("Unknown key: {}".format(key))
+
+    def _eval_gpu(self, k, key, c):
+        """GPU evaluation path for G/F/H1/H2/Gp/H1p/H2p.
+
+        All arithmetic happens on the device (cupy); the result is brought
+        back to host (numpy) just before return so existing BEM solver code
+        (numpy-based linear algebra, refinement-aware overlays) can consume
+        it unchanged.
+        """
+        import cupy as cp
+        from ._numba_ret_kernels import (
+            ret_G_pre_gpu, ret_F_norm_pre_gpu, ret_F_cart_pre_gpu,
+            ret_Gp_pre_gpu, ret_phase_gpu,
+            apply_phase_2d_gpu, apply_phase_3d_axis02_gpu,
+            to_host,
+        )
+
+        d = c['d']
+        inv_d = c['inv_d']
+        inv_d2 = c['inv_d2']
+        area2 = c['area2']
+
+        # Cache the small device arrays needed for refinement overlay.
+        if 'g_gpu' not in c and len(self.ind) > 0:
+            c['g_gpu'] = cp.asarray(self.g) if self.g.size > 0 else None
+            c['f_gpu'] = cp.asarray(self.f) if self.f.size > 0 else None
+            c['row_gpu'] = cp.asarray(self.row)
+            c['col_gpu'] = cp.asarray(self.col)
+        if 'nvec_gpu' not in c:
+            c['nvec_gpu'] = cp.asarray(self.p1.nvec)
+
+        if key == 'G':
+            G = ret_G_pre_gpu(inv_d, area2)
+            if len(self.ind) > 0:
+                ik_powers = cp.asarray(np.array([(1j * k)**n for n in range(self.order + 1)]))
+                G_refined = c['g_gpu'] @ ik_powers
+                G[c['row_gpu'], c['col_gpu']] = G_refined
+            phase = ret_phase_gpu(d, k)
+            apply_phase_2d_gpu(G, phase)
+            return to_host(G)
+
+        elif key == 'F':
+            if self.deriv == 'cart':
+                x, y, z = c['x'], c['y'], c['z']
+                F = ret_F_cart_pre_gpu(inv_d, inv_d2, x, y, z, c['nvec_gpu'], area2, k)
+                if len(self.ind) > 0:
+                    ik_powers = cp.asarray(np.array([(1j * k)**n for n in range(self.order + 1)]))
+                    nvec_ref = c['nvec_gpu'][c['row_gpu']]
+                    f_g = c['f_gpu']
+                    # F_refined[i] = sum_j sum_k nvec_ref[i,j] * f[i,j,k] * ik_powers[k]
+                    F_refined = cp.einsum('ij,ijk,k->i', nvec_ref, f_g, ik_powers)
+                    F[c['row_gpu'], c['col_gpu']] = F_refined
+                phase = ret_phase_gpu(d, k)
+                apply_phase_2d_gpu(F, phase)
+                return to_host(F)
+            else:
+                n_dot_r = c['n_dot_r']
+                F = ret_F_norm_pre_gpu(inv_d, inv_d2, n_dot_r, area2, k)
+                if len(self.ind) > 0:
+                    ik_powers = cp.asarray(np.array([(1j * k)**n for n in range(self.order + 1)]))
+                    F_refined = c['f_gpu'] @ ik_powers
+                    F[c['row_gpu'], c['col_gpu']] = F_refined
+                phase = ret_phase_gpu(d, k)
+                apply_phase_2d_gpu(F, phase)
+                return to_host(F)
+
+        elif key == 'H1':
+            H1 = self.eval(k, 'F')
+            if self.p1 is self.p2:
+                np.fill_diagonal(H1, np.diag(H1) + 2.0 * np.pi)
+            return H1
+
+        elif key == 'H2':
+            H2 = self.eval(k, 'F')
+            if self.p1 is self.p2:
+                np.fill_diagonal(H2, np.diag(H2) - 2.0 * np.pi)
+            return H2
+
+        elif key == 'Gp':
+            x, y, z = c['x'], c['y'], c['z']
+            Gp = ret_Gp_pre_gpu(inv_d, inv_d2, x, y, z, area2, k)
+            if len(self.ind) > 0 and self.deriv == 'cart':
+                ik_powers = cp.asarray(np.array([(1j * k)**n for n in range(self.order + 1)]))
+                # f is (n_ref, 3, order+1) -> Gp_refined (n_ref, 3)
+                Gp_refined = cp.einsum('ijk,k->ij', c['f_gpu'], ik_powers)
+                Gp[c['row_gpu'], 0, c['col_gpu']] = Gp_refined[:, 0]
+                Gp[c['row_gpu'], 1, c['col_gpu']] = Gp_refined[:, 1]
+                Gp[c['row_gpu'], 2, c['col_gpu']] = Gp_refined[:, 2]
+            phase = ret_phase_gpu(d, k)
+            apply_phase_3d_axis02_gpu(Gp, phase)
+            return to_host(Gp)
 
         elif key == 'H1p':
             Gp = self.eval(k, 'Gp')

@@ -8,6 +8,13 @@ produce the dense pre-phase matrices.
 Activation:
   - default: enabled when numba is importable
   - disable by setting MNPBEM_NUMBA=0
+
+GPU path:
+  - opt-in via MNPBEM_GPU=1 (default OFF)
+  - requires cupy import; falls back to numba/numpy when cupy unavailable
+  - implemented as cupy element-wise expressions (IEEE 754 strict, no
+    fastmath); produces bit-identical results vs the CPU path within
+    cupy's ufunc evaluation order.
 """
 
 import os
@@ -19,6 +26,13 @@ try:
 except ImportError:
     NUMBA_AVAILABLE = False
 
+try:
+    import cupy as _cp  # type: ignore
+    CUPY_AVAILABLE = True
+except Exception:
+    _cp = None  # type: ignore
+    CUPY_AVAILABLE = False
+
 
 _EPS = 2.220446049250313e-16
 
@@ -28,6 +42,13 @@ def numba_enabled():
     if not NUMBA_AVAILABLE:
         return False
     return os.environ.get('MNPBEM_NUMBA', '1') != '0'
+
+
+def gpu_enabled():
+    """Return True iff cupy GPU path should be used."""
+    if not CUPY_AVAILABLE:
+        return False
+    return os.environ.get('MNPBEM_GPU', '0') == '1'
 
 
 if NUMBA_AVAILABLE:
@@ -163,3 +184,103 @@ def _green_ret_distances_numpy(pos1, pos2, nvec1, area2, same, want_r):
     if want_r:
         return d, inv_d, n_dot_r, rx, ry, rz
     return d, inv_d, n_dot_r
+
+
+# ------------------------------------------------------------------ GPU path
+#
+# The GPU helpers below mirror the numba kernels but execute as cupy
+# elementwise expressions on device. They return cupy ndarrays so that
+# subsequent matrix builds in GreenRetRefined.eval stay on the device until
+# the caller decides to bring the result back to host.
+
+def green_ret_distances_gpu(pos1, pos2, nvec1, area2, same, want_r=False):
+    """
+    Compute d, inv_d, n_dot_r [, rx, ry, rz] on GPU using cupy.
+
+    Inputs may be numpy or cupy arrays; outputs are cupy arrays (float64).
+    The diagonal of self-blocks (i == j when same) is forced to d = eps
+    and n_dot_r = 0 so the caller's refinement overlay can replace those
+    entries safely (matches the numba and numpy paths bit-for-bit).
+    """
+    if not CUPY_AVAILABLE:
+        raise RuntimeError("cupy is not available; cannot use GPU path")
+
+    pos1g = _cp.asarray(pos1, dtype=_cp.float64)
+    pos2g = _cp.asarray(pos2, dtype=_cp.float64)
+    nvec1g = _cp.asarray(nvec1, dtype=_cp.float64)
+
+    rx = pos1g[:, 0:1] - pos2g[:, 0]
+    ry = pos1g[:, 1:2] - pos2g[:, 1]
+    rz = pos1g[:, 2:3] - pos2g[:, 2]
+    d = _cp.sqrt(rx * rx + ry * ry + rz * rz)
+    d = _cp.maximum(d, _EPS)
+    n_dot_r = (nvec1g[:, 0:1] * rx +
+               nvec1g[:, 1:2] * ry +
+               nvec1g[:, 2:3] * rz)
+    if same:
+        n = min(d.shape[0], d.shape[1])
+        idx = _cp.arange(n)
+        d[idx, idx] = _EPS
+        n_dot_r[idx, idx] = 0.0
+    inv_d = 1.0 / d
+
+    if want_r:
+        return d, inv_d, n_dot_r, rx, ry, rz
+    return d, inv_d, n_dot_r
+
+
+def ret_phase_gpu(d, k):
+    """exp(1j * k * d) on GPU (complex128 cupy array)."""
+    return _cp.exp(1j * k * d)
+
+
+def ret_G_pre_gpu(inv_d, area2):
+    """Pre-phase G on GPU. inv_d: (M,N), area2: (N,)."""
+    area2g = _cp.asarray(area2, dtype=_cp.float64)
+    return (inv_d * area2g[None, :]).astype(_cp.complex128)
+
+
+def ret_F_norm_pre_gpu(inv_d, inv_d2, n_dot_r, area2, k):
+    """Pre-phase F (norm path) on GPU."""
+    area2g = _cp.asarray(area2, dtype=_cp.float64)
+    return (n_dot_r * (1j * k - inv_d) * inv_d2 * area2g[None, :]).astype(_cp.complex128)
+
+
+def ret_F_cart_pre_gpu(inv_d, inv_d2, rx, ry, rz, nvec1, area2, k):
+    """Pre-phase F (cart path) on GPU."""
+    nvec1g = _cp.asarray(nvec1, dtype=_cp.float64)
+    area2g = _cp.asarray(area2, dtype=_cp.float64)
+    f_aux = (1j * k - inv_d) * inv_d2
+    F = ((nvec1g[:, 0:1] * (f_aux * rx) +
+          nvec1g[:, 1:2] * (f_aux * ry) +
+          nvec1g[:, 2:3] * (f_aux * rz)) * area2g[None, :])
+    return F.astype(_cp.complex128)
+
+
+def ret_Gp_pre_gpu(inv_d, inv_d2, rx, ry, rz, area2, k):
+    """Pre-phase Gp (M,3,N) on GPU."""
+    area2g = _cp.asarray(area2, dtype=_cp.float64)
+    f_aux = ((1j * k - inv_d) * inv_d2 * area2g[None, :])
+    Gp_x = (rx * f_aux).astype(_cp.complex128)
+    Gp_y = (ry * f_aux).astype(_cp.complex128)
+    Gp_z = (rz * f_aux).astype(_cp.complex128)
+    return _cp.stack([Gp_x, Gp_y, Gp_z], axis=1)
+
+
+def apply_phase_2d_gpu(g, phase):
+    """In-place g *= phase for cupy (M,N) complex matrices."""
+    g *= phase
+    return g
+
+
+def apply_phase_3d_axis02_gpu(g, phase):
+    """In-place g[m,:,n] *= phase[m,n]. g: (M,3,N), phase: (M,N) on GPU."""
+    g *= phase[:, None, :]
+    return g
+
+
+def to_host(arr):
+    """Bring a cupy array to host numpy; pass-through if already numpy."""
+    if CUPY_AVAILABLE and isinstance(arr, _cp.ndarray):
+        return _cp.asnumpy(arr)
+    return arr
