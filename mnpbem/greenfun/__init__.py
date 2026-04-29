@@ -32,6 +32,7 @@ from .greenret_layer import GreenRetLayer
 from .greentab_layer import GreenTabLayer
 from .clustertree import ClusterTree
 from .hmatrix import HMatrix
+from .h_matrix_gpu import HMatrixGPU
 from .aca_compgreen_stat import ACACompGreenStat
 from .aca_compgreen_ret import ACACompGreenRet
 from .aca_compgreen_ret_layer import ACACompGreenRetLayer
@@ -51,8 +52,30 @@ __all__ = [
     "GreenTabLayer",
     "ClusterTree",
     "HMatrix",
+    "HMatrixGPU",
     "ACACompGreenStat",
     "ACACompGreenRet",
     "ACACompGreenRetLayer",
     "greenfunction",
+    "auto_hmode",
 ]
+
+
+def auto_hmode(nfaces: int, threshold_low: int = 8000,
+               threshold_high: int = 20000) -> str:
+    """Pick the recommended Green-function mode given mesh size.
+
+    Returns one of:
+        - 'dense'    : nfaces < threshold_low (e.g. dimer 6336 faces)
+        - 'aca'      : threshold_low <= nfaces < threshold_high
+        - 'aca-gpu'  : nfaces >= threshold_high
+
+    The thresholds reflect the empirical break-even points measured in
+    docs/H_MATRIX_GPU.md.  Callers may override the thresholds for
+    benchmarking or memory-pressure scenarios.
+    """
+    if nfaces < threshold_low:
+        return 'dense'
+    if nfaces < threshold_high:
+        return 'aca'
+    return 'aca-gpu'

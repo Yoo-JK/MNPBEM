@@ -24,9 +24,12 @@ class ACACompGreenRet(object):
             cleaf: int = 32,
             fadmiss: Optional[Any] = None,
             eta: float = 2.5,
+            use_gpu: bool = False,
             **options: Any):
 
         # MATLAB: +aca/@compgreenret/compgreenret.m -> init.m
+        # use_gpu: route low-rank ACA fill through HMatrixGPU (cupy). Falls
+        # back to CPU HMatrix if cupy unavailable.
 
         self.p = p
 
@@ -40,6 +43,12 @@ class ACACompGreenRet(object):
         ipart_arr = self._build_ipart_arr(p)
         self.tree = ClusterTree(pos, cleaf = cleaf, ipart_arr = ipart_arr)
 
+        # Store options first so _make_hmatrix can read them.
+        self.htol = htol
+        self.kmax = kmax
+        self.cleaf = cleaf
+        self.options = options
+
         # Create template H-matrix.  Note: for retarded kernels the template
         # built here uses k=0 admissibility; per-call `eval` rebuilds the
         # H-matrix tree with a wavenumber-aware fadmiss when ``enei`` is
@@ -47,19 +56,25 @@ class ACACompGreenRet(object):
         # blow-up at large k*R).
         self.eta = eta
         self._user_fadmiss = fadmiss
-        self.hmat_template = HMatrix(
-            tree = self.tree, htol = htol, kmax = kmax,
-            fadmiss = fadmiss if fadmiss is not None else
+        self._use_gpu = bool(use_gpu)
+        self.hmat_template = self._make_hmatrix(
+            fadmiss=fadmiss if fadmiss is not None else
                 (lambda r1, r2, d: eta * min(r1, r2) < d))
 
         # Cache for evaluated H-matrices keyed by (i, j, key, enei)
         self._cache = {}  # type: Dict[Tuple, HMatrix]
 
-        # Store options
-        self.htol = htol
-        self.kmax = kmax
-        self.cleaf = cleaf
-        self.options = options
+    def _make_hmatrix(self, fadmiss=None):
+        # Construct an H-matrix honouring the use_gpu flag.
+        if self._use_gpu:
+            try:
+                from .h_matrix_gpu import HMatrixGPU
+                return HMatrixGPU(tree=self.tree, htol=self.htol,
+                                  kmax=self.kmax, fadmiss=fadmiss)
+            except Exception:
+                pass
+        return HMatrix(tree=self.tree, htol=self.htol,
+                       kmax=self.kmax, fadmiss=fadmiss)
 
     def _build_ipart_arr(self, p: Any) -> Optional[np.ndarray]:
 
@@ -122,8 +137,7 @@ class ACACompGreenRet(object):
             k = 2.0 * np.pi / enei  # vacuum wavenumber (1/nm)
             fadmiss = make_kaware_fadmiss(k, eta0 = self.eta)
 
-        hmat = HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax,
-                fadmiss = fadmiss)
+        hmat = self._make_hmatrix(fadmiss=fadmiss)
 
         # Fill the H-matrix using ACA
         # MATLAB: hmat = fillval(hmat, fun) then ACA for low-rank blocks

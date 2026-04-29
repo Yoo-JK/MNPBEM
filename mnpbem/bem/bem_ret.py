@@ -16,6 +16,9 @@ from scipy.linalg import lu_factor, lu_solve
 
 from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
 from ..greenfun import CompGreenRet, CompStruct
+# ACACompGreenRet and auto_hmode are imported lazily inside __init__/init to
+# avoid the circular import: bem.bem_ret -> greenfun -> greenfunction ->
+# bem.bembase -> bem.__init__ -> bem_ret.
 
 
 class BEMRet(object):
@@ -87,7 +90,7 @@ class BEMRet(object):
     name = 'bemsolver'
     needs = {'sim': 'ret'}
 
-    def __init__(self, p, enei=None):
+    def __init__(self, p, enei=None, hmode='dense', htol=1e-6, kmax=100):
         """
         Initialize BEM solver for retarded approximation.
 
@@ -97,6 +100,21 @@ class BEMRet(object):
             Composite particle
         enei : float, optional
             Photon energy (eV) or wavelength (nm) for pre-initialization
+        hmode : {'dense', 'aca', 'aca-gpu', 'auto'}, optional
+            Green-function backend:
+              * 'dense'   - direct dense CompGreenRet (default; bit-identical
+                            to MATLAB BEMRet).
+              * 'aca'     - CPU H-matrix fill (ACACompGreenRet) followed by
+                            ``.full()`` to keep the dense BEM solve. Useful
+                            when fill cost dominates (large meshes).
+              * 'aca-gpu' - same as 'aca' but the per-block ACA fill runs on
+                            cupy / GPU.  Falls back to CPU when cupy is not
+                            available.
+              * 'auto'    - choose based on mesh size via :func:`auto_hmode`.
+        htol : float, optional
+            ACA Frobenius tolerance (only used when hmode != 'dense').
+        kmax : int, optional
+            Max rank per ACA block (only used when hmode != 'dense').
         """
         if p is None:
             raise ValueError(
@@ -123,6 +141,22 @@ class BEMRet(object):
         self.Delta_lu = None
         self.Sigma_lu = None
 
+        # Resolve hmode (lazy import to avoid circular module load)
+        if hmode == 'auto':
+            from ..greenfun import auto_hmode as _auto_hmode
+            try:
+                nfaces = int(getattr(p, 'nfaces', len(p.pos)))
+            except Exception:
+                nfaces = len(p.pos)
+            hmode = _auto_hmode(nfaces)
+        if hmode not in ('dense', 'aca', 'aca-gpu'):
+            raise ValueError(
+                "BEMRet: hmode must be one of 'dense'/'aca'/'aca-gpu'/'auto', "
+                "got {!r}".format(hmode))
+        self.hmode = hmode
+        self._htol = float(htol)
+        self._kmax = int(kmax)
+
         # Green function object (for field/potential computation).
         # MATLAB bemret/private/init.m line 26 builds compgreenret immediately
         # in the constructor, snapshotting the particle's quadrature state at
@@ -130,7 +164,20 @@ class BEMRet(object):
         # excitation object created afterwards (e.g. EELSRet with refine=2)
         # could mutate p.quad and the BEM Green matrix would silently use the
         # refined rule. See Wave 22 Track A for full diagnosis.
-        self.g = CompGreenRet(self.p, self.p)
+        if hmode == 'dense':
+            self.g = CompGreenRet(self.p, self.p)
+        else:
+            # Both 'aca' and 'aca-gpu' use ACACompGreenRet; the GPU flag is
+            # passed through and gracefully falls back to CPU if cupy is
+            # missing.  Subsequent .eval(...) calls return HMatrix objects;
+            # BEMRet.init() collapses them to dense via _to_dense().
+            from ..greenfun import ACACompGreenRet as _ACACompGreenRet
+            self.g = _ACACompGreenRet(
+                self.p,
+                htol=self._htol,
+                kmax=self._kmax,
+                use_gpu=(hmode == 'aca-gpu'),
+            )
 
         # Initialize at specific energy if provided
         if enei is not None:
@@ -194,7 +241,17 @@ class BEMRet(object):
         # Create Green function (single object for all material combinations)
         # MATLAB: obj.g = compgreenret(p, p, op)
         if not hasattr(self, 'g') or self.g is None:
-            self.g = CompGreenRet(self.p, self.p)
+            mode = getattr(self, 'hmode', 'dense')
+            if mode == 'dense':
+                self.g = CompGreenRet(self.p, self.p)
+            else:
+                from ..greenfun import ACACompGreenRet as _ACACompGreenRet
+                self.g = _ACACompGreenRet(
+                    self.p,
+                    htol=getattr(self, '_htol', 1e-6),
+                    kmax=getattr(self, '_kmax', 100),
+                    use_gpu=(mode == 'aca-gpu'),
+                )
 
         # Compute Green function matrices at this wavelength
         # MATLAB: G1 = g{1,1}.G(enei) - g{2,1}.G(enei)
@@ -237,7 +294,9 @@ class BEMRet(object):
         # the full G * eps * G^{-1} product is needed.
         # Note: when eps is scalar, G * eps * G^{-1} = eps * I, so L = eps
         # regardless of connectivity.
-        if np.all(self.g.con[0][1] == 0) or np.isscalar(self.eps1):
+        # ACA wrappers proxy the underlying CompGreenRet via .g
+        _gobj = self.g.g if hasattr(self.g, 'g') and hasattr(self.g.g, 'con') else self.g
+        if np.all(_gobj.con[0][1] == 0) or np.isscalar(self.eps1):
             self.L1 = self.eps1
             self.L2 = self.eps2
         else:

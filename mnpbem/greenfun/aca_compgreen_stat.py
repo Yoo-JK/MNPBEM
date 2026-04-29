@@ -20,6 +20,7 @@ class ACACompGreenStat(object):
             kmax: int = 100,
             cleaf: int = 32,
             fadmiss: Optional[Callable] = None,
+            use_gpu: bool = False,
             **options: Any) -> None:
 
         # p: ComParticle object
@@ -27,6 +28,8 @@ class ACACompGreenStat(object):
         # kmax: maximum rank for low-rank blocks
         # cleaf: leaf size for cluster tree bisection
         # fadmiss: admissibility function (default: eta=2.5)
+        # use_gpu: when True, use HMatrixGPU (cupy ACA) for low-rank blocks.
+        #          Falls back to CPU HMatrix if cupy/CUDA unavailable.
 
         self.p = p
 
@@ -44,8 +47,8 @@ class ACACompGreenStat(object):
         self._htol = htol
         self._kmax = kmax
         self._fadmiss = fadmiss
-        self._hmat_template = HMatrix(
-            tree = self.tree, htol = htol, kmax = kmax, fadmiss = fadmiss)
+        self._use_gpu = bool(use_gpu)
+        self._hmat_template = self._make_hmatrix()
 
         # Cache for computed H-matrices: key -> HMatrix
         self._cache = {}  # type: Dict[str, HMatrix]
@@ -53,6 +56,19 @@ class ACACompGreenStat(object):
         # BEM solver cache
         self._enei_cache = None
         self._mat_cache = None
+
+    def _make_hmatrix(self):
+        # Construct an H-matrix object honouring the use_gpu flag.
+        # Falls back to CPU HMatrix when GPU is disabled or unavailable.
+        if self._use_gpu:
+            try:
+                from .h_matrix_gpu import HMatrixGPU
+                return HMatrixGPU(tree=self.tree, htol=self._htol,
+                                  kmax=self._kmax, fadmiss=self._fadmiss)
+            except Exception:
+                pass
+        return HMatrix(tree=self.tree, htol=self._htol,
+                       kmax=self._kmax, fadmiss=self._fadmiss)
 
     def _get_positions(self, p: Any) -> np.ndarray:
 
@@ -121,12 +137,8 @@ class ACACompGreenStat(object):
         def kernel_fun(row: np.ndarray, col: np.ndarray) -> np.ndarray:
             return dense_mat[row, col]
 
-        # Build H-matrix using ACA
-        hmat = HMatrix(
-            tree = self.tree,
-            htol = self._htol,
-            kmax = self._kmax,
-            fadmiss = self._fadmiss)
+        # Build H-matrix using ACA (GPU when use_gpu=True and cupy available)
+        hmat = self._make_hmatrix()
         hmat.aca(kernel_fun)
 
         self._cache[key] = hmat
