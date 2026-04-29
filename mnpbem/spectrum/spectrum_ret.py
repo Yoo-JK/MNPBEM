@@ -8,6 +8,8 @@ import os
 
 import numpy as np
 
+from ..utils.gpu import _CUPY_OK, USE_GPU, _cp
+
 
 def _load_pinfty_default():
     """Load MATLAB-exported pinfty256 data for sphere integration.
@@ -283,14 +285,6 @@ def _farfield(self, sig, direction=None):
     e = np.zeros((ndir, 3, npol), dtype=complex)
     h = np.zeros((ndir, 3, npol), dtype=complex)
 
-    # Phase factor: exp(-i*k*dir·pos) * area
-    # MATLAB: phase = exp(-1i * k * dir * p.pos') * spdiag(p.area)
-    phase = np.exp(-1j * k * np.dot(direction, pos.T)) * area  # (ndir, nfaces)
-
-    # Ensure 2D array even for single direction
-    if phase.ndim == 1:
-        phase = phase.reshape(1, -1)
-
     # Find faces connected to medium
     # MATLAB: ind = p.index(find(p.inout(:, 1) == obj.medium)')
     # Inside contribution: faces where inside == medium
@@ -298,35 +292,79 @@ def _farfield(self, sig, direction=None):
     # Outside contribution: faces where outside == medium
     ind2 = np.where(inout_faces[:, 1] == self.medium)[0]
 
-    for ipol in range(npol):
-        # Inside surface contribution
-        # MATLAB: e = 1i*k0 * matmul(phase(:,ind), sig.h1(ind,:,:)) -
-        #             1i*k * outer(dir, matmul(phase(:,ind), sig.sig1(ind,:)))
-        if len(ind1) > 0:
-            phase1 = phase[:, ind1]  # (ndir, nind1)
-            # Current term: i*k0 * phase @ h
-            h_term = 1j * k0 * np.dot(phase1, h1[ind1, :, ipol])  # (ndir, 3)
-            # Charge term: -i*k * dir * (phase @ sig)
-            sig_term = np.dot(phase1, sig1[ind1, ipol])  # (ndir,)
-            e_term = -1j * k * direction * sig_term[:, np.newaxis]
+    use_gpu_path = _CUPY_OK and USE_GPU
 
-            e[:, :, ipol] += h_term + e_term
-            # Magnetic field: H = i*k * cross(dir, matmul(phase, h))
-            h[:, :, ipol] += 1j * k * np.cross(
-                direction, np.dot(phase1, h1[ind1, :, ipol])
-            )
+    if use_gpu_path:
+        direction_g = _cp.asarray(direction)
+        pos_g = _cp.asarray(pos)
+        area_g = _cp.asarray(area)
+        # Phase factor: exp(-i*k*dir·pos) * area  on GPU
+        phase_g = _cp.exp(-1j * k * (direction_g @ pos_g.T)) * area_g
+        if phase_g.ndim == 1:
+            phase_g = phase_g.reshape(1, -1)
 
-        # Outside surface contribution
-        if len(ind2) > 0:
-            phase2 = phase[:, ind2]
-            h_term = 1j * k0 * np.dot(phase2, h2[ind2, :, ipol])
-            sig_term = np.dot(phase2, sig2[ind2, ipol])
-            e_term = -1j * k * direction * sig_term[:, np.newaxis]
+        sig1_g = _cp.asarray(sig1)
+        sig2_g = _cp.asarray(sig2)
+        h1_g = _cp.asarray(h1)
+        h2_g = _cp.asarray(h2)
 
-            e[:, :, ipol] += h_term + e_term
-            h[:, :, ipol] += 1j * k * np.cross(
-                direction, np.dot(phase2, h2[ind2, :, ipol])
-            )
+        for ipol in range(npol):
+            e_acc = _cp.zeros((ndir, 3), dtype=complex)
+            h_acc = _cp.zeros((ndir, 3), dtype=complex)
+            if len(ind1) > 0:
+                ind1_g = _cp.asarray(ind1)
+                phase1_g = phase_g[:, ind1_g]
+                ph_h1 = phase1_g @ h1_g[ind1_g, :, ipol]
+                ph_sig1 = phase1_g @ sig1_g[ind1_g, ipol]
+                e_acc += 1j * k0 * ph_h1 + (-1j * k) * direction_g * ph_sig1[:, None]
+                h_acc += 1j * k * _cp.cross(direction_g, ph_h1)
+            if len(ind2) > 0:
+                ind2_g = _cp.asarray(ind2)
+                phase2_g = phase_g[:, ind2_g]
+                ph_h2 = phase2_g @ h2_g[ind2_g, :, ipol]
+                ph_sig2 = phase2_g @ sig2_g[ind2_g, ipol]
+                e_acc += 1j * k0 * ph_h2 + (-1j * k) * direction_g * ph_sig2[:, None]
+                h_acc += 1j * k * _cp.cross(direction_g, ph_h2)
+            e[:, :, ipol] = _cp.asnumpy(e_acc)
+            h[:, :, ipol] = _cp.asnumpy(h_acc)
+    else:
+        # Phase factor: exp(-i*k*dir·pos) * area
+        # MATLAB: phase = exp(-1i * k * dir * p.pos') * spdiag(p.area)
+        phase = np.exp(-1j * k * np.dot(direction, pos.T)) * area  # (ndir, nfaces)
+
+        # Ensure 2D array even for single direction
+        if phase.ndim == 1:
+            phase = phase.reshape(1, -1)
+
+        for ipol in range(npol):
+            # Inside surface contribution
+            # MATLAB: e = 1i*k0 * matmul(phase(:,ind), sig.h1(ind,:,:)) -
+            #             1i*k * outer(dir, matmul(phase(:,ind), sig.sig1(ind,:)))
+            if len(ind1) > 0:
+                phase1 = phase[:, ind1]  # (ndir, nind1)
+                # Current term: i*k0 * phase @ h
+                h_term = 1j * k0 * np.dot(phase1, h1[ind1, :, ipol])  # (ndir, 3)
+                # Charge term: -i*k * dir * (phase @ sig)
+                sig_term = np.dot(phase1, sig1[ind1, ipol])  # (ndir,)
+                e_term = -1j * k * direction * sig_term[:, np.newaxis]
+
+                e[:, :, ipol] += h_term + e_term
+                # Magnetic field: H = i*k * cross(dir, matmul(phase, h))
+                h[:, :, ipol] += 1j * k * np.cross(
+                    direction, np.dot(phase1, h1[ind1, :, ipol])
+                )
+
+            # Outside surface contribution
+            if len(ind2) > 0:
+                phase2 = phase[:, ind2]
+                h_term = 1j * k0 * np.dot(phase2, h2[ind2, :, ipol])
+                sig_term = np.dot(phase2, sig2[ind2, ipol])
+                e_term = -1j * k * direction * sig_term[:, np.newaxis]
+
+                e[:, :, ipol] += h_term + e_term
+                h[:, :, ipol] += 1j * k * np.cross(
+                    direction, np.dot(phase2, h2[ind2, :, ipol])
+                )
 
     # Squeeze if single polarization
     if npol == 1:
@@ -384,11 +422,20 @@ def _scattering(self, sig):
     # dsca = 0.5 * real(nvec · (E × conj(H)))
     dsca_arr = np.zeros((self.ndir, npol))
 
-    for ipol in range(npol):
-        # Cross product E × conj(H)
-        poynting = np.cross(e[:, :, ipol], np.conj(h[:, :, ipol]))  # (ndir, 3)
-        # Dot with nvec
-        dsca_arr[:, ipol] = 0.5 * np.real(np.sum(self.nvec * poynting, axis=1))
+    use_gpu_path = _CUPY_OK and USE_GPU
+    if use_gpu_path:
+        e_g = _cp.asarray(e)
+        h_g = _cp.asarray(h)
+        nvec_g = _cp.asarray(self.nvec)
+        for ipol in range(npol):
+            poynting_g = _cp.cross(e_g[:, :, ipol], _cp.conj(h_g[:, :, ipol]))
+            dsca_arr[:, ipol] = _cp.asnumpy(0.5 * _cp.real(_cp.sum(nvec_g * poynting_g, axis=1)))
+    else:
+        for ipol in range(npol):
+            # Cross product E × conj(H)
+            poynting = np.cross(e[:, :, ipol], np.conj(h[:, :, ipol]))  # (ndir, 3)
+            # Dot with nvec
+            dsca_arr[:, ipol] = 0.5 * np.real(np.sum(self.nvec * poynting, axis=1))
 
     # Total scattering: integrate over sphere
     sca = np.dot(self.area, dsca_arr)  # (npol,)

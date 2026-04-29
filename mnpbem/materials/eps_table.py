@@ -6,6 +6,13 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 import os
 from ..utils.constants import EV2NM
+from ..utils.gpu import _CUPY_OK, _cp
+
+
+def _to_host(x):
+    if _CUPY_OK and isinstance(x, _cp.ndarray):
+        return _cp.asnumpy(x)
+    return x
 
 
 class EpsTable(object):
@@ -120,7 +127,7 @@ class EpsTable(object):
         k : complex or ndarray
             Wavenumber in medium (1/nm): k = 2π/λ × √ε
         """
-        enei = np.asarray(enei)
+        enei = np.asarray(_to_host(enei))
 
         # Check if wavelengths are in valid range
         enei_min, enei_max = self.enei.min(), self.enei.max()
@@ -175,7 +182,7 @@ class EpsTable(object):
         n : complex or ndarray
             Complex refractive index: n + ik
         """
-        enei = np.asarray(enei)
+        enei = np.asarray(_to_host(enei))
         ni = self.ni(enei)
         ki = self.ki(enei)
         return ni + 1j * ki
