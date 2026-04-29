@@ -501,12 +501,14 @@ class Particle(object):
         # Normal vector
         nvec = np.cross(vec1, vec2)
 
-        # Area of triangles
-        area = 0.5 * np.linalg.norm(nvec, axis=1)
+        # Area + norms via explicit sqrt(dot(.,.,2)) to match MATLAB FP order.
+        # np.linalg.norm uses BLAS dnrm2 which can differ by 1-2 ULP and flips
+        # the larger-area tiebreak for non-planar quads (see Fri-Apr-29 tricube
+        # corner-face investigation: 7/3168 quad nvec mismatch).
+        area = 0.5 * np.sqrt(np.sum(nvec * nvec, axis=1))
 
-        # Normalize vectors
-        vec1_norm = np.linalg.norm(vec1, axis=1, keepdims=True)
-        nvec_norm = np.linalg.norm(nvec, axis=1, keepdims=True)
+        vec1_norm = np.sqrt(np.sum(vec1 * vec1, axis=1, keepdims=True))
+        nvec_norm = np.sqrt(np.sum(nvec * nvec, axis=1, keepdims=True))
         vec1 = vec1 / np.maximum(vec1_norm, 1e-14)
         nvec = nvec / np.maximum(nvec_norm, 1e-14)
 
