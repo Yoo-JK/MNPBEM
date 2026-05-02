@@ -1,0 +1,46 @@
+{
+  "source": "dimer_benchmark/data/final_v4.json + Lane A-E report",
+  "measurement_date": "2026-05-02",
+  "system": "Au dimer 47nm x 2, gap 0.6 nm, e=0.2, refine=3, mesh_density=2",
+  "mesh": {
+    "n_face": 6336,
+    "n_wavelength": 100,
+    "wavelength_range_nm": [
+      500,
+      1000
+    ]
+  },
+  "single_lambda": {
+    "wavelength_nm": 636.36,
+    "python_ext_x": 39340.91511,
+    "matlab_ext_x": 39340.91152,
+    "rel_diff": 9.1e-08,
+    "requirement_max_rel_diff": 1e-07
+  },
+  "spectrum_100wl_GPU4x_dense": {
+    "ext_x_max_rel": 0.0001679,
+    "ext_x_mean_rel": 3e-05,
+    "sca_x_max_rel": 0.0001236,
+    "sca_x_mean_rel": 2.04e-05,
+    "requirement_max_rel": 0.001
+  },
+  "wall_minutes": {
+    "python_gpu_4x_phase3": 13.0,
+    "python_gpu_1x_phase3": 29.36,
+    "python_cpu_4w_1t": 138.54,
+    "python_cpu_1w_4t": 163.26,
+    "matlab_cpu_4w_1t": 151.0,
+    "matlab_cpu_1w_4t": 196.37
+  },
+  "requirements": {
+    "gpu_4x_wall_min_max": 15.0,
+    "cpu_4w_wall_min_max": 160.0,
+    "spectrum_max_rel_diff": 0.001,
+    "single_lambda_max_rel_diff": 1e-07
+  },
+  "lane_AE_residual": {
+    "green_G1_outliers": 4,
+    "cause": "Particle.quad integration node order, symmetric face-pair pairing differs by ULP",
+    "algorithmic_defect": false
+  }
+}

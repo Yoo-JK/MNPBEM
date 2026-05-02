@@ -1,0 +1,104 @@
+{
+  "source": "72demos_validation/data/accuracy_v2.csv",
+  "measurement_date": "2026-04-30",
+  "total": 72,
+  "distribution": {
+    "machine_precision": 59,
+    "OK": 6,
+    "good": 4,
+    "warn": 3,
+    "BAD": 0
+  },
+  "machine_precision_demos": [
+    "demodipret1",
+    "demodipret11",
+    "demodipret12",
+    "demodipret2",
+    "demodipret3",
+    "demodipret4",
+    "demodipret5",
+    "demodipret6",
+    "demodipret7",
+    "demodipstat1",
+    "demodipstat10",
+    "demodipstat11",
+    "demodipstat2",
+    "demodipstat3",
+    "demodipstat4",
+    "demodipstat5",
+    "demodipstat6",
+    "demodipstat7",
+    "demodipstat8",
+    "demodipstat9",
+    "demoeelsret1",
+    "demoeelsret2",
+    "demoeelsret3",
+    "demoeelsret4",
+    "demoeelsret5",
+    "demoeelsret6",
+    "demoeelsstat1",
+    "demoeelsstat3",
+    "demospecret1",
+    "demospecret12",
+    "demospecret15",
+    "demospecret16",
+    "demospecret17",
+    "demospecret18",
+    "demospecret2",
+    "demospecret3",
+    "demospecret4",
+    "demospecret5",
+    "demospecret6",
+    "demospecstat1",
+    "demospecstat10",
+    "demospecstat11",
+    "demospecstat12",
+    "demospecstat13",
+    "demospecstat14",
+    "demospecstat15",
+    "demospecstat16",
+    "demospecstat17",
+    "demospecstat18",
+    "demospecstat19",
+    "demospecstat2",
+    "demospecstat20",
+    "demospecstat3",
+    "demospecstat4",
+    "demospecstat5",
+    "demospecstat6",
+    "demospecstat7",
+    "demospecstat8",
+    "demospecstat9"
+  ],
+  "warn_demos": [
+    [
+      "demospecret10",
+      0.0001213617
+    ],
+    [
+      "demospecret13",
+      0.0004995682
+    ],
+    [
+      "demospecret14",
+      0.0002978972
+    ]
+  ],
+  "bad_demos": [],
+  "thresholds": {
+    "machine_precision": 1e-12,
+    "OK": 1e-06,
+    "good": 0.0001,
+    "warn": 0.001
+  },
+  "requirements": {
+    "machine_precision_count_min": 55,
+    "BAD_count_max": 0
+  },
+  "speedup": {
+    "cpu_geo_mean": 2.21,
+    "gpu_geo_mean": 3.6,
+    "cpu_geo_mean_min": 1.5,
+    "gpu_geo_mean_min": 3.0
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "source": "sphere_rod_validation/summary_table.csv",
+  "measurement_date": "2026-04-30",
+  "total": 51,
+  "distribution": {
+    "machine_precision": 35,
+    "OK": 6,
+    "good": 1,
+    "warn": 1,
+    "BAD": 8
+  },
+  "machine_precision_per_shape": {
+    "sphere": 20,
+    "rod": 8,
+    "rod_lying": 7
+  },
+  "BAD_cases": [
+    {
+      "shape": "rod",
+      "category": "07_eigenmode",
+      "max_rel_err": 0.01325
+    },
+    {
+      "shape": "rod_lying",
+      "category": "03_bemret/layer",
+      "max_rel_err": 0.009891
+    },
+    {
+      "shape": "rod_lying",
+      "category": "03_bemret/nolayer",
+      "max_rel_err": 0.01124
+    },
+    {
+      "shape": "rod_lying",
+      "category": "07_eigenmode",
+      "max_rel_err": 0.01325
+    },
+    {
+      "shape": "sphere",
+      "category": "04_bemstat_layer/normal",
+      "max_rel_err": 0.007892
+    },
+    {
+      "shape": "sphere",
+      "category": "04_bemstat_layer/oblique",
+      "max_rel_err": 0.01493
+    },
+    {
+      "shape": "sphere",
+      "category": "05_bemret_layer",
+      "max_rel_err": 0.008149
+    },
+    {
+      "shape": "sphere",
+      "category": "07_eigenmode",
+      "max_rel_err": 0.01099
+    }
+  ],
+  "thresholds": {
+    "machine_precision": 1e-12,
+    "OK": 1e-06,
+    "good": 0.0001,
+    "warn": 0.001
+  },
+  "requirements": {
+    "machine_precision_count_min": 35,
+    "BAD_count_max": 6
+  },
+  "known_xfail_categories": [
+    "07_eigenmode",
+    "04_bemstat_layer/normal",
+    "04_bemstat_layer/oblique",
+    "05_bemret_layer",
+    "03_bemret/layer",
+    "03_bemret/nolayer"
+  ]
+}
