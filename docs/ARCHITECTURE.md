@@ -301,6 +301,67 @@ acceptance criterion. Examples:
 If you find a MATLAB behaviour that looks wrong, please flag it before
 "fixing" it — the test suite will likely regress.
 
+### 3.11 Schur complement for cover-layer BEM (v1.2.0)
+
+`EpsNonlocal` cover-layer formulation 은 mesh face count 를 약 2× 증가시켜
+BEM 행렬 메모리를 약 4× 폭증하게 만든다 (n × n 행렬에서 n 가 2배 → 메모리
+4배). Schur complement 으로 shell 변수를 LU 풀이 전 소거하면, 코어 변수만
+풀어 reduced matrix 의 메모리는 ~2× 만 사용 + LU 풀이 시간은 약 30% 감소.
+
+블록 행렬 표기로
+
+```
+[ A_cc  A_cs ] [ x_c ]   [ b_c ]
+[ A_sc  A_ss ] [ x_s ] = [ b_s ]
+```
+
+이고, shell 블록 (s) 을 소거하면
+
+```
+S = A_cc - A_cs * A_ss^-1 * A_sc       # Schur complement
+S * x_c = b_c - A_cs * A_ss^-1 * b_s
+x_s = A_ss^-1 * (b_s - A_sc * x_c)
+```
+
+만 풀면 된다. 수학적으로 standard formulation 과 동등 — 회귀 테스트에서
+machine precision 일치 (rel < 1e-12).
+
+- 활성: `BEMStat(p, schur=True)`, `BEMRet(p, schur=True)` 또는
+  `schur='auto'` 로 cover layer 자동 감지.
+- 구현: `mnpbem/bem/schur_helpers.py` (블록 indexing,
+  `lu_factor_dispatch` 의 reduced-matrix 호출).
+- BEMRetIter / BEMRetLayer 미적용 (M5+ 후속 — H-matrix preconditioner 와
+  결합).
+
+### 3.12 VRAM share — multi-GPU LU dispatch (v1.2.0)
+
+단일 GPU VRAM (예: RTX A6000 48 GB) 을 초과하는 큰 dense LU
+(25k+ face, 50+ GB) 를 multi-GPU 메모리 풀로 처리하는 경로. Lane D
+(현행 multi-GPU = wavelength 분배) 와는 직교하는 새 축 — 1 worker 가
+N개 GPU의 메모리를 합쳐 *하나의* 큰 계산을 처리한다.
+
+| 모드 | worker 수 | 1 worker 의 VRAM | 사용 사례 |
+|---|---|---|---|
+| Lane D (v1.0+) | N | 1 GPU 분 | wavelength 분배 |
+| **VRAM share (v1.2.0)** | 1 | M GPU 합산 | 큰 단일 계산 |
+| 두 모드 결합 | N | M GPU 합산 | 큰 계산 × wavelength 분배 |
+
+기본 backend 는 NVIDIA cuSOLVER MG (`cusolverMgGetrf` /
+`cusolverMgGetrs`) — block-cyclic distributed matrix 로 NVLink/PCIe
+전송이 NVIDIA 측에서 자동 최적화. cupy MemoryPool 위에서 동작.
+
+- 활성:
+  - 환경변수 `MNPBEM_VRAM_SHARE_GPUS=N` (default 1 = single GPU 동작).
+  - `MNPBEM_VRAM_SHARE_BACKEND=cusolvermg` (default; magma / nccl 예정).
+  - `mnpbem.utils.gpu.lu_factor_dispatch(A, n_gpus=N)` 직접 호출.
+- 구현: `mnpbem/utils/multi_gpu_lu.py` (cuSolverMg ctypes wrapper +
+  block-cyclic distributor).
+- `pymnpbem_simulation` wrapper 의 `compute.n_gpus_per_worker > 1` 가
+  자동으로 환경변수를 설정.
+- 한계: NVIDIA GPU 전용 (cusolvermg backend), AMD GPU 미지원.
+  56k+ face 같이 LU 자체 메모리가 ~250 GB 인 경우 4 GPU pool (192 GB)
+  로도 fit 안되며 H-matrix 와 결합 필요 (M5+ Lane E2).
+
 ## 4. Performance summary
 
 See `docs/PERFORMANCE.md` for the numbers. The strategy is documented in
