@@ -77,6 +77,27 @@
 - [x] `python -m build`, `twine check` 통과.
 - [x] `git tag -a v1.1.0` 푸시.
 
+### v1.2.0 (2026-05-02)
+
+- [x] Schur complement helpers + BEMStat / BEMRet `schur=True` 옵션 +
+      14 unit tests 머지 (Agent α).
+- [x] cuSolverMg multi-GPU LU dispatch + 4 unit tests 머지 (Agent β).
+- [x] `pymnpbem_simulation` wrapper Schur auto-detect + VRAM share YAML
+      옵션 + 18 케이스 회귀 머지 (Agent γ).
+- [x] `CHANGELOG.md` v1.2.0 섹션 + `API_REFERENCE` + `MIGRATION_GUIDE`
+      (#17, #18) + `ARCHITECTURE.md` §3.11/§3.12 + `PERFORMANCE.md`
+      갱신 (Agent δ).
+- [x] `mnpbem/__init__.py` `__version__ = "1.2.0"`,
+      `pyproject.toml` `version = "1.2.0"` 갱신 (Agent ε).
+- [x] `docs/RELEASE_NOTES_v1.2.0.md` 작성 (Agent ε).
+- [x] fast 회귀 + 새 Schur / multi-GPU LU unit 테스트 통과 (51 failures
+      는 v1.1.0 baseline 과 동일 — 회귀 0).
+- [x] Schur + VRAM share 동시 활성 sanity check (Schur active=True,
+      env vars 설정 확인).
+- [x] pymnpbem 측 v120_options 18 + wave3_m7 18 + fast 31 회귀 통과.
+- [x] `python -m build`, `twine check` 통과.
+- [x] `git tag -a v1.2.0` 푸시.
+
 ---
 
 ## Future (PyPI 공개 배포 결정 후 — 별도 milestone)
