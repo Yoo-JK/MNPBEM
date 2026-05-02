@@ -41,33 +41,31 @@ mechanically (see `docs/MIGRATION_GUIDE.md`). What the Python port adds:
 - **Iterative solver**: ACA / H-matrix with GMRES. Tested up to ~25 k faces.
 - See `docs/PERFORMANCE.md` for full benchmark numbers and methodology.
 
-## Requirements
+## Installation
 
 ```bash
-conda create -n mnpbem python=3.11
+conda create -n mnpbem python=3.11 -y
 conda activate mnpbem
 
-# core (CPU)
-pip install numpy==1.26.4 scipy==1.13.1 matplotlib==3.8.4 \
-            numba==0.59.1 jupyter==1.1.1 python-box==7.3.2
-
-# optional: GPU acceleration (requires CUDA 12.x)
-pip install cupy-cuda12x==13.3.0
-
-# optional: multi-node MPI
-pip install mpi4py==3.1.6
-
-# editable install of MNPBEM
-git clone https://github.com/<your-org>/MNPBEM.git
-cd MNPBEM
-pip install -e .
+pip install mnpbem               # CPU only (default)
+pip install "mnpbem[gpu]"        # + GPU acceleration (cupy / CUDA 12)
+pip install "mnpbem[gpu,mpi]"    # + multi-node MPI (mpi4py)
+pip install "mnpbem[all]"        # everything (gpu + mpi + fmm)
 ```
+
+CPU-only is the default — GPU / MPI / FMM dependencies are pulled only
+when the matching extra is requested. The runtime auto-detects what is
+available and falls back to NumPy when GPU dependencies are missing.
+
+For full prerequisites, multi-GPU VRAM share, multi-node MPI launch,
+environment variables, and troubleshooting, see
+[docs/INSTALL.md](docs/INSTALL.md).
 
 After install, verify:
 
 ```bash
 python -c "import mnpbem; print(mnpbem.__version__)"
-# 1.0.0
+python -c "from mnpbem.utils.gpu import has_gpu_capability; has_gpu_capability(verbose=True)"
 ```
 
 ## Quick Start
