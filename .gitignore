@@ -10,3 +10,7 @@ TEST_README.md
 *_results.npz
 *.png
 mnpbem.egg-info/
+
+# build artefacts
+dist/
+build/
