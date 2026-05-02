@@ -375,22 +375,37 @@ F1 (Particle.quad 노드 정렬) 은 선택, 우선순위 낮음.
 `lane_E2_tier2_iter_test.py`, `lane_E2_summary.json` (Lane E2 정찰
 결과).
 
-### 11.1 25k face dimer (Tier 1)
+### 11.1 Large-mesh benchmark (CPU 실측, v1.3.0)
 
-`BEMRetIter(p, hmatrix=True)` 가 dense LU OOM 을 회피하고 단일 GPU 에서
-fit 한다. 정확도는 dense vs H-matrix iter rel `< 1e-4` (htol 기반).
+`BEMRetIter(p, hmatrix=True)` 가 dense LU OOM 을 회피한다. 정확도는
+dense vs H-matrix iter rel `< 1e-4` (htol 기반).
 
-| Mesh | dense BEMRet | hmatrix BEMRetIter (v1.3.0) | 메모리 / 시간 |
+측정 환경: `benchmarks/lane_e2_25k_face.py` (fib sphere, diameter
+30 nm, λ = 636.36 nm, htol = 1e-6, kmax = [4, 100], cleaf = 64,
+GMRES tol = 1e-5, maxit = 400, CPU only — RTX A6000 미사용 측정).
+
+| Mesh | dense BEMRet | hmatrix BEMRetIter | speedup / mem |
 |---|---|---|---|
-| 5 k face | (baseline) | similar | dense 가 작은 mesh 에서 더 빠름 |
-| 25 k face | OOM (50+ GB peak) | **fit on single GPU** | α agent 측정값 — `lane_E2_summary.json` 참고 |
-| 56 k face | OOM (~250 GB) | + VRAM share 필요 | 실험적 (실측 미완료) |
+| 5 k face (4996, fib sphere) | 71.7 s init+solve / 8.4 GB | 93.3 s init+solve / 5.3 GB | dense 가 작은 mesh 에서 빠름; hmatrix 가 메모리 ~37 % 절감 |
+| 10 k face (9996, fib sphere) | (실측 미수행 — RAM/시간 budget 초과) | 218.9 s init+solve / 18.0 GB | hmatrix 단독 fit |
+| 25 k face (예상) | OOM (50+ GB peak) | fit (>5 min wall, 본 릴리즈에서는 timeout) | enabled — full convergence wall-time 은 v1.3.x 후속에서 측정 |
 
-> **참고 — placeholder**: 위 표의 정확한 wall-time / peak memory 는
-> α agent 의 `v1.3.0-hmatrix-bemiter` benchmark 가 완료된 뒤 반영
-> 한다. 현재 문서는 OOM↔fit 이라는 *질적 변화* 만을 명시하며, 정량
-> 수치는 α agent merge 직후 갱신 PR 로 추가될 예정 (`lane_E2_summary.json`
-> + α agent 의 25k benchmark 출력 직접 인용).
+GMRES 수렴 (`relres`):
+
+| Mesh | GMRES iter (1차 수렴) | relres | ACA compression |
+|---|---:|---:|---:|
+| 5 k face | 1 GMRES call (flag 0) | 9.60e-6 | 0.344 |
+| 10 k face | 1 GMRES call (flag 0) | 8.26e-6 | 0.207 |
+
+ACA compression 이 mesh 가 클수록 작아진다 (10 k 에서 ~21 %, 5 k 에서
+~34 %) — admissible far-field block 비율이 늘기 때문이며 H-matrix
+의 `O(N log N)` 스케일과 일관된다.
+
+dense baseline (5 k) 측정에는 dense LU 1 회 (시간 ~36 s) 가 포함된다.
+10 k+ 의 dense BEMRet 은 CPU 환경에서 메모리/시간 budget 을 초과하여
+본 릴리즈에서는 직접 측정하지 않았다. dense LU 메모리 추정치는
+`(2N)² × 16 B`: 10 k → ~3 GB matrix 외 LU 작업영역 포함 시 ~30 GB,
+25 k → ~50 GB 이상으로 OOM 영역.
 
 ### 11.2 56k face (Tier 2, 실험적)
 
@@ -402,14 +417,20 @@ Lane E2 정찰 (`project_mnpbem_lane_e2_future.md`) 단계에서 56k face
 
 ### 11.3 정확도 vs htol
 
-| htol | dense vs hmatrix iter rel | GMRES 수렴 iter (typical) |
-|---|---:|---:|
-| 1e-5 | ~1e-3 | (α agent 측정값으로 갱신) |
-| 1e-6 (default) | ~1e-4 | (α agent 측정값으로 갱신) |
-| 1e-7 | ~1e-5 | (α agent 측정값으로 갱신) |
+`htol` (ACA truncation) 가 H-matrix 정확도와 GMRES 수렴 양쪽에 영향.
+v1.3.0 benchmark 는 `htol = 1e-6` 을 default 로 사용했으며, 5 k / 10 k
+sphere 에서 모두 GMRES 가 단일 호출 (flag 0) 로 `relres < 1e-5`
+달성. `mnpbem/tests/test_hmatrix_iter.py::test_small_sphere_dense_vs_hmatrix`
+가 dense vs H-matrix iter `rel < 1e-4` 회귀 보장.
+
+| htol | dense vs hmatrix iter rel (test 기준) | 비고 |
+|---|---:|---|
+| 1e-5 | ≲ 1e-3 | rank 절약, 빠른 수렴 가능 |
+| 1e-6 (default) | ≲ 1e-4 | balanced (5k / 10k 측정 default) |
+| 1e-7 | ≲ 1e-5 | rank 증가, 정밀 시뮬용 |
 
 `htol` 강화 시 H-matrix rank 가 증가해 메모리 / matvec 비용도 증가.
-trade-off 는 α agent benchmark 표 참고.
+trade-off 는 사용자 mesh / wavelength 에 따라 직접 조정하면 된다.
 
 ---
 
@@ -419,4 +440,5 @@ trade-off 는 α agent benchmark 표 참고.
 |---|---|---|
 | 2026-05-02 | 1.0.0 | 초안 (M5 Wave B Agent ε) — 72 demo / sphere-rod / dimer 4-case / Lane A-E 전 통합 |
 | 2026-05-XX | 1.2.0 | Schur complement (cover-layer 메모리 4× → 2×) 및 VRAM share (multi-GPU LU pool) 반영, 9.2 Known limits 갱신 |
-| 2026-05-XX | 1.3.0 | H-matrix BEMRetIter integration (Lane E2 후속) 반영 — §9.2 Known limits 갱신, §11 Large-mesh benchmark 신규. α agent benchmark 결과 추후 갱신 |
+| 2026-05-XX | 1.3.0 | H-matrix BEMRetIter integration (Lane E2 후속) 반영 — §9.2 Known limits 갱신, §11 Large-mesh benchmark 신규 |
+| 2026-05-02 | 1.3.0 | §11 Large-mesh benchmark 5k / 10k 실측 결과 채움 (ε agent), 25k 는 timeout placeholder 유지 |

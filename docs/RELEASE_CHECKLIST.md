@@ -98,6 +98,26 @@
 - [x] `python -m build`, `twine check` 통과.
 - [x] `git tag -a v1.2.0` 푸시.
 
+### v1.3.0 (2026-05-02)
+
+- [x] H-matrix `BEMRetIter` / `BEMStatIter` integration + 7 unit tests
+      머지 (Agent α — Lane E2 후속).
+- [x] `pymnpbem_simulation` wrapper `iter.hmatrix: 'auto'` + 22 unit
+      tests 머지 (Agent β).
+- [x] `CHANGELOG.md` v1.3.0 섹션 + `API_REFERENCE` + `MIGRATION_GUIDE`
+      (#19) + `ARCHITECTURE.md` §3.13 + `PERFORMANCE.md` §11 갱신
+      (Agent γ).
+- [x] `mnpbem/__init__.py` `__version__ = "1.3.0"`,
+      `pyproject.toml` `version = "1.3.0"` 갱신 (Agent ε).
+- [x] `docs/RELEASE_NOTES_v1.3.0.md` 작성 (Agent ε).
+- [x] `docs/PERFORMANCE.md` §11 5 k / 10 k 실측 결과 채움 (Agent ε).
+      25 k 는 CPU wall-time budget 초과로 placeholder 유지.
+- [x] fast 회귀 + 새 H-matrix iter unit 테스트 통과 (51 pre-existing
+      failures 는 v1.2.0 baseline 과 동일 — 회귀 0).
+- [x] pymnpbem 측 v130_options 22 + fast 31 회귀 통과.
+- [x] `python -m build`, `twine check` 통과.
+- [x] `git tag -a v1.3.0` 푸시.
+
 ---
 
 ## Future (PyPI 공개 배포 결정 후 — 별도 milestone)
