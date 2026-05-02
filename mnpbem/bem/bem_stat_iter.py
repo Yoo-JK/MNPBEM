@@ -29,8 +29,21 @@ class BEMStatIter(BEMIter):
         # gets an actionable error rather than a silently full-size solve.
         if options.pop('schur', False):
             raise NotImplementedError(
-                "[error] BEMStatIter does not support <schur> in v1.2.0; "
-                "use BEMStat (dense path) for Schur-complement reduction.")
+                '[error] BEMStatIter does not support <schur> in v1.2.0; '
+                'use BEMStat (dense path) for Schur-complement reduction.')
+
+        # H-matrix (v1.3.0): opt-in ACA acceleration of F. The matvec used
+        # by GMRES then uses HMatrix @ x rather than dense matmul.
+        self._hmatrix = bool(options.pop('hmatrix', False))
+        self._htol = options.pop('htol', 1e-6)
+        self._kmax = options.pop('kmax', [4, 100])
+        self._cleaf = options.pop('cleaf', 200)
+        self._fadmiss = options.pop('fadmiss', None)
+
+        # Same default-precond logic as BEMRetIter: don't densify F just to
+        # build an LU when the user opted into compression.
+        if self._hmatrix and 'precond' not in options:
+            options['precond'] = None
 
         # Initialize BEMIter base class
         super(BEMStatIter, self).__init__(**options)
@@ -60,11 +73,24 @@ class BEMStatIter(BEMIter):
             **options: Any) -> None:
 
         # MATLAB: bemstatiter/private/init.m
-        # In the iterative version, Green function uses H-matrix (ACA) approximation
+        # H-matrix path uses ACACompGreenStat with cluster-tree ACA on F.
+        # Dense path uses CompGreenStat (legacy / small mesh / tests).
+        # ``hmode`` legacy alias maps onto hmatrix=True.
         hmode = options.pop('hmode', None)
-        if hmode is not None:
+        if self._hmatrix or hmode is not None:
             from ..greenfun import ACACompGreenStat
-            self._g = ACACompGreenStat(p, p, hmode=hmode, **options)
+            kmax_scalar = (max(self._kmax) if hasattr(self._kmax, '__iter__')
+                    else self._kmax)
+            htol_scalar = (max(self._htol) if hasattr(self._htol, '__iter__')
+                    else self._htol)
+            aca_kwargs = {
+                'htol': htol_scalar,
+                'kmax': kmax_scalar,
+                'cleaf': self._cleaf,
+            }
+            if self._fadmiss is not None:
+                aca_kwargs['fadmiss'] = self._fadmiss
+            self._g = ACACompGreenStat(p, **aca_kwargs, **options)
         else:
             from ..greenfun import CompGreenStat
             self._g = CompGreenStat(p, p, **options)
@@ -93,7 +119,12 @@ class BEMStatIter(BEMIter):
         # Initialize preconditioner
         if self.precond is not None:
             F = self.F
-            n = F.shape[0]
+            # Densify if HMatrix — preconditioner LU is dense.
+            if hasattr(F, 'full') and not isinstance(F, np.ndarray):
+                F_dense = F.full()
+            else:
+                F_dense = F
+            n = F_dense.shape[0]
 
             # Build diagonal Lambda matrix from lambda values
             # MATLAB: spdiag(obj.lambda) handles both scalar and array
@@ -104,11 +135,11 @@ class BEMStatIter(BEMIter):
 
             if self.precond == 'hmat':
                 # MATLAB: obj.mat = lu(-lambda - F)
-                self._mat_lu = lu_factor_dispatch(-Lambda - F)
+                self._mat_lu = lu_factor_dispatch(-Lambda - F_dense)
 
             elif self.precond == 'full':
                 # MATLAB: obj.mat = inv(-lambda - full(F))
-                self._mat_lu = lu_factor_dispatch(-Lambda - F)
+                self._mat_lu = lu_factor_dispatch(-Lambda - F_dense)
 
             else:
                 raise ValueError('[error] preconditioner not known: <{}>'.format(self.precond))

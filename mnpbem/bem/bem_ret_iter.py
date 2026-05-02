@@ -29,8 +29,27 @@ class BEMRetIter(BEMIter):
         # gets an actionable error rather than a silently full-size solve.
         if options.pop('schur', False):
             raise NotImplementedError(
-                "[error] BEMRetIter does not support <schur> in v1.2.0; "
-                "use BEMRet (dense path) for Schur-complement reduction.")
+                '[error] BEMRetIter does not support <schur> in v1.2.0; '
+                'use BEMRet (dense path) for Schur-complement reduction.')
+
+        # H-matrix (v1.3.0): opt-in ACA acceleration of Green functions.
+        # When True, the matvec used by GMRES uses HMatrix @ x compression
+        # (O(N log N) memory) rather than dense ndarrays.
+        self._hmatrix = bool(options.pop('hmatrix', False))
+        self._htol = options.pop('htol', 1e-6)
+        self._kmax = options.pop('kmax', [4, 100])
+        self._cleaf = options.pop('cleaf', 200)
+        self._fadmiss = options.pop('fadmiss', None)
+        self._eta = options.pop('eta', 2.5)
+
+        # Default preconditioner: when the H-matrix path is active and the
+        # user did not explicitly choose a preconditioner, disable it. The
+        # current dense LU preconditioner densifies G/H (50+GB at 25k faces)
+        # which defeats the whole point of compression. Users who really
+        # want it can still pass ``precond='hmat'`` explicitly and pay
+        # the memory.
+        if self._hmatrix and 'precond' not in options:
+            options['precond'] = None
 
         # Initialize BEMIter base class
         super(BEMRetIter, self).__init__(**options)
@@ -59,7 +78,17 @@ class BEMRetIter(BEMIter):
         self._refun = options.pop('refun', None)
         self._op = options
 
-        # Green function (with H-matrix / ACA approximation for iterative solver)
+        # H-matrix path is incompatible with refun for now (refun densifies
+        # G/H pairs, defeating the compression). Fall back to dense if both
+        # are requested.
+        if self._hmatrix and self._refun is not None:
+            raise NotImplementedError(
+                '[error] BEMRetIter <hmatrix> + <refun> not supported '
+                '(refun densifies the Green pairs). Disable one.')
+
+        # Green function. With ``hmatrix=True`` we pull the ACA wrapper from
+        # mnpbem.greenfun; otherwise the dense CompGreenRet is used (legacy
+        # path preserved for tests / demos).
         # MATLAB: obj.g = aca.compgreenret(p, varargin{:}, ...)
         self._init_green(p, **options)
 
@@ -72,8 +101,26 @@ class BEMRetIter(BEMIter):
             **options: Any) -> None:
 
         # MATLAB: bemretiter/private/init.m
-        from ..greenfun import CompGreenRet
-        self.g = CompGreenRet(p, p, **options)
+        if self._hmatrix:
+            from ..greenfun import ACACompGreenRet
+            # MATLAB stores kmax as [k_min, k_max]; HMatrix expects scalar.
+            # Take the upper bound when forwarding.
+            kmax_scalar = (max(self._kmax) if hasattr(self._kmax, '__iter__')
+                    else self._kmax)
+            htol_scalar = (max(self._htol) if hasattr(self._htol, '__iter__')
+                    else self._htol)
+            aca_kwargs = {
+                'htol': htol_scalar,
+                'kmax': kmax_scalar,
+                'cleaf': self._cleaf,
+                'eta': self._eta,
+            }
+            if self._fadmiss is not None:
+                aca_kwargs['fadmiss'] = self._fadmiss
+            self.g = ACACompGreenRet(p, **aca_kwargs, **options)
+        else:
+            from ..greenfun import CompGreenRet
+            self.g = CompGreenRet(p, p, **options)
 
     def _init_matrices(self,
             enei: float) -> 'BEMRetIter':
@@ -134,14 +181,11 @@ class BEMRetIter(BEMIter):
             hmat: Any) -> Any:
 
         # MATLAB: bemretiter/private/compress.m
-        # Compress H-matrices for preconditioner by adjusting htol/kmax.
-        # For HMatrix objects, set htol to max(op.htol) and kmax to min(op.kmax).
-        # For dense numpy arrays, pass through unchanged.
-        if hasattr(hmat, 'htol') and hasattr(hmat, 'kmax'):
-            htol_val = self._op.get('htol', 1e-6)
-            kmax_val = self._op.get('kmax', [4, 100])
-            hmat.htol = max(htol_val) if hasattr(htol_val, '__iter__') else htol_val
-            hmat.kmax = min(kmax_val) if hasattr(kmax_val, '__iter__') else kmax_val
+        # The dense-LU preconditioner needs an ndarray; if we got an HMatrix
+        # we densify it here. Memory cost is the standard dense N x N — only
+        # invoked when the user explicitly opts into the dense preconditioner.
+        if hasattr(hmat, 'full') and not isinstance(hmat, np.ndarray):
+            return hmat.full()
         return hmat
 
     def _init_precond(self,
