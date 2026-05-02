@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnpbem"
-version = "1.3.0"
+version = "1.4.0"
 description = "Python port of MNPBEM (Boundary Element Method for plasmonics, Garcia de Abajo & Howie 2002)"
 readme = "README.md"
 requires-python = ">=3.11"
