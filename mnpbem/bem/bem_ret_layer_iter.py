@@ -24,6 +24,22 @@ class BEMRetLayerIter(BEMIter):
             enei: Optional[float] = None,
             **options: Any) -> None:
 
+        # H-matrix + cover-layer combination is not supported in v1.3.0.
+        # The layer Green function has a structured (ss/hh/p/sh/hs) block
+        # form that does not yet have an ACA wrapper, and combining it
+        # with the dense-LU Schur in _init_precond is M5+ work. Surface
+        # an explicit error so users with layered geometries fall back
+        # to the dense path consciously.
+        if options.pop('hmatrix', False):
+            raise NotImplementedError(
+                '[error] BEMRetLayerIter does not support <hmatrix> in v1.3.0; '
+                'use the dense BEMRetLayerIter path or strip the cover layer.')
+
+        # Strip H-matrix-only kwargs so the dense path does not choke on
+        # unknown options.
+        for k in ('htol', 'kmax', 'cleaf', 'fadmiss', 'eta'):
+            options.pop(k, None)
+
         # Initialize BEMIter base class
         super(BEMRetLayerIter, self).__init__(**options)
 
