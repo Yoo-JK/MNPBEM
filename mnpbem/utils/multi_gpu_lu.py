@@ -605,6 +605,14 @@ class MultiGPULU(object):
 
     def close(self) -> None:
         lib = _libcusolverMg
+        # Synchronize all devices before tearing down so any in-flight kernels
+        # don't trip subsequent cusolverMg calls.
+        for dev in self.device_ids:
+            try:
+                _cuda_set_device(dev)
+                _cuda_device_sync()
+            except Exception:
+                pass
         # Free per-GPU buffers
         if self.array_d_work is not None:
             for g, dev in enumerate(self.device_ids):
