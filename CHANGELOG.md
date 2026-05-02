@@ -9,7 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (none currently — v1.3.0 release prep in progress)
+- (none currently — v1.4.0 release prep in progress)
+
+## [1.4.0] - 2026-05-XX
+
+### Added
+
+- **CPU/GPU 분리 install** — pyproject extras 정교화
+  (`gpu` / `mpi` / `fmm` / `all` / `dev` / `test` / `docs`).
+  - `pip install mnpbem` (CPU only, 가장 가벼움; cupy 의존성 없음).
+  - `pip install mnpbem[gpu]` (cupy-cuda12x 포함, NVIDIA GPU 가속).
+  - `pip install mnpbem[all]` (gpu + mpi + fmm 모든 기능).
+  - 별도 wheel 분리 X — single wheel + extras 가 PyPI 표준 패턴.
+- **Runtime GPU 자동 감지** —
+  `mnpbem.utils.gpu.has_gpu_capability(verbose=True)` 가
+  cupy import + CUDA driver + GPU device 가용성을 검사하여 `bool`
+  반환. 누락 시 친절한 fallback 메시지 출력.
+- **`mnpbem.utils.gpu.get_install_hint()`** — 사용자 환경에 맞는
+  `pip install mnpbem[gpu]` 명령 안내 helper.
+- **`docs/INSTALL.md`** — 시나리오별 install 가이드 (CPU only / GPU /
+  multi-GPU / multi-node / 개발 환경).
+
+### Changed
+
+- `README.md` `Installation` 섹션 간략화 — 자세한 내용은
+  `docs/INSTALL.md` 로 링크.
+- (none breaking — 100% backward compatible with v1.3.0)
+
+### Performance
+
+- (perf 영향 없음 — packaging 개선)
 
 ## [1.3.0] - 2026-05-XX
 
@@ -362,4 +391,5 @@ See `docs/PERFORMANCE.md` for the full table.
 [1.1.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.1.0
 [1.2.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.2.0
 [1.3.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.3.0
-[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.3.0...HEAD
+[1.4.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.4.0
+[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.4.0...HEAD
