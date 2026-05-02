@@ -281,6 +281,50 @@ sig, bem = bem.solve(exc.potential(p, enei))   # solve at one wavelength
 - `iter={"tol": 1e-6, "restart": 30, "maxit": 200}` — GMRES parameters.
 - `precond="diag"` — Jacobi preconditioner (default).
 
+### Iterative BEM solvers — H-matrix mode (v1.3.0)
+
+큰 mesh (25k+ face) 에서 dense LU 가 OOM 일 때, ACA H-matrix 압축 +
+GMRES 로 풀 수 있다. v1.3.0 부터 `BEMStatIter` / `BEMRetIter` 에
+`hmatrix=True` 옵션이 추가되어 block-level ACA 가 아닌 *전체 H-tree*
+경로로 진입한다.
+
+**Constructor (v1.3.0)**:
+
+```python
+BEMRetIter(p, tol=1e-6, maxiter=200,
+           hmatrix=False,             # v1.3.0 신규
+           htol=1e-6,
+           kmax=[4, 100],
+           cleaf=200,
+           **other_options)
+```
+
+`hmatrix=True` 활성 시:
+
+- ACA H-tree compression — 노출 파라미터 (`htol`, `kmax`, `cleaf`).
+- GMRES with H-matrix matvec — per-iter `O(N log N)`.
+- 단일 GPU 에서 25k+ face fit. VRAM share (v1.2.0) 와 결합 시
+  56k+ face 도 도전 가능.
+
+`hmatrix=False` (default): 기존 dense 또는 block-ACA 경로 (v1.2.0
+동작 그대로).
+
+```python
+from mnpbem.bem import BEMRetIter
+
+# 25k+ face 의 dense LU OOM 회피
+bem = BEMRetIter(p, hmatrix=True, tol=1e-6, maxiter=200,
+                 htol=1e-6, cleaf=200)
+sig, bem = bem.solve(exc.potential(p, enei))
+```
+
+미지원 조합:
+
+- `BEMRetLayerIter + hmatrix` → `NotImplementedError`. cover layer +
+  planar substrate 결합 시나리오는 현재 없음.
+- `BEM*Iter + Schur (v1.2.0)` 동시 활성 미지원 — H-matrix + Schur
+  통합은 후속 작업.
+
 ### Schur complement (v1.2.0)
 
 `BEMStat` / `BEMRet` 가 `schur=True` 옵션으로 cover-layer 변수 자동 소거를
