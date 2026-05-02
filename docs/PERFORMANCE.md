@@ -332,9 +332,18 @@ F1 (Particle.quad 노드 정렬) 은 선택, 우선순위 낮음.
 
 | 항목 | 한계 | 대안 |
 |---|---|---|
-| 25 k+ face 단일 GPU | 48 GB VRAM OOM | BEMRetIter + H-matrix 통합 (M5+) |
-| Multi-GPU VRAM 합산 | 미구현 | cuSolverMg / Magma / NCCL 통합 (M5+) |
+| ~~25 k+ face 단일 GPU~~ | ~~48 GB VRAM OOM~~ | **v1.2.0 부터 VRAM share 로 해소** (multi-GPU pool, cuSolverMg) |
+| ~~Multi-GPU VRAM 합산~~ | ~~미구현~~ | **v1.2.0 구현됨** (`MNPBEM_VRAM_SHARE_GPUS=N`, cusolvermg backend) |
+| 56 k+ face dense LU | 4 GPU pool (192 GB) 도 fit 안됨 (~250 GB) | H-matrix + VRAM share 결합 (M6+) |
+| Nonlocal cover-layer 메모리 | ~4× (face count 2× → matrix 4×) | **v1.2.0 부터 `schur=True` 로 ~2×** |
 | FMM (`fmm3dpy`) | optional dep | extras 로 분리 (`pyproject.toml [fmm]`) |
+
+**v1.2.0 갱신**:
+- 25k+ face dimer dense LU 가 단일 GPU OOM → 2 GPU pool (96 GB) 에서
+  fit. `MNPBEM_VRAM_SHARE_GPUS=2` 로 활성. wavelength 분배와 결합 가능.
+- Nonlocal cover-layer 시뮬레이션이 `BEMStat(p, schur=True)` 또는
+  `BEMRet(p, schur=True)` 로 메모리 50% 절감 + LU 시간 30% 단축.
+- Sommerfeld 본질 정밀도 한계 (warn 등급 5개 예상) — 변동 없음.
 
 ---
 
@@ -359,3 +368,4 @@ F1 (Particle.quad 노드 정렬) 은 선택, 우선순위 낮음.
 | 일자 | 버전 | 변경 |
 |---|---|---|
 | 2026-05-02 | 1.0.0 | 초안 (M5 Wave B Agent ε) — 72 demo / sphere-rod / dimer 4-case / Lane A-E 전 통합 |
+| 2026-05-XX | 1.2.0 | Schur complement (cover-layer 메모리 4× → 2×) 및 VRAM share (multi-GPU LU pool) 반영, 9.2 Known limits 갱신 |
