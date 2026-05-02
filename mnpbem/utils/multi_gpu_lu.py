@@ -498,8 +498,10 @@ class MultiGPULU(object):
         N = self.N
         nrhs = B.shape[1]
         assert B.shape[0] == N, '[error] B rows must equal N'
-        assert B.dtype == self.dtype, \
-            '[error] B dtype <{}> != A dtype <{}>'.format(B.dtype, self.dtype)
+        if B.dtype != self.dtype:
+            # Auto-promote (e.g. real eye for complex LU). cuSolverMg requires
+            # B match the factored-A type exactly.
+            B = B.astype(self.dtype)
         lib = _libcusolverMg
 
         # B distribution: same block-cyclic partition as A but only over the

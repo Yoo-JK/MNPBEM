@@ -833,8 +833,8 @@ class BEMRet(object):
             return x
 
         def _ls(lu_piv, b):
-            if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu"):
-                if native:
+            if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu", "mgpu"):
+                if native and lu_piv[0] != "mgpu":
                     if b.ndim == 1:
                         return lu_solve_native(lu_piv, b)
                     return lu_solve_native(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)

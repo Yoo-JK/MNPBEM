@@ -426,7 +426,7 @@ class BEMStat(object):
 
     @staticmethod
     def _lu_solve(lu_piv, b):
-        if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu"):
+        if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu", "mgpu"):
             if b.ndim == 1:
                 return lu_solve_dispatch(lu_piv, b)
             return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
