@@ -118,6 +118,24 @@
 - [x] `python -m build`, `twine check` 통과.
 - [x] `git tag -a v1.3.0` 푸시.
 
+### v1.4.0 (2026-05-02)
+
+- [x] `pyproject.toml` extras 정교화 (gpu / mpi / fmm / all / dev /
+      test / docs) + `docs/INSTALL.md` 신규 작성 + `README.md`
+      Installation 섹션 간략화 + `mnpbem.utils.gpu.has_gpu_capability` /
+      `get_install_hint` runtime auto-detect 추가 + `test_install_check`
+      회귀 (Agent α).
+- [x] `CHANGELOG.md` v1.4.0 섹션 + `API_REFERENCE` (GPU 환경 검사
+      섹션) + `MIGRATION_GUIDE` (#20) + `ARCHITECTURE.md` §3.14 갱신
+      (Agent β).
+- [x] `mnpbem/__init__.py` `__version__ = "1.4.0"`,
+      `pyproject.toml` `version = "1.4.0"` 갱신 (Agent β).
+- [x] `docs/RELEASE_NOTES_v1.4.0.md` 작성 (Agent β).
+- [x] fast 회귀 + 새 install_check unit 테스트 통과 (51 pre-existing
+      failures 는 v1.3.0 baseline 과 동일 — 회귀 0).
+- [x] `python -m build`, `twine check` 통과.
+- [x] `git tag -a v1.4.0` 푸시.
+
 ---
 
 ## Future (PyPI 공개 배포 결정 후 — 별도 milestone)
@@ -154,3 +172,7 @@
 - `docs/MIGRATION_GUIDE.md` (MATLAB → Python 마이그레이션)
 - `docs/RELEASE_NOTES_v1.0.0.md` (v1.0.0 git tag 메시지)
 - `docs/RELEASE_NOTES_v1.1.0.md` (v1.1.0 git tag 메시지)
+- `docs/RELEASE_NOTES_v1.2.0.md` (v1.2.0 git tag 메시지)
+- `docs/RELEASE_NOTES_v1.3.0.md` (v1.3.0 git tag 메시지)
+- `docs/RELEASE_NOTES_v1.4.0.md` (v1.4.0 git tag 메시지)
+- `docs/INSTALL.md` (v1.4.0 — 시나리오별 install 가이드)
