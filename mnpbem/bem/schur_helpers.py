@@ -109,17 +109,32 @@ def detect_shell_core_partition(particle: Any) -> Optional[Tuple[np.ndarray, np.
     inout_arr = np.asarray(inout)
     nfaces = inout_arr.shape[0]
 
-    shell_mask = np.zeros(nfaces, dtype = bool)
-    for face_idx in range(nfaces):
-        in_idx = int(inout_arr[face_idx, 0])
-        out_idx = int(inout_arr[face_idx, 1])
-        if in_idx in nonlocal_eps_idx_1based or out_idx in nonlocal_eps_idx_1based:
-            shell_mask[face_idx] = True
-
+    # Convention (matches the EpsNonlocal cover-layer geometry built by
+    # ``coverlayer.shift`` + ``make_nonlocal_pair``):
+    #
+    #   shell particle row in inout : [nonlocal_eps_idx, embed_eps_idx]
+    #                                 -> EpsNonlocal sits on the *inside*
+    #                                    of the shell face, embed on the
+    #                                    outside.
+    #   core particle row in inout  : [metal_eps_idx, nonlocal_eps_idx]
+    #                                 -> EpsNonlocal sits on the *outside*
+    #                                    of the core face, metal on the
+    #                                    inside.
+    #
+    # Schur reduction targets the artificial cover-layer (shell) faces --
+    # i.e. those whose *inside* material is EpsNonlocal.  Reducing the
+    # core faces would also work mathematically but would defeat the
+    # memory savings (core block is the larger one).
+    in_col = inout_arr[:, 0].astype(int)
+    shell_mask = np.array([int(idx) in nonlocal_eps_idx_1based for idx in in_col])
     shell_indices = np.where(shell_mask)[0]
     core_indices = np.where(~shell_mask)[0]
 
-    if shell_indices.size == 0:
+    if shell_indices.size == 0 or core_indices.size == 0:
+        # Either no shell faces (no EpsNonlocal on the inside of any face)
+        # or no remaining core faces -- in both cases the reduction is a
+        # no-op or degenerate, so return None and let the caller fall back
+        # to the full BEM matrix.
         return None
 
     return shell_indices, core_indices
