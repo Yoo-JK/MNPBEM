@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnpbem"
-version = "1.0.0"
+version = "1.1.0"
 description = "Python port of MNPBEM (Boundary Element Method for plasmonics, Garcia de Abajo & Howie 2002)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -71,7 +71,7 @@ dev = [
 ]
 
 
-# [project.urls] intentionally omitted for v1.0.0 internal release.
+# [project.urls] intentionally omitted for the internal release.
 # Public homepage / repository / issue tracker URLs will be set when external
 # distribution is decided.
 
