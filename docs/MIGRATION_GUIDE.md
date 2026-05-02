@@ -410,6 +410,44 @@ multi-GPU pool 로 fit 가능. wavelength 분배 (Lane D, multi-worker) 와
 결합 가능 — 8 GPU 환경에서 2-GPU pool 4개 (`n_workers=4`,
 `n_gpus_per_worker=2`).
 
+### 19. Large mesh strategy (v1.3.0)
+
+25k+ face 시뮬레이션을 어떻게 처리할지 결정 가이드.
+
+| mesh face count | 권장 |
+|---|---|
+| < 1k | dense BEMStat / BEMRet |
+| 1k - 5k | dense + Numba JIT (`MNPBEM_NUMBA=1`) |
+| 5k - 25k | `BEMRetIter(p, hmatrix=True)` (v1.3.0) — H-matrix iter |
+| 25k+ | `BEMRetIter(p, hmatrix=True)` + VRAM share (multi-GPU) |
+| 50k+ | + 별도 H-matrix 분산 / preconditioner 튜닝 (실험적) |
+
+```python
+from mnpbem.bem import BEMRetIter
+
+# 큰 mesh + iterative + H-matrix
+bem = BEMRetIter(p, hmatrix=True, htol=1e-6,
+                 tol=1e-6, maxiter=200)
+
+# + multi-GPU VRAM share (v1.2.0)
+import os
+os.environ['MNPBEM_VRAM_SHARE_GPUS'] = '4'
+```
+
+`pymnpbem_simulation` 사용자는 YAML 의 `iter.hmatrix: 'auto'` 만
+켜두면 face count 5000+ 에서 자동 활성된다 (v1.3.0).
+
+**Common issue**: GMRES 가 수렴하지 않으면 다음을 시도:
+
+- `tol` 완화 (예: 1e-4) 또는 `maxiter` 증가.
+- `htol` 강화 (예: 1e-7) — H-matrix 압축이 너무 느슨해 condition
+  악화 시 효과적.
+- preconditioner 강화 (현재는 Jacobi `precond='diag'` 만 H-matrix
+  와 호환; H-matrix block-LU preconditioner 는 후속 작업).
+
+H-matrix vs dense 결과는 `htol` 기반 — `htol=1e-6` 에서
+relative `< 1e-4` 수준으로 일치 (`docs/PERFORMANCE.md` §11).
+
 ---
 
 ## What does **not** map cleanly
