@@ -45,8 +45,9 @@ wavenumber, units 1/nm) when called.
 | `EpsTable(filename)` | `filename : str` | Tabulated `eps(lambda)` from a `.dat` file. Bundled: `gold.dat`, `silver.dat`, `goldpalik.dat`, `silverpalik.dat`, `copperpalik.dat`. |
 | `EpsDrude(eps0, wp, gammad, name=None)` | `eps0, wp, gammad : float` | Drude model `eps = eps0 - wp^2 / (omega(omega + i gammad))`. |
 | `EpsFun(fun)` / `epsfun(fun)` | `fun : callable` | Wraps any user function `fun(enei) -> eps`. |
+| `EpsNonlocal(eps_metal, eps_embed, delta_d=0.05, ...)` | see below | Hydrodynamic Drude nonlocal cover-layer permittivity (Yu Luo et al., PRL 111, 093901). |
 
-**Common methods** (all four classes):
+**Common methods** (all five classes):
 
 - `__call__(enei) -> (eps, k)` where `enei` is a wavelength in nm and
   `k = 2*pi*sqrt(eps)/enei`.
@@ -57,6 +58,97 @@ wavenumber, units 1/nm) when called.
 gold = EpsTable("gold.dat")
 eps, k = gold(550.0)        # at lambda = 550 nm
 ```
+
+### EpsNonlocal
+
+**Hydrodynamic Drude nonlocal dielectric function** for nano-gap (< 1 nm)
+and sub-5 nm particle simulations.
+
+Cover-layer formulation: a thin shell (δ ≈ 0.05 nm) with effective
+ε_t represents the nonlocal correction. Used together with
+`coverlayer.shift` + `coverlayer.refine` for the 2-layer geometry.
+
+**Constructor**:
+
+```python
+EpsNonlocal(eps_metal, eps_embed, delta_d=0.05, eps_inf=None,
+            omega_p=None, gamma=None, beta=None, name=None)
+```
+
+Returns the shell `eps_t(enei)` based on Yu Luo et al. (PRL 111, 093901
+(2013)).
+
+The closed-form expression is
+
+```
+              eps_m * eps_b
+eps_t(omega) = ---------------- * q_L(omega) * delta_d
+              eps_m - eps_b
+
+q_L(omega) = sqrt(omega_p^2 / eps_inf - omega * (omega + i * gamma)) / beta
+```
+
+Parameters: `eps_inf`, `omega_p`, `gamma` are pulled from `eps_metal`
+(when `eps_metal` is `EpsDrude`) and otherwise must be supplied
+explicitly. `beta` defaults to `sqrt(3/5) * v_F * hbar` from a built-in
+Fermi-velocity table for `Au`/`Ag`/`Al`.
+
+**Factory methods**:
+
+- `EpsNonlocal.gold(eps_embed=None, delta_d=0.05, beta=None)` — Au
+  (default β ≈ 0.714 eV·nm).
+- `EpsNonlocal.silver(eps_embed=None, delta_d=0.05, beta=None)` — Ag.
+- `EpsNonlocal.aluminum(eps_embed=None, delta_d=0.05, beta=None)` — Al.
+- `EpsNonlocal.from_table(eps_table, eps_embed, eps_inf, omega_p, gamma, beta, delta_d=0.05, name=None)`
+  — custom Drude + tabulated metal (e.g. Johnson-Christy gold).
+
+**Helper**:
+
+```python
+from mnpbem.materials import make_nonlocal_pair
+
+eps_core, eps_shell = make_nonlocal_pair(
+    metal_name='gold',
+    eps_embed=eps_embed,
+    delta_d=0.05,
+    beta=None,            # None → table default
+    eps_metal=None,       # override core (e.g. EpsTable)
+)
+# eps_core  : EpsDrude (or override via eps_metal=)
+# eps_shell : EpsNonlocal
+```
+
+**Usage example** (5 nm Au sphere, δ = 0.05 nm shell, vacuum):
+
+```python
+from mnpbem.materials import EpsConst, make_nonlocal_pair
+from mnpbem.geometry  import trisphere, ComParticle
+from mnpbem.greenfun  import coverlayer
+from mnpbem.bem       import BEMStat
+
+eps_embed = EpsConst(1.0)
+eps_core, eps_shell = make_nonlocal_pair(
+    'gold', eps_embed=eps_embed, delta_d=0.05,
+)
+
+p_core  = trisphere(144, 5.0 - 2 * 0.05)
+p_shell = coverlayer.shift(p_core, 0.05)
+
+p = ComParticle(
+    [eps_embed, eps_core, eps_shell],
+    [p_shell, p_core],
+    [[3, 1], [2, 3]],
+    closed=[1, 2],
+)
+refun = coverlayer.refine(p, [[1, 2]])
+
+bem = BEMStat(p, refun=refun)        # or BEMRet(p, refun=refun)
+```
+
+For nonlocal modelling guidance and pitfalls (shell thickness,
+β values, mesh face count) see
+[MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) section "Nonlocal hydrodynamic
+Drude".
 
 ---
 
