@@ -16,7 +16,7 @@ Main modules:
 __version__ = "1.0.0"
 
 # Materials: dielectric functions
-from .materials import EpsConst, EpsTable, EpsDrude, EpsFun, epsfun
+from .materials import EpsConst, EpsTable, EpsDrude, EpsFun, epsfun, EpsNonlocal, make_nonlocal_pair
 
 # Geometry: particles, mesh generators, and connectivity
 from .geometry import (
@@ -183,6 +183,8 @@ __all__ = [
     "EpsDrude",
     "EpsFun",
     "epsfun",
+    "EpsNonlocal",
+    "make_nonlocal_pair",
     # Geometry
     "Particle",
     "ComParticle",
