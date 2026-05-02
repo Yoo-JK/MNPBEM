@@ -404,6 +404,50 @@ ACA H-matrix + GMRES 로 해소. v1.2.0 의 VRAM share 가 dense LU 의
 - preconditioner 는 현재 Jacobi (`precond='diag'`) 만 H-matrix 와
   호환. H-matrix block-LU preconditioner 는 후속.
 
+### 3.14 CPU/GPU 분리 build (v1.4.0)
+
+핵심 결정: **single wheel + extras** (별도 wheel 분리 X).
+
+이유:
+
+- PyPI 표준 패턴 — 대부분의 ML/numerical 패키지가 `[gpu]` 같은
+  extras 형태로 GPU 의존성을 분리한다 (예: `tensorflow`,
+  `jax[cuda12]`, `pytorch-lightning[extra]`).
+- 코드 자체는 cupy lazy import — `mnpbem/utils/gpu.py` 가
+  cupy `ImportError` 를 catch 하여 CPU path 로 fallback. 따라서
+  별도 wheel 을 만들지 않아도 단일 코드 베이스로 CPU/GPU 양쪽
+  동작이 가능.
+- 사용자 가치 대비 별도 wheel (예: `mnpbem-cpu`, `mnpbem-gpu`)
+  빌드 + 유지 비용이 큼 — 두 build matrix 를 CI 에서 별도로
+  돌려야 하고, 사용자도 이름이 다른 패키지를 골라야 한다.
+
+대신 **정교한 extras + runtime auto-detect** 로 사용자 경험 개선:
+
+| Extra | 추가 의존성 | 용도 |
+|---|---|---|
+| `mnpbem` (default) | (none) | CPU only — numpy/scipy/numba 만 |
+| `mnpbem[gpu]` | cupy-cuda12x | NVIDIA GPU 가속 (Tier 4 G1/G2) |
+| `mnpbem[mpi]` | mpi4py | multi-node wavelength 분배 (Lane D) |
+| `mnpbem[fmm]` | fmm3dpy | free-space ret meshfield 가속 (F1) |
+| `mnpbem[all]` | gpu + mpi + fmm | 전부 |
+| `mnpbem[dev]` | pytest / ruff / build / twine | 개발 환경 |
+| `mnpbem[test]` | pytest | 회귀 테스트만 |
+| `mnpbem[docs]` | (sphinx 등) | docs build (예약) |
+
+Runtime auto-detect (`mnpbem/utils/gpu.py`):
+
+- `has_gpu_capability(verbose=True)` — cupy import + CUDA driver +
+  GPU device 검사. 누락된 항목별 친절한 메시지.
+- `get_install_hint()` — 현재 환경에서 GPU 활성을 위해 필요한
+  `pip install mnpbem[gpu]` 명령 안내 문자열.
+- `MNPBEM_GPU=1` env var 가 명시되었지만 cupy 가 미설치되면
+  BEM solver 호출 시점에 `RuntimeError` + install 명령 안내
+  (기존 v1.3.0 까지의 silent fallback 보다 명확).
+
+사용자 가이드: `docs/INSTALL.md` (v1.4.0 신규) — 시나리오별
+(CPU only / single GPU / multi-GPU / multi-node / 개발) install
+절차를 한 곳에 모아 둠.
+
 ## 4. Performance summary
 
 See `docs/PERFORMANCE.md` for the numbers. The strategy is documented in
