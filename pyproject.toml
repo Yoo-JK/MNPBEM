@@ -52,6 +52,7 @@ dependencies = [
 
 
 [project.optional-dependencies]
+# Hardware / runtime accelerators (each can be installed independently).
 gpu = [
     "cupy-cuda12x>=13.0",
 ]
@@ -61,6 +62,13 @@ mpi = [
 fmm = [
     "fmm3dpy>=1.0.4",
 ]
+# All accelerators in one shot. pip resolves the nested extra on recent
+# versions (>=21.2); older pip should expand it manually:
+#   pip install "mnpbem[gpu,mpi,fmm]"
+all = [
+    "mnpbem[gpu,mpi,fmm]",
+]
+# Development tooling: tests, packaging helpers.
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
@@ -68,6 +76,16 @@ dev = [
     "pyyaml>=6.0",
     "build>=1.0",
     "twine>=5.0",
+]
+# Alias for users who only want the test runner stack.
+test = [
+    "mnpbem[dev]",
+]
+# Documentation build (Sphinx + RTD theme + Markdown bridge).
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+    "myst-parser>=2.0",
 ]
 
 
