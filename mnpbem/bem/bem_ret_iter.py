@@ -103,9 +103,15 @@ class BEMRetIter(BEMIter):
         # MATLAB: bemretiter/private/init.m
         if self._hmatrix:
             from ..greenfun import ACACompGreenRet
+            # MATLAB stores kmax as [k_min, k_max]; HMatrix expects scalar.
+            # Take the upper bound when forwarding.
+            kmax_scalar = (max(self._kmax) if hasattr(self._kmax, '__iter__')
+                    else self._kmax)
+            htol_scalar = (max(self._htol) if hasattr(self._htol, '__iter__')
+                    else self._htol)
             aca_kwargs = {
-                'htol': self._htol,
-                'kmax': self._kmax,
+                'htol': htol_scalar,
+                'kmax': kmax_scalar,
                 'cleaf': self._cleaf,
                 'eta': self._eta,
             }
