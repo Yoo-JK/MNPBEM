@@ -448,6 +448,44 @@ os.environ['MNPBEM_VRAM_SHARE_GPUS'] = '4'
 H-matrix vs dense 결과는 `htol` 기반 — `htol=1e-6` 에서
 relative `< 1e-4` 수준으로 일치 (`docs/PERFORMANCE.md` §11).
 
+### 20. Install 변경 (v1.4.0)
+
+v1.3.0 이전 까지는 `pip install mnpbem` 한 줄이 (사실상)
+모든 의존성을 끌어왔지만, v1.4.0 부터는 사용 환경에 맞춰
+**extras** 로 install 범위를 고를 수 있다.
+
+기존 (v1.3.0 이하):
+
+```bash
+pip install mnpbem            # 사실상 모든 extras 가 같이 들어옴
+```
+
+v1.4.0+:
+
+```bash
+pip install mnpbem            # CPU only (default, 가장 가벼움)
+pip install mnpbem[gpu]       # + cupy-cuda12x (NVIDIA GPU 가속)
+pip install mnpbem[mpi]       # + mpi4py (multi-node wavelength 분배)
+pip install mnpbem[fmm]       # + fmm3dpy (free-space ret meshfield)
+pip install mnpbem[all]       # gpu + mpi + fmm 전부
+pip install mnpbem[dev]       # 개발 환경 (pytest, ruff 등)
+```
+
+기존 v1.3.0 코드는 **수정 X**. install 명령만 환경에 맞게
+다르게 사용하면 된다. 시뮬레이션 코드 자체는 cupy 가 lazy
+import 라 CPU only 환경에서도 동작 (CPU fallback).
+
+GPU 활성 가능 여부를 runtime 에서 확인하려면:
+
+```python
+from mnpbem.utils.gpu import has_gpu_capability, get_install_hint
+
+if not has_gpu_capability(verbose=True):
+    print(get_install_hint())
+```
+
+자세한 시나리오별 install 절차는 `docs/INSTALL.md` 참고.
+
 ---
 
 ## What does **not** map cleanly
