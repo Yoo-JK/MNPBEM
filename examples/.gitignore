@@ -1,0 +1,3 @@
+# Generated artifacts from running the examples
+*.png
+.ipynb_checkpoints/
