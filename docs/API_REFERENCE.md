@@ -281,6 +281,49 @@ sig, bem = bem.solve(exc.potential(p, enei))   # solve at one wavelength
 - `iter={"tol": 1e-6, "restart": 30, "maxit": 200}` — GMRES parameters.
 - `precond="diag"` — Jacobi preconditioner (default).
 
+### Schur complement (v1.2.0)
+
+`BEMStat` / `BEMRet` 가 `schur=True` 옵션으로 cover-layer 변수 자동 소거를
+지원한다. nonlocal cover-layer 시뮬레이션의 메모리를 약 4× → ~2× 로
+줄이고, LU 풀이 단계를 약 30% 가속한다. 결과는 standard formulation 과
+수학적으로 동등 (rel `< 1e-12`).
+
+```python
+from mnpbem.materials import EpsConst, make_nonlocal_pair
+from mnpbem.geometry  import trisphere, ComParticle
+from mnpbem.greenfun  import coverlayer
+from mnpbem.bem       import BEMStat
+
+eps_embed = EpsConst(1.0)
+eps_core, eps_shell = make_nonlocal_pair(
+    'gold', eps_embed=eps_embed, delta_d=0.05,
+)
+
+p_core  = trisphere(144, 5.0 - 2 * 0.05)
+p_shell = coverlayer.shift(p_core, 0.05)
+
+p = ComParticle(
+    [eps_embed, eps_core, eps_shell],
+    [p_shell, p_core],
+    [[3, 1], [2, 3]],
+    closed=[1, 2],
+)
+refun = coverlayer.refine(p, [[1, 2]])
+
+# Schur 적용 — cover layer 변수 소거하여 reduced matrix 풀이
+bem = BEMStat(p, refun=refun, schur=True)
+# 동일하게:
+# bem = BEMRet(p, refun=refun, schur=True)
+```
+
+옵션 값:
+
+- `schur=True` — cover layer 가 감지되면 schur 소거 강제 적용.
+- `schur=False` (default) — standard formulation, v1.1.0 동작.
+- `schur='auto'` — cover layer 가 자동 감지되면 schur 적용, 아니면 standard.
+
+`pymnpbem_simulation` wrapper 는 `schur='auto'` 를 기본값으로 사용한다.
+
 ### `plasmonmode(bem, n=10, ...)`
 
 Compute the `n` lowest plasmon eigenmodes of a `BEMStat` solver.
@@ -476,6 +519,45 @@ Analytical references for sphere validation.
 For multi-GPU and multi-node MPI sweeps see
 [examples/07_gpu_multigpu.py](../examples/07_gpu_multigpu.py) and
 the wrappers in `mnpbem_simulation` (companion repo).
+
+### VRAM share — multi-GPU LU (v1.2.0)
+
+큰 mesh (25k+ face) 의 dense LU 풀이를 multi-GPU 메모리 풀로 처리한다.
+단일 GPU VRAM 한계 (예: RTX A6000 48 GB) 를 초과하는 경우 2 GPU pool
+(96 GB), 4 GPU pool (192 GB) 로 fit 시킨다.
+
+환경변수 인터페이스 (가장 간단):
+
+```python
+import os
+os.environ['MNPBEM_VRAM_SHARE_GPUS']    = '4'           # 4 GPU 메모리 합쳐 사용
+os.environ['MNPBEM_VRAM_SHARE_BACKEND'] = 'cusolvermg'  # default
+
+from mnpbem.bem import BEMRet
+bem = BEMRet(p)   # 자동으로 cuSolverMg multi-GPU LU 활용
+```
+
+직접 호출 인터페이스:
+
+```python
+from mnpbem.utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+
+lu = lu_factor_dispatch(A, n_gpus=4)        # cuSolverMg block-cyclic LU
+x  = lu_solve_dispatch(lu, b, n_gpus=4)
+```
+
+지원 backend (`MNPBEM_VRAM_SHARE_BACKEND`):
+
+- `cusolvermg` — NVIDIA cuSOLVER MG (권장). NVLink/PCIe 자동 최적화.
+- `magma` — ICL Magma multi-GPU (예정).
+- `nccl` — 사용자 정의 block-distributed LU (예정).
+
+`pymnpbem_simulation` wrapper 의 `compute.n_gpus_per_worker > 1` 설정이
+자동으로 `MNPBEM_VRAM_SHARE_GPUS` 를 설정한다. wavelength 분배
+(Lane D, multi-worker) 와 결합 가능 — 예: 8 GPU 환경에서 2-GPU pool 4개
+(`n_workers=4`, `n_gpus_per_worker=2`).
+
+상세는 `docs/ARCHITECTURE.md` "Key design decisions #12" 참조.
 
 ---
 
