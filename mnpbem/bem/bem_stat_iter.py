@@ -23,6 +23,15 @@ class BEMStatIter(BEMIter):
             enei: Optional[float] = None,
             **options: Any) -> None:
 
+        # Schur option (v1.2.0): not yet supported in the iterative path.
+        # H-matrix / ACA assembly is incompatible with the dense-block Schur
+        # reduction; combining the two is M5+ work. Raise early so the user
+        # gets an actionable error rather than a silently full-size solve.
+        if options.pop('schur', False):
+            raise NotImplementedError(
+                "[error] BEMStatIter does not support <schur> in v1.2.0; "
+                "use BEMStat (dense path) for Schur-complement reduction.")
+
         # Initialize BEMIter base class
         super(BEMStatIter, self).__init__(**options)
 
