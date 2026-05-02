@@ -121,7 +121,7 @@ class BEMRet(object):
     name = 'bemsolver'
     needs = {'sim': 'ret'}
 
-    def __init__(self, p, enei=None):
+    def __init__(self, p, enei=None, **options):
         """
         Initialize BEM solver for retarded approximation.
 
@@ -131,6 +131,17 @@ class BEMRet(object):
             Composite particle
         enei : float, optional
             Photon energy (eV) or wavelength (nm) for pre-initialization
+        **options : dict
+            Additional options forwarded to CompGreenRet. Special keys:
+
+            refun : callable, optional
+                User-supplied Green-function refinement hook with signature
+                ``fun(obj, g, f) -> (g, f)``. Applied to the assembled
+                ``(G1, H1)`` and ``(G2, H2)`` Green matrix pairs after each
+                ``init(enei)`` so cover-layer / nonlocal effective-layer
+                geometries can inject polar-integration corrections.
+                MATLAB equivalent: ``bemsolver(p, op, 'refun', ...)``
+                (see ``Greenfun/@greenret/private/init.m`` line 187).
         """
         if p is None:
             raise ValueError(
@@ -157,6 +168,13 @@ class BEMRet(object):
         self.Delta_lu = None
         self.Sigma_lu = None
 
+        # Optional user-supplied refinement hook (e.g. coverlayer.refine).
+        # Pulled out of `options` so it is not passed down to CompGreenRet
+        # (CompGreenRet itself does not yet handle 'refun'; refinement is
+        # applied at the BEM-matrix level in init() / _init_gpu_assemble()).
+        self.options = dict(options)
+        self._refun = self.options.pop('refun', None)
+
         # Green function object (for field/potential computation).
         # MATLAB bemret/private/init.m line 26 builds compgreenret immediately
         # in the constructor, snapshotting the particle's quadrature state at
@@ -164,7 +182,7 @@ class BEMRet(object):
         # excitation object created afterwards (e.g. EELSRet with refine=2)
         # could mutate p.quad and the BEM Green matrix would silently use the
         # refined rule. See Wave 22 Track A for full diagnosis.
-        self.g = CompGreenRet(self.p, self.p)
+        self.g = CompGreenRet(self.p, self.p, **self.options)
 
         # Initialize at specific energy if provided
         if enei is not None:
@@ -273,6 +291,16 @@ class BEMRet(object):
 
         H1_mat = H11 - H21 if not (isinstance(H21, int) and H21 == 0) else H11
         H2_mat = H22 - H12 if not (isinstance(H12, int) and H12 == 0) else H22
+
+        # Optional user-supplied refinement (coverlayer.refine for
+        # nonlocal cover-layer effects).  Applied to the assembled BEM
+        # matrices BEFORE LU factorization so downstream solves use the
+        # refined operators.  Mirrors MATLAB's per-greenret refun call at
+        # Greenfun/@greenret/private/init.m line 187, but lifted to the
+        # combined (G1, H1) / (G2, H2) pairs.
+        if self._refun is not None:
+            G1, H1_mat = self._refun(self.g, G1, H1_mat)
+            G2, H2_mat = self._refun(self.g, G2, H2_mat)
 
         # LU factorizations of Green functions
         self.G1_lu = lu_factor_dispatch(G1)
@@ -399,6 +427,24 @@ class BEMRet(object):
 
         H1_mat = H11 - H21 if H21 is not None else H11
         H2_mat = H22 - H12 if H12 is not None else H22
+
+        # Optional user-supplied refun (coverlayer.refine).  refun is a host
+        # numpy callable; round-trip through host and re-upload — the
+        # refinement touches at most a handful of pair elements so the
+        # transfer cost is negligible compared with the N^3 GEMMs that
+        # follow.  Applied BEFORE LU factor so factored matrices reflect
+        # the refined operators.
+        if self._refun is not None:
+            G1_h = cp.asnumpy(G1)
+            H1_h = cp.asnumpy(H1_mat)
+            G2_h = cp.asnumpy(G2)
+            H2_h = cp.asnumpy(H2_mat)
+            G1_h, H1_h = self._refun(self.g, G1_h, H1_h)
+            G2_h, H2_h = self._refun(self.g, G2_h, H2_h)
+            G1 = cp.asarray(G1_h)
+            H1_mat = cp.asarray(H1_h)
+            G2 = cp.asarray(G2_h)
+            H2_mat = cp.asarray(H2_h)
 
         # LU factor on device.  Keep G1/G2 on device for L1/L2 product.
         G1_dev = G1

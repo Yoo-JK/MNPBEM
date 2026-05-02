@@ -43,6 +43,13 @@ class BEMRetIter(BEMIter):
         self._G2 = None
         self._H2 = None
 
+        # User-supplied refinement hook (e.g. coverlayer.refine). Stripped
+        # before forwarding to CompGreenRet, applied at the BEM matrix
+        # level inside _init_matrices(). MATLAB bemretiter forwards refun
+        # via varargin → compgreenretiter → greenret/private/init.m.
+        self._refun = options.pop('refun', None)
+        self._op = options
+
         # Green function (with H-matrix / ACA approximation for iterative solver)
         # MATLAB: obj.g = aca.compgreenret(p, varargin{:}, ...)
         self._init_green(p, **options)
@@ -92,6 +99,21 @@ class BEMRetIter(BEMIter):
 
         self._H1 = H11 - H21 if not (isinstance(H21, (int, float)) and H21 == 0) else H11
         self._H2 = H22 - H12 if not (isinstance(H12, (int, float)) and H12 == 0) else H22
+
+        # Optional user-supplied refinement (coverlayer.refine for nonlocal
+        # cover-layer effects). Applied to dense G/H pairs. If ACA H-matrix
+        # acceleration is in use the matrices are densified for refun and
+        # the refined dense result is kept (refun touches a small set of
+        # face pairs, so densification is acceptable here).
+        if self._refun is not None:
+            G1 = self._G1.full() if hasattr(self._G1, 'full') and not isinstance(self._G1, np.ndarray) else self._G1
+            H1 = self._H1.full() if hasattr(self._H1, 'full') and not isinstance(self._H1, np.ndarray) else self._H1
+            G2 = self._G2.full() if hasattr(self._G2, 'full') and not isinstance(self._G2, np.ndarray) else self._G2
+            H2 = self._H2.full() if hasattr(self._H2, 'full') and not isinstance(self._H2, np.ndarray) else self._H2
+            G1, H1 = self._refun(self.g, G1, H1)
+            G2, H2 = self._refun(self.g, G2, H2)
+            self._G1, self._H1 = G1, H1
+            self._G2, self._H2 = G2, H2
 
         # Initialize preconditioner
         if self.precond is not None:
