@@ -360,7 +360,49 @@ N개 GPU의 메모리를 합쳐 *하나의* 큰 계산을 처리한다.
   자동으로 환경변수를 설정.
 - 한계: NVIDIA GPU 전용 (cusolvermg backend), AMD GPU 미지원.
   56k+ face 같이 LU 자체 메모리가 ~250 GB 인 경우 4 GPU pool (192 GB)
-  로도 fit 안되며 H-matrix 와 결합 필요 (M5+ Lane E2).
+  로도 fit 안되며 H-matrix 와 결합 필요 (v1.3.0 §3.13 참고).
+
+### 3.13 H-matrix BEMRetIter integration (v1.3.0, Lane E2 후속)
+
+큰 mesh (25k+ face) 의 dense LU 메모리 한계 (50+ GB peak) 를
+ACA H-matrix + GMRES 로 해소. v1.2.0 의 VRAM share 가 dense LU 의
+*메모리 풀* 을 만들어 GPU 한계를 우회한 반면, v1.3.0 의 H-matrix iter
+는 *알고리즘 차원* 에서 메모리·matvec 모두 `O(N log N)` 으로 줄인다.
+
+| 모드 | 메모리 | matvec 비용 | 적합 mesh |
+|---|---|---|---|
+| dense BEMRet | `O(N^2)` | `O(N^2)` | < 5k face |
+| dense + VRAM share (v1.2.0) | `O(N^2)`, multi-GPU pool | `O(N^2)` | 25k face (2 GPU pool) |
+| **H-matrix BEMRetIter (v1.3.0)** | `O(N log N)` | `O(N log N)` per iter | 25k+ face |
+| H-matrix + VRAM share | `O(N log N)`, multi-GPU pool | `O(N log N)` | 56k+ face (실험적) |
+
+구현 요점:
+
+- M4 H1 의 H-matrix Green function module 을 `BEMRetIter` /
+  `BEMStatIter` 와 통합. ACA 가 block-level 압축에서 *전체 H-tree*
+  level 로 확장됨.
+- GMRES 의 matvec op 가 H-matrix matvec 을 호출 — `O(N log N)` per
+  iter.
+- `hmatrix=True` opt-in (default 동작은 v1.2.0 과 동일).
+- VRAM share 와 결합 가능: H-matrix 자체는 단일 GPU 메모리 fit,
+  dense 부분 (preconditioner 등) 만 multi-GPU pool 이 처리.
+
+활성:
+
+- `BEMRetIter(p, hmatrix=True)`, `BEMStatIter(p, hmatrix=True)`.
+- `htol`, `kmax`, `cleaf` 파라미터 노출 (default 는 v1.0.0 ACA 와
+  동일).
+- `pymnpbem_simulation` 의 `iter.hmatrix: 'auto'` 가 5000+ face mesh
+  에서 자동 활성.
+
+한계:
+
+- `BEMRetLayerIter + hmatrix` 미지원 (`NotImplementedError`) —
+  cover layer + planar substrate 결합 시나리오 없음.
+- `BEM*Iter + Schur (v1.2.0)` 동시 활성 미지원 — H-matrix + Schur
+  통합은 후속 작업.
+- preconditioner 는 현재 Jacobi (`precond='diag'`) 만 H-matrix 와
+  호환. H-matrix block-LU preconditioner 는 후속.
 
 ## 4. Performance summary
 
