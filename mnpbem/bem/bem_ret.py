@@ -142,6 +142,13 @@ class BEMRet(object):
                 geometries can inject polar-integration corrections.
                 MATLAB equivalent: ``bemsolver(p, op, 'refun', ...)``
                 (see ``Greenfun/@greenret/private/init.m`` line 187).
+            schur : bool or 'auto', optional
+                Activate Schur-complement elimination of EpsNonlocal
+                cover-layer faces from the final Sigma matrix (v1.2.0).
+                ``True`` / ``'auto'`` enables when a cover layer is
+                detected; ``False`` (default) keeps the full BEM matrix.
+                Only the dense path supports Schur in v1.2.0; iterative
+                solvers raise NotImplementedError.
         """
         if p is None:
             raise ValueError(
@@ -174,6 +181,18 @@ class BEMRet(object):
         # applied at the BEM-matrix level in init() / _init_gpu_assemble()).
         self.options = dict(options)
         self._refun = self.options.pop('refun', None)
+
+        # Optional Schur-complement reduction (v1.2.0).
+        # When enabled and an EpsNonlocal cover layer is detected, the final
+        # Sigma matrix (the dominant LU factor in BEMRet.solve) is reduced
+        # by eliminating the shell-face block; the full sigma vector is
+        # reconstructed at the end of the solve.
+        self._schur_opt = self.options.pop('schur', False)
+        self._schur_active = False
+        self._shell_idx = None
+        self._core_idx = None
+        self._schur_reduce_rhs = None
+        self._schur_recover = None
 
         # Green function object (for field/potential computation).
         # MATLAB bemret/private/init.m line 26 builds compgreenret immediately
@@ -215,7 +234,10 @@ class BEMRet(object):
         # avoiding the dimer-scale 6336^2 host<->device transfers that
         # dominated the baseline GPU run.  The bit-identical numpy path is
         # preserved as fallback below.
-        if _bem_assembly_use_gpu():
+        # Schur option (v1.2.0) currently only supported on the CPU path;
+        # the GPU path keeps Sigma_lu as a ('gpu', lu, piv) tuple which the
+        # Schur reduce/recover pipeline does not yet round-trip through.
+        if _bem_assembly_use_gpu() and not self._schur_opt:
             try:
                 self._init_gpu_assemble(enei)
                 return self
@@ -354,7 +376,32 @@ class BEMRet(object):
             Sigma = (self.Sigma1 @ self.L1 - Sigma2 @ self.L2 +
                      self.k**2 * ((L @ Deltai) * nvec_outer) @ L)
 
-        self.Sigma_lu = lu_factor_dispatch(Sigma)
+        # Optional Schur-complement reduction over the EpsNonlocal cover-
+        # layer face block of Sigma (v1.2.0). When active, Sigma_lu factors
+        # the (M, M) reduced matrix (M = number of core faces) and the
+        # cached _schur_reduce_rhs / _schur_recover callables are used in
+        # solve() to keep the rest of the algorithm operating on full-size
+        # vectors.
+        self._schur_active = False
+        if self._schur_opt:
+            from .schur_helpers import (
+                schur_eliminate, detect_shell_core_partition,
+            )
+            partition = detect_shell_core_partition(self.p)
+            if partition is not None:
+                shell_idx, core_idx = partition
+                Sigma_eff, reduce_rhs, recover = schur_eliminate(
+                        np.asarray(Sigma), shell_idx, core_idx)
+                self._shell_idx = shell_idx
+                self._core_idx = core_idx
+                self._schur_reduce_rhs = reduce_rhs
+                self._schur_recover = recover
+                self._schur_active = True
+                self.Sigma_lu = lu_factor_dispatch(Sigma_eff)
+            else:
+                self.Sigma_lu = lu_factor_dispatch(Sigma)
+        else:
+            self.Sigma_lu = lu_factor_dispatch(Sigma)
 
         return self
 
@@ -829,6 +876,16 @@ class BEMRet(object):
                 return lu_solve(lu_piv, b, check_finite=False)
             return lu_solve(lu_piv, b.reshape(b.shape[0], -1), check_finite=False).reshape(b.shape)
 
+        def _ls_sigma(b):
+            # Wrapper that transparently applies the v1.2.0 Schur-complement
+            # reduction when active. b has shape (nfaces,) or (nfaces, npol).
+            if not self._schur_active:
+                return _ls(self.Sigma_lu, b)
+            b_full = np.asarray(b) if not isinstance(b, np.ndarray) else b
+            b_eff = self._schur_reduce_rhs(b_full)
+            sig_core = _ls(self.Sigma_lu, b_eff)
+            return self._schur_recover(sig_core, b_full)
+
         # Ensure phi, a have proper shapes
         if not isinstance(phi, np.ndarray) or phi.ndim == 0 or (isinstance(phi, np.ndarray) and phi.size == 1 and phi == 0):
             phi = xp.zeros(nfaces, dtype=complex)
@@ -899,7 +956,7 @@ class BEMRet(object):
             else:
                 inner_term = xp.sum(nvec * (L_diff @ _ls(Delta_lu, alpha_mod)), axis=1)
 
-            sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
+            sig2 = _ls_sigma(De_mod + 1j * k * inner_term)
 
             # Eq. (20): surface current
             if np.isscalar(L_diff):
@@ -956,7 +1013,7 @@ class BEMRet(object):
             else:
                 Ld_am = (L_diff @ am_solved.reshape(nfaces, -1)).reshape(nfaces, 3, npol)
             inner_term = xp.einsum('ij,ijk->ik', nvec, Ld_am)
-            sig2 = _ls(Sigma_lu, De_mod + 1j * k * inner_term)
+            sig2 = _ls_sigma(De_mod + 1j * k * inner_term)
 
             # Eq. (20): surface current h2
             if np.isscalar(L_diff):
