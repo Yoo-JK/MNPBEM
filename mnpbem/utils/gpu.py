@@ -19,6 +19,7 @@ device.
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any, Optional, Tuple
 
 import numpy as np
@@ -34,13 +35,77 @@ try:
     from cupyx.scipy.linalg import lu_factor as _cp_lu_factor  # type: ignore
     from cupyx.scipy.linalg import lu_solve as _cp_lu_solve  # type: ignore
     _CUPY_OK: bool = True
-except Exception:
+    _CUPY_IMPORT_ERROR: Optional[str] = None
+except Exception as _exc:
     _cp = None  # type: ignore
     _CUPY_OK = False
+    _CUPY_IMPORT_ERROR = repr(_exc)
 
 
 def gpu_available() -> bool:
     return _CUPY_OK and USE_GPU
+
+
+def get_install_hint() -> str:
+    """User-facing install guidance for missing optional extras."""
+    return (
+        'For GPU acceleration: pip install "mnpbem[gpu]"\n'
+        'For multi-node MPI:   pip install "mnpbem[mpi]"\n'
+        'For FMM acceleration: pip install "mnpbem[fmm]"\n'
+        'For all features:     pip install "mnpbem[all]"\n'
+        'See docs/INSTALL.md for prerequisites and troubleshooting.'
+    )
+
+
+def has_gpu_capability(verbose: bool = False) -> bool:
+    """Return True iff cupy is importable and at least one CUDA device exists.
+
+    The function never raises: it always returns a boolean and emits a
+    ``RuntimeWarning`` (only when ``verbose=True``) describing the reason
+    GPU acceleration is unavailable.  This lets callers gate code paths
+    without try / except boilerplate.
+    """
+    if not _CUPY_OK:
+        if verbose:
+            msg = (
+                'cupy is not importable ({}). GPU acceleration disabled.\n'
+                '{}').format(_CUPY_IMPORT_ERROR, get_install_hint())
+            warnings.warn(msg, RuntimeWarning, stacklevel=2)
+        return False
+    try:
+        n_gpus = int(_cp.cuda.runtime.getDeviceCount())
+    except Exception as exc:
+        if verbose:
+            msg = (
+                'cupy is installed but the CUDA runtime check failed '
+                '({}). CPU-only mode.').format(repr(exc))
+            warnings.warn(msg, RuntimeWarning, stacklevel=2)
+        return False
+    if n_gpus == 0:
+        if verbose:
+            warnings.warn(
+                'cupy is installed but no CUDA devices were found. '
+                'CPU-only mode.',
+                RuntimeWarning, stacklevel=2)
+        return False
+    return True
+
+
+def require_gpu_or_raise() -> None:
+    """Raise a friendly RuntimeError when MNPBEM_GPU=1 but cupy is missing.
+
+    Used by entry points that explicitly opt into GPU. The error message
+    embeds the install hint so the user does not need to look up extras
+    separately.
+    """
+    if not USE_GPU:
+        return
+    if _CUPY_OK:
+        return
+    msg = (
+        'MNPBEM_GPU=1 was set, but cupy is not available ({}).\n{}'
+    ).format(_CUPY_IMPORT_ERROR, get_install_hint())
+    raise RuntimeError(msg)
 
 
 def lu_factor_dispatch(A: np.ndarray, **kwargs: Any) -> Tuple:
