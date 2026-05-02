@@ -352,11 +352,63 @@ caveats when porting MATLAB nonlocal scripts:
    (`[embed, core, shell]`); `particles` has **2** (`[shell, core]`);
    `inout = [[3, 1], [2, 3]]`; `closed = [1, 2]`.
 4. **Cover layer makes the BEM result smoother**, but the mesh face
-   count grows by ≈ 2× → memory grows by ≈ 4×. v1.2.0's planned Schur
-   complement path is intended to address this.
+   count grows by ≈ 2× → memory grows by ≈ 4× (standard formulation).
+   - **v1.2.0+**: `schur=True` 적용 시 메모리 ~2× 만 (50% 절감), LU 풀이
+     ~30% 가속. cover layer 변수를 schur 소거하여 reduced matrix 풀이.
+
+     ```python
+     bem = BEMStat(p, refun=refun, schur=True)   # v1.2.0
+     # 또는:
+     bem = BEMRet(p, refun=refun, schur=True)
+     ```
+
+     `schur='auto'` 또는 wrapper 가 cover layer 자동 감지.
+   - 큰 mesh (25k+ face) + nonlocal 시나리오는 `MNPBEM_VRAM_SHARE_GPUS=N`
+     환경변수로 multi-GPU pool 활용 (cuSolverMg 백엔드, v1.2.0+).
 5. **`BEMRet` `refun` parameter** is new in v1.1.0 — use it when you
    want the retarded path with the cover-layer integration. `BEMStat`
    has accepted `refun` since v1.0.0.
+
+### 17. Schur complement (v1.2.0)
+
+EpsNonlocal cover-layer formulation 의 메모리 폭증 (face count ~2× →
+matrix memory ~4×) 을 완화하기 위한 옵션.
+
+| 동작 | 설정 | 메모리 | LU 시간 |
+|---|---|---|---|
+| Standard formulation | `schur=False` (default) | 4× | baseline |
+| Schur complement | `schur=True` | ~2× | -30% |
+| Auto-detect | `schur='auto'` | (cover layer 감지 시 2×) | -30% |
+
+```python
+# v1.1.0 — standard formulation
+bem = BEMStat(p, refun=refun)
+
+# v1.2.0 — Schur complement
+bem = BEMStat(p, refun=refun, schur=True)
+```
+
+수학적으로 standard formulation 과 동등 (rel < 1e-12 수준에서 일치).
+회귀 테스트는 둘 다 회기적으로 검증된다.
+
+### 18. Multi-GPU VRAM share (v1.2.0)
+
+단일 GPU VRAM (예: RTX A6000 48 GB) 을 초과하는 큰 dense LU
+(25k+ face) 를 multi-GPU 메모리 풀로 처리.
+
+```python
+import os
+os.environ['MNPBEM_VRAM_SHARE_GPUS']    = '2'           # 2 GPU pool = 96 GB
+os.environ['MNPBEM_VRAM_SHARE_BACKEND'] = 'cusolvermg'  # default
+
+from mnpbem.bem import BEMRet
+bem = BEMRet(p)   # 자동으로 multi-GPU LU 활용
+```
+
+이전 (v1.1.0) 에는 단일 GPU OOM 이 되던 mesh 크기가 v1.2.0 부터
+multi-GPU pool 로 fit 가능. wavelength 분배 (Lane D, multi-worker) 와
+결합 가능 — 8 GPU 환경에서 2-GPU pool 4개 (`n_workers=4`,
+`n_gpus_per_worker=2`).
 
 ---
 
