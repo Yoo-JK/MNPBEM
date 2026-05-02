@@ -9,7 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (none currently — v1.0.0 release prep in progress)
+- (none currently — v1.1.0 release prep in progress)
+
+## [1.1.0] - 2026-05-XX
+
+### Added
+
+- `EpsNonlocal` — hydrodynamic Drude nonlocal dielectric function
+  (cover-layer formulation).
+  - Yu Luo et al., PRL 111, 093901 (2013) effective-layer mapping.
+  - Factory methods: `EpsNonlocal.gold()`, `.silver()`, `.aluminum()`,
+    `.from_table(path)`.
+  - Helper: `make_nonlocal_pair(metal, eps_embed, delta_d, beta)` →
+    `(core, shell)` tuple.
+  - 18 unit tests; bit-identical to MATLAB `demospecstat19` reference
+    formula at `rtol = 1e-12`.
+- `BEMRet` now accepts a `refun` parameter (parity with `BEMStat`) — the
+  retarded path can be combined with the cover-layer integration.
+- `pymnpbem_simulation` wrapper updated: nonlocal workaround replaced
+  with the official `EpsNonlocal` call path.
+
+### Changed
+
+- (none — backward compatible with v1.0.0)
+
+### Performance
+
+- (no performance impact — algorithmic feature only)
 
 ## [1.0.0] - 2026-05-XX
 
@@ -270,4 +296,5 @@ GPU geometry-build speedup: **3.60× faster than MATLAB** on RTX A6000.
 See `docs/PERFORMANCE.md` for the full table.
 
 [1.0.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.0.0
-[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.0.0...HEAD
+[1.1.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.1.0
+[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.1.0...HEAD
