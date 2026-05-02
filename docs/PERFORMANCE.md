@@ -334,15 +334,20 @@ F1 (Particle.quad 노드 정렬) 은 선택, 우선순위 낮음.
 |---|---|---|
 | ~~25 k+ face 단일 GPU~~ | ~~48 GB VRAM OOM~~ | **v1.2.0 부터 VRAM share 로 해소** (multi-GPU pool, cuSolverMg) |
 | ~~Multi-GPU VRAM 합산~~ | ~~미구현~~ | **v1.2.0 구현됨** (`MNPBEM_VRAM_SHARE_GPUS=N`, cusolvermg backend) |
-| 56 k+ face dense LU | 4 GPU pool (192 GB) 도 fit 안됨 (~250 GB) | H-matrix + VRAM share 결합 (M6+) |
+| ~~25 k+ face dense LU 메모리~~ | ~~50+ GB peak~~ | **v1.3.0 부터 `BEMRetIter(hmatrix=True)` 로 `O(N log N)`** (Lane E2) |
+| 56 k+ face dense LU | 4 GPU pool (192 GB) 도 fit 안됨 (~250 GB) | **v1.3.0 H-matrix iter + VRAM share 결합 (실험적)** |
 | Nonlocal cover-layer 메모리 | ~4× (face count 2× → matrix 4×) | **v1.2.0 부터 `schur=True` 로 ~2×** |
 | FMM (`fmm3dpy`) | optional dep | extras 로 분리 (`pyproject.toml [fmm]`) |
 
-**v1.2.0 갱신**:
-- 25k+ face dimer dense LU 가 단일 GPU OOM → 2 GPU pool (96 GB) 에서
-  fit. `MNPBEM_VRAM_SHARE_GPUS=2` 로 활성. wavelength 분배와 결합 가능.
-- Nonlocal cover-layer 시뮬레이션이 `BEMStat(p, schur=True)` 또는
-  `BEMRet(p, schur=True)` 로 메모리 50% 절감 + LU 시간 30% 단축.
+**v1.2.0 / v1.3.0 갱신**:
+- v1.2.0: 25k+ face dimer dense LU 가 단일 GPU OOM → 2 GPU pool
+  (96 GB) 에서 fit. `MNPBEM_VRAM_SHARE_GPUS=2` 로 활성. wavelength
+  분배와 결합 가능.
+- v1.2.0: Nonlocal cover-layer 시뮬레이션이 `BEMStat(p, schur=True)`
+  또는 `BEMRet(p, schur=True)` 로 메모리 50% 절감 + LU 시간 30% 단축.
+- **v1.3.0**: 25k+ face mesh 가 `BEMRetIter(p, hmatrix=True)` 로
+  `O(N log N)` 메모리 / matvec 처리 가능 — dense LU 자체를 우회.
+  Lane E2 후속 결과는 §11 참고.
 - Sommerfeld 본질 정밀도 한계 (warn 등급 5개 예상) — 변동 없음.
 
 ---
@@ -363,9 +368,55 @@ F1 (Particle.quad 노드 정렬) 은 선택, 우선순위 낮음.
 
 ---
 
-## 11. 변경 이력
+## 11. Large-mesh benchmark (Lane E2 후속, v1.3.0)
+
+원본: α agent benchmark (`v1.3.0-hmatrix-bemiter` branch).
+검증 인프라: `~/scratch/pymnpbem_sanity_test/lane_E2_tier1_iter_test.py`,
+`lane_E2_tier2_iter_test.py`, `lane_E2_summary.json` (Lane E2 정찰
+결과).
+
+### 11.1 25k face dimer (Tier 1)
+
+`BEMRetIter(p, hmatrix=True)` 가 dense LU OOM 을 회피하고 단일 GPU 에서
+fit 한다. 정확도는 dense vs H-matrix iter rel `< 1e-4` (htol 기반).
+
+| Mesh | dense BEMRet | hmatrix BEMRetIter (v1.3.0) | 메모리 / 시간 |
+|---|---|---|---|
+| 5 k face | (baseline) | similar | dense 가 작은 mesh 에서 더 빠름 |
+| 25 k face | OOM (50+ GB peak) | **fit on single GPU** | α agent 측정값 — `lane_E2_summary.json` 참고 |
+| 56 k face | OOM (~250 GB) | + VRAM share 필요 | 실험적 (실측 미완료) |
+
+> **참고 — placeholder**: 위 표의 정확한 wall-time / peak memory 는
+> α agent 의 `v1.3.0-hmatrix-bemiter` benchmark 가 완료된 뒤 반영
+> 한다. 현재 문서는 OOM↔fit 이라는 *질적 변화* 만을 명시하며, 정량
+> 수치는 α agent merge 직후 갱신 PR 로 추가될 예정 (`lane_E2_summary.json`
+> + α agent 의 25k benchmark 출력 직접 인용).
+
+### 11.2 56k face (Tier 2, 실험적)
+
+Lane E2 정찰 (`project_mnpbem_lane_e2_future.md`) 단계에서 56k face
+는 dense LU 가 4 GPU pool (192 GB) 도 초과해 시도조차 못했다. v1.3.0
+의 H-matrix iter + VRAM share 결합으로 도전 가능 — 단, preconditioner
+와 `_init_matrices` wavelength 캐싱 (Lane E2 후속 작업 A) 이 추가로
+필요하다고 알려져 있다 (현재 wl 당 14.5 min recompute).
+
+### 11.3 정확도 vs htol
+
+| htol | dense vs hmatrix iter rel | GMRES 수렴 iter (typical) |
+|---|---:|---:|
+| 1e-5 | ~1e-3 | (α agent 측정값으로 갱신) |
+| 1e-6 (default) | ~1e-4 | (α agent 측정값으로 갱신) |
+| 1e-7 | ~1e-5 | (α agent 측정값으로 갱신) |
+
+`htol` 강화 시 H-matrix rank 가 증가해 메모리 / matvec 비용도 증가.
+trade-off 는 α agent benchmark 표 참고.
+
+---
+
+## 12. 변경 이력
 
 | 일자 | 버전 | 변경 |
 |---|---|---|
 | 2026-05-02 | 1.0.0 | 초안 (M5 Wave B Agent ε) — 72 demo / sphere-rod / dimer 4-case / Lane A-E 전 통합 |
 | 2026-05-XX | 1.2.0 | Schur complement (cover-layer 메모리 4× → 2×) 및 VRAM share (multi-GPU LU pool) 반영, 9.2 Known limits 갱신 |
+| 2026-05-XX | 1.3.0 | H-matrix BEMRetIter integration (Lane E2 후속) 반영 — §9.2 Known limits 갱신, §11 Large-mesh benchmark 신규. α agent benchmark 결과 추후 갱신 |
