@@ -9,7 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (none currently — v1.2.0 release prep in progress)
+- (none currently — v1.3.0 release prep in progress)
+
+## [1.3.0] - 2026-05-XX
+
+### Added
+
+- **H-matrix BEMRetIter integration** (Lane E2 후속).
+  - `BEMRetIter(p, hmatrix=True)`, `BEMStatIter(p, hmatrix=True)` 새
+    옵션. ACA H-tree 압축 + GMRES 로 25k+ face 큰 mesh 의 dense LU OOM
+    (50+ GB) 을 해소.
+  - 메모리·matvec 모두 `O(N log N)` 스케일 — 단일 GPU 에서 25k face 가
+    fit. VRAM share (v1.2.0) 와 결합 시 56k+ face 도 도전 가능.
+  - 노출 파라미터: `htol` (ACA truncation, default 1e-6),
+    `kmax` (ACA rank 상한, default `[4, 100]`),
+    `cleaf` (leaf cluster 크기, default 200).
+  - `BEMRetLayerIter + hmatrix` 는 미지원 (`NotImplementedError`) —
+    cover-layer + planar substrate 결합 시나리오 없음.
+  - `BEM*Iter + Schur (v1.2.0)` 동시 활성도 미지원 — H-matrix + Schur
+    통합은 후속 작업.
+- **`pymnpbem_simulation` iter runner 의 `iter.hmatrix: 'auto'`**
+  옵션 — 5000+ face mesh 에서 자동으로 H-matrix BEMRetIter 활성.
+
+### Changed
+
+- (none — backward compatible with v1.2.0)
+
+### Performance
+
+- 25k face dimer: dense LU OOM (~50+ GB peak) →
+  H-matrix BEMRetIter 단일 GPU fit (실측 수치는
+  `docs/PERFORMANCE.md` §11 참고).
+- per-wl 시간: dense BEMRet 와 H-matrix BEMRetIter 비교
+  (`docs/PERFORMANCE.md` §11).
+- 정확도: dense vs H-matrix BEMRetIter rel `< 1e-4` (htol 기반).
 
 ## [1.2.0] - 2026-05-XX
 
@@ -328,4 +361,5 @@ See `docs/PERFORMANCE.md` for the full table.
 [1.0.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.0.0
 [1.1.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.1.0
 [1.2.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.2.0
-[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.2.0...HEAD
+[1.3.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.3.0
+[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.3.0...HEAD
