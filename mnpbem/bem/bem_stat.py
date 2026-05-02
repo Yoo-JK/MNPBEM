@@ -13,11 +13,23 @@ Reference:
     Hohenester et al., PRL 103, 106801 (2009)
 """
 
+import os
+
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 from ..greenfun import CompGreenStat, CompStruct
 from ..utils.matlab_compat import msqrt
 from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+
+
+def _vram_share_lu_kwargs() -> dict:
+    if os.environ.get('MNPBEM_VRAM_SHARE', '0') != '1':
+        return {}
+    n_gpus = int(os.environ.get('MNPBEM_VRAM_SHARE_GPUS', '1'))
+    if n_gpus <= 1:
+        return {}
+    backend = os.environ.get('MNPBEM_VRAM_SHARE_BACKEND', 'cusolvermg')
+    return {'n_gpus': n_gpus, 'backend': backend}
 
 
 class BEMStat(object):
@@ -167,7 +179,7 @@ class BEMStat(object):
             # BEM resolvent matrix
             # MATLAB: obj.mat = -inv(diag(lambda) + obj.F)
             Lambda = np.diag(lambda_diag)
-            self.mat_lu = lu_factor_dispatch(-(Lambda + self.F))
+            self.mat_lu = lu_factor_dispatch(-(Lambda + self.F), **_vram_share_lu_kwargs())
 
             # Save energy
             # MATLAB: obj.enei = enei
