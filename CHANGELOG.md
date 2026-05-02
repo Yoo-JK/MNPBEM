@@ -9,7 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (none currently — v1.1.0 release prep in progress)
+- (none currently — v1.2.0 release prep in progress)
+
+## [1.2.0] - 2026-05-XX
+
+### Added
+
+- **Schur complement** for cover-layer BEM — nonlocal 메모리 50% 절감,
+  LU 풀이 30% 가속.
+  - `BEMStat(p, schur=True)`, `BEMRet(p, schur=True)` 옵션.
+  - Cover layer (`EpsNonlocal`) 변수를 schur 소거하여 reduced matrix 풀이.
+  - 결과는 standard formulation 과 수학적으로 동등 (rel < 1e-12).
+  - `schur='auto'` 또는 wrapper 가 cover layer 자동 감지.
+  - 구현: `mnpbem/bem/schur_helpers.py`.
+- **VRAM share** — 1 worker 가 multi-GPU 메모리 합쳐 큰 단일 계산 처리.
+  - cuSolverMg backend (NVIDIA 공식 multi-GPU LU API).
+  - 25k+ face dense LU (50+ GB) 가 2 GPU pool (96 GB) 에서 fit.
+  - 환경변수 `MNPBEM_VRAM_SHARE_GPUS=N`,
+    `MNPBEM_VRAM_SHARE_BACKEND=cusolvermg`.
+  - `mnpbem.utils.gpu.lu_factor_dispatch(A, n_gpus=N)` 직접 호출 지원.
+  - `pymnpbem_simulation` 의 `compute.n_gpus_per_worker > 1` 이 자동 활성.
+  - 구현: `mnpbem/utils/multi_gpu_lu.py`.
+
+### Changed
+
+- (none — backward compatible with v1.1.0)
+
+### Performance
+
+- nonlocal cover-layer simulations: 메모리 4× → ~2× (Schur 적용 시).
+- 25k+ face dense LU: 단일 GPU OOM → multi-GPU pool 로 가능.
+- (수치는 `docs/PERFORMANCE.md` 참고)
 
 ## [1.1.0] - 2026-05-XX
 
@@ -297,4 +327,5 @@ See `docs/PERFORMANCE.md` for the full table.
 
 [1.0.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.0.0
 [1.1.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.1.0
-[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.1.0...HEAD
+[1.2.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.2.0
+[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.2.0...HEAD
