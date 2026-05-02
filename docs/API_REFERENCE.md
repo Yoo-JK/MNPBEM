@@ -603,6 +603,32 @@ x  = lu_solve_dispatch(lu, b, n_gpus=4)
 
 상세는 `docs/ARCHITECTURE.md` "Key design decisions #12" 참조.
 
+### GPU 환경 검사 (v1.4.0)
+
+`from mnpbem.utils.gpu import has_gpu_capability, get_install_hint`
+
+CPU/GPU 분리 install (v1.4.0) 에 따라, runtime 에서 GPU 활성 가능
+여부를 사전에 확인하는 helper 가 추가되었다.
+
+```python
+from mnpbem.utils.gpu import has_gpu_capability, get_install_hint
+
+if not has_gpu_capability(verbose=True):
+    print(get_install_hint())
+    # GPU 가속이 필요한 경우: pip install mnpbem[gpu]
+```
+
+| Function | Description |
+|---|---|
+| `has_gpu_capability(verbose=False) -> bool` | cupy import + CUDA driver + GPU device 가용성을 모두 검사. 모두 OK 면 True. `verbose=True` 시 누락 항목별 친절한 메시지 출력. |
+| `get_install_hint() -> str` | 현재 환경 상태를 보고 적절한 `pip install mnpbem[...]` 명령을 안내하는 문자열 반환. |
+
+`MNPBEM_GPU=1` 환경변수를 사용자가 명시했는데 cupy 가 설치되어
+있지 않으면 BEM solver 호출 시점에 `RuntimeError` + install 명령
+안내를 출력한다 (기존: silent fallback 였음).
+
+설치 시나리오와 install 명령 매핑은 `docs/INSTALL.md` 참고.
+
 ---
 
 ## Versioning & deprecations
