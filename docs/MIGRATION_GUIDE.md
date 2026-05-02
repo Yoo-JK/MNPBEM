@@ -89,6 +89,17 @@ users.
 | `op.iter = struct('tol',1e-6,'restart',30)` | pass `iter={'tol':1e-6,'restart':30}` to solver |
 | `op.aca = struct('htol',1e-6,'kmax',100)` | pass `aca={'htol':1e-6,'kmax':100}` to solver |
 
+### Nonlocal hydrodynamic Drude
+
+| MATLAB | Python |
+|---|---|
+| `epsfun(@(enei) 1./(1./(eps_b - eps_m) - q_L * delta_d))` | `EpsNonlocal(eps_m, eps_b, delta_d=δ, beta=β)` |
+| (manual `coverlayer.shift`) | `coverlayer.shift(p_core, delta_d)` (동일) |
+| `coverlayer.refine(p, [[1, 2]])` | `coverlayer.refine(p, [[1, 2]])` (동일) |
+| (ad-hoc 3-particle epstab construction) | `make_nonlocal_pair('gold', eps_embed, delta_d, beta)` 가 자동 `(core, shell)` 튜플 반환 |
+| `bemstat(p, op{:}, 'refun', refun)` | `BEMStat(p, refun=refun)` |
+| `bemret(p, op{:}, 'refun', refun)` | `BEMRet(p, refun=refun)` (v1.1.0 신규) |
+
 ---
 
 ## Side-by-side worked example
@@ -325,6 +336,28 @@ MNPBEM_GPU=1 python my_script.py
 
 For multi-GPU wavelength dispatch see `examples/07_gpu_multigpu.py`.
 
+### 16. Nonlocal hydrodynamic Drude (v1.1.0)
+
+`EpsNonlocal` packages the Yu Luo et al. cover-layer formulation. A few
+caveats when porting MATLAB nonlocal scripts:
+
+1. **Shell thickness `delta_d`**: 0.05 nm is the standard. Too small
+   (< 0.01 nm) introduces numerical noise; too large (> 0.2 nm) breaks
+   the thin-shell approximation.
+2. **β (Fermi velocity)**: metal-dependent. Default values come from
+   `sqrt(3/5) * v_F * hbar`: Au ≈ 0.714 eV·nm, Ag ≈ 0.864 eV·nm,
+   Al ≈ 1.034 eV·nm. Pass `beta=` explicitly for non-tabulated metals
+   or when reproducing a specific paper.
+3. **Geometry**: `ComParticle` epstab has **3 entries**
+   (`[embed, core, shell]`); `particles` has **2** (`[shell, core]`);
+   `inout = [[3, 1], [2, 3]]`; `closed = [1, 2]`.
+4. **Cover layer makes the BEM result smoother**, but the mesh face
+   count grows by ≈ 2× → memory grows by ≈ 4×. v1.2.0's planned Schur
+   complement path is intended to address this.
+5. **`BEMRet` `refun` parameter** is new in v1.1.0 — use it when you
+   want the retarded path with the cover-layer integration. `BEMStat`
+   has accepted `refun` since v1.0.0.
+
 ---
 
 ## What does **not** map cleanly
@@ -335,7 +368,7 @@ file an issue.
 
 | MATLAB feature | Status |
 |---|---|
-| `nonlocal.m` (Pendry-style nonlocal cover layer) | partial — only the simplest local-cover mode is wrapped |
+| `nonlocal.m` (Pendry-style nonlocal cover layer) | done — see `EpsNonlocal` / `make_nonlocal_pair` (v1.1.0) and pitfall #16 |
 | GUI (`MNPBEM_GUI`) | not ported (use `BemPlot` for static viewing) |
 | `makemnpbemhelp.m` (HTML help generator) | replaced by this `docs/` directory |
 | `compound.norm`, `compound.union` (set-algebra helpers) | partial — see `docs/API_REFERENCE.md`, `Compound` |
