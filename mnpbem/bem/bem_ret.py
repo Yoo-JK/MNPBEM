@@ -121,7 +121,7 @@ class BEMRet(object):
     name = 'bemsolver'
     needs = {'sim': 'ret'}
 
-    def __init__(self, p, enei=None, **options):
+    def __init__(self, p, enei=None):
         """
         Initialize BEM solver for retarded approximation.
 
@@ -131,14 +131,6 @@ class BEMRet(object):
             Composite particle
         enei : float, optional
             Photon energy (eV) or wavelength (nm) for pre-initialization
-        **options : dict, optional
-            refun : callable, optional
-                Cover-layer / nonlocal-layer Green function refinement hook.
-                Currently retarded refinement is performed only at the
-                CompGreenRet level (when supported); BEMRet itself does not
-                consume this argument but emits a warning if EpsNonlocal is
-                present and refun is missing. Use BEMStat for fully
-                supported nonlocal cover-layer simulations.
         """
         if p is None:
             raise ValueError(
@@ -148,10 +140,6 @@ class BEMRet(object):
             raise TypeError(
                 "BEMRet: 'p' must expose ComParticle-like attributes "
                 "(pos, nvec, eps); got {!r}.".format(type(p).__name__))
-
-        # Hydrodynamic / nonlocal cover-layer hint for retarded solver.
-        self._refun = options.get('refun', None)
-        self._maybe_warn_nonlocal_without_refun(p, self._refun)
 
         self.p = p
         self.enei = None
@@ -181,30 +169,6 @@ class BEMRet(object):
         # Initialize at specific energy if provided
         if enei is not None:
             self.init(enei)
-
-    @staticmethod
-    def _maybe_warn_nonlocal_without_refun(p, refun):
-        if refun is not None:
-            return
-        try:
-            from ..materials import EpsNonlocal
-        except ImportError:
-            return
-        eps_list = getattr(p, 'eps', None)
-        if eps_list is None:
-            return
-        try:
-            has_nl = any(isinstance(e, EpsNonlocal) for e in eps_list)
-        except TypeError:
-            return
-        if has_nl:
-            import warnings as _w
-            _w.warn(
-                "[warn] BEMRet: EpsNonlocal in epstab but no 'refun' option "
-                "passed. Retarded cover-layer refinement is not yet wired up "
-                "to BEMRet's matrix assembly; for fully supported nonlocal "
-                "simulations use BEMStat with refun = coverlayer.refine(...).",
-                stacklevel = 3)
 
     def init(self, enei):
         """

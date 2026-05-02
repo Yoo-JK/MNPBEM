@@ -123,12 +123,6 @@ class BEMStat(object):
         self.enei = None
         self.mat_lu = None
 
-        # Hydrodynamic / nonlocal cover-layer hint:
-        # if EpsNonlocal sits in epstab but no `refun` was supplied, the cover
-        # layer's polar-quadrature refinement (coverlayer.refine) is not
-        # being applied -- results will be inaccurate on the thin shell.
-        self._maybe_warn_nonlocal_without_refun(p, options.get('refun', None))
-
         # Green function
         # MATLAB: obj.g = compgreenstat(p, p, varargin{:})
         self.g = CompGreenStat(p, p, **options)
@@ -146,31 +140,6 @@ class BEMStat(object):
         # MATLAB: if exist('enei', 'var') && ~isempty(enei)
         if enei is not None:
             self(enei)
-
-    @staticmethod
-    def _maybe_warn_nonlocal_without_refun(p, refun):
-        if refun is not None:
-            return
-        try:
-            from ..materials import EpsNonlocal
-        except ImportError:
-            return
-        eps_list = getattr(p, 'eps', None)
-        if eps_list is None:
-            return
-        try:
-            has_nl = any(isinstance(e, EpsNonlocal) for e in eps_list)
-        except TypeError:
-            return
-        if has_nl:
-            import warnings as _w
-            _w.warn(
-                "[warn] BEMStat: EpsNonlocal in epstab but no 'refun' option "
-                "passed. Hydrodynamic cover-layer refinement will not be "
-                "applied. Use refun = coverlayer.refine(p, ind) to enable "
-                "polar-quadrature refinement of cover-layer Green function "
-                "elements.",
-                stacklevel = 3)
 
     def _init_matrices(self, enei):
         """
