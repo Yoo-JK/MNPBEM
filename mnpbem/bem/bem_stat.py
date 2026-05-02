@@ -99,7 +99,14 @@ class BEMStat(object):
         enei : float, optional
             Light wavelength in vacuum
         **options : dict
-            Additional options passed to CompGreenStat
+            Additional options passed to CompGreenStat. Special keys:
+
+            schur : bool or 'auto', optional
+                Activate Schur-complement elimination of EpsNonlocal
+                cover-layer faces. ``True`` or ``'auto'`` enables the
+                reduction whenever a cover layer is detected via
+                ``detect_shell_core_partition``; ``False`` (default) keeps
+                the full BEM matrix.
 
         Examples
         --------
@@ -118,6 +125,14 @@ class BEMStat(object):
 
         # Save particle
         self.p = p
+
+        # Schur option (extract before forwarding to CompGreenStat).
+        self._schur_opt = options.pop('schur', False)
+        self._schur_active = False
+        self._shell_idx = None
+        self._core_idx = None
+        self._schur_reduce_rhs = None
+        self._schur_recover = None
 
         # Initialize properties
         self.enei = None
@@ -167,7 +182,32 @@ class BEMStat(object):
             # BEM resolvent matrix
             # MATLAB: obj.mat = -inv(diag(lambda) + obj.F)
             Lambda = np.diag(lambda_diag)
-            self.mat_lu = lu_factor_dispatch(-(Lambda + self.F))
+            M_full = -(Lambda + self.F)
+
+            # Optional Schur-complement reduction over EpsNonlocal cover-
+            # layer faces. The reduced matrix has size (M, M) where M is the
+            # number of core (non-shell) faces. Mathematically equivalent to
+            # the full block solve.
+            self._schur_active = False
+            if self._schur_opt:
+                from .schur_helpers import (
+                    schur_eliminate, detect_shell_core_partition,
+                )
+                partition = detect_shell_core_partition(self.p)
+                if partition is not None:
+                    shell_idx, core_idx = partition
+                    M_eff, reduce_rhs, recover = schur_eliminate(
+                            np.asarray(M_full), shell_idx, core_idx)
+                    self._shell_idx = shell_idx
+                    self._core_idx = core_idx
+                    self._schur_reduce_rhs = reduce_rhs
+                    self._schur_recover = recover
+                    self._schur_active = True
+                    self.mat_lu = lu_factor_dispatch(M_eff)
+                else:
+                    self.mat_lu = lu_factor_dispatch(M_full)
+            else:
+                self.mat_lu = lu_factor_dispatch(M_full)
 
             # Save energy
             # MATLAB: obj.enei = enei
@@ -232,10 +272,23 @@ class BEMStat(object):
 
         # Solve: σ = mat · φₚ
         # MATLAB: sig = compstruct(obj.p, exc.enei, 'sig', matmul(obj.mat, exc.phip))
-        sig_result = self._lu_solve(self.mat_lu, exc.phip)
+        if self._schur_active:
+            sig_result = self._schur_solve(exc.phip)
+        else:
+            sig_result = self._lu_solve(self.mat_lu, exc.phip)
         sig = CompStruct(self.p, exc.enei, sig=sig_result)
 
         return sig, self
+
+    def _schur_solve(self, phip):
+        # Reduced RHS lives only on core faces. Solve (M, M) reduced system
+        # then recover the full sigma vector via the cached
+        # _schur_recover callable.
+        b_full = np.asarray(phip)
+        b_eff = self._schur_reduce_rhs(b_full)
+        sig_core = self._lu_solve(self.mat_lu, b_eff)
+        sig_full = self._schur_recover(sig_core, b_full)
+        return sig_full
 
     def __mul__(self, sig):
         """
