@@ -13,11 +13,23 @@ Reference:
     Hohenester et al., PRL 103, 106801 (2009)
 """
 
+import os
+
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 from ..greenfun import CompGreenStat, CompStruct
 from ..utils.matlab_compat import msqrt
 from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+
+
+def _vram_share_lu_kwargs() -> dict:
+    if os.environ.get('MNPBEM_VRAM_SHARE', '0') != '1':
+        return {}
+    n_gpus = int(os.environ.get('MNPBEM_VRAM_SHARE_GPUS', '1'))
+    if n_gpus <= 1:
+        return {}
+    backend = os.environ.get('MNPBEM_VRAM_SHARE_BACKEND', 'cusolvermg')
+    return {'n_gpus': n_gpus, 'backend': backend}
 
 
 class BEMStat(object):
@@ -187,7 +199,8 @@ class BEMStat(object):
             # Optional Schur-complement reduction over EpsNonlocal cover-
             # layer faces. The reduced matrix has size (M, M) where M is the
             # number of core (non-shell) faces. Mathematically equivalent to
-            # the full block solve.
+            # the full block solve. VRAM-share kwargs propagate into mat_lu.
+            _lu_opts = _vram_share_lu_kwargs()
             self._schur_active = False
             if self._schur_opt:
                 from .schur_helpers import (
@@ -203,11 +216,11 @@ class BEMStat(object):
                     self._schur_reduce_rhs = reduce_rhs
                     self._schur_recover = recover
                     self._schur_active = True
-                    self.mat_lu = lu_factor_dispatch(M_eff)
+                    self.mat_lu = lu_factor_dispatch(M_eff, **_lu_opts)
                 else:
-                    self.mat_lu = lu_factor_dispatch(M_full)
+                    self.mat_lu = lu_factor_dispatch(M_full, **_lu_opts)
             else:
-                self.mat_lu = lu_factor_dispatch(M_full)
+                self.mat_lu = lu_factor_dispatch(M_full, **_lu_opts)
 
             # Save energy
             # MATLAB: obj.enei = enei
@@ -467,7 +480,7 @@ class BEMStat(object):
 
     @staticmethod
     def _lu_solve(lu_piv, b):
-        if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu"):
+        if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu", "mgpu"):
             if b.ndim == 1:
                 return lu_solve_dispatch(lu_piv, b)
             return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)

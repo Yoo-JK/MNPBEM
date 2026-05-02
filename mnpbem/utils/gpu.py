@@ -49,7 +49,31 @@ def lu_factor_dispatch(A: np.ndarray, **kwargs: Any) -> Tuple:
     Extra ``kwargs`` are forwarded to ``scipy.linalg.lu_factor`` for the CPU
     path; GPU path uses CuPy defaults (``check_finite`` / ``overwrite_a``
     are not exposed by ``cupyx.scipy.linalg.lu_factor`` in the same way).
+
+    Multi-GPU VRAM-share path
+    -------------------------
+    Pass ``n_gpus=N`` (with ``N>=2``) to distribute the matrix across
+    multiple GPUs via cuSolverMg. The return tag becomes ``'mgpu'`` and
+    the second slot holds a ``MultiGPULU`` handle. Falls back to single
+    GPU / CPU with a warning when cuSolverMg / drivers are unavailable.
+    Optional kwargs: ``backend`` ('cusolvermg'|'magma'|'nccl'),
+    ``device_ids`` (list of CUDA device ids).
     """
+    n_gpus = int(kwargs.pop('n_gpus', 1))
+    backend = kwargs.pop('backend', 'cusolvermg')
+    device_ids = kwargs.pop('device_ids', None)
+    if n_gpus >= 2:
+        try:
+            from .multi_gpu_lu import factor_multi_gpu, cusolvermg_available, warn_fallback
+            if backend == 'cusolvermg' and not cusolvermg_available():
+                warn_fallback('libcusolverMg.so / libcudart.so not loadable')
+            else:
+                lu_handle = factor_multi_gpu(
+                    A, n_gpus=n_gpus, backend=backend, device_ids=device_ids)
+                return ("mgpu", lu_handle, None)
+        except (RuntimeError, NotImplementedError, ValueError) as exc:
+            from .multi_gpu_lu import warn_fallback
+            warn_fallback(repr(exc))
     if _CUPY_OK and USE_GPU and A.shape[0] >= GPU_THRESHOLD:
         A_gpu = _cp.asarray(A)
         lu_gpu, piv_gpu = _cp_lu_factor(A_gpu, overwrite_a=True)
@@ -63,8 +87,18 @@ def lu_solve_dispatch(piv_pkg: Tuple, b: np.ndarray, **kwargs: Any) -> np.ndarra
     """Solve A x = b given a factorization produced by ``lu_factor_dispatch``.
 
     Returns a NumPy array on the host irrespective of where the LU lives.
+    Supports the multi-GPU ``'mgpu'`` tag (cuSolverMg distributed solve).
     """
     tag = piv_pkg[0]
+    if tag == "mgpu":
+        lu_handle = piv_pkg[1]
+        trans = kwargs.pop('trans', 'N')
+        if isinstance(trans, int):
+            trans = {0: 'N', 1: 'T', 2: 'C'}.get(trans, 'N')
+        b_host = b
+        if _CUPY_OK and isinstance(b, _cp.ndarray):
+            b_host = _cp.asnumpy(b)
+        return lu_handle.solve(np.ascontiguousarray(b_host), trans=trans)
     if tag == "gpu":
         b_gpu = _cp.asarray(b)
         x_gpu = _cp_lu_solve((piv_pkg[1], piv_pkg[2]), b_gpu)
@@ -79,8 +113,13 @@ def lu_solve_native(piv_pkg: Tuple, b: Any, **kwargs: Any):
     When the LU package is on GPU and ``b`` is a cupy ndarray, returns a
     cupy ndarray (no host round-trip).  Otherwise behaves like
     ``lu_solve_dispatch``.
+
+    For the multi-GPU ``'mgpu'`` tag, always returns a NumPy array (no
+    single-device cupy view exists for a distributed solve).
     """
     tag = piv_pkg[0]
+    if tag == "mgpu":
+        return lu_solve_dispatch(piv_pkg, b, **kwargs)
     if tag == "gpu":
         if _CUPY_OK and isinstance(b, _cp.ndarray):
             return _cp_lu_solve((piv_pkg[1], piv_pkg[2]), b)

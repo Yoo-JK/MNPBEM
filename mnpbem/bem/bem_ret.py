@@ -39,6 +39,20 @@ def _bem_assembly_use_gpu() -> bool:
     return os.environ.get('MNPBEM_GPU', '0') == '1'
 
 
+def _vram_share_lu_kwargs() -> dict:
+    """Read MNPBEM_VRAM_SHARE_* env vars and return kwargs for lu_factor_dispatch.
+
+    Returns ``{}`` when VRAM-share is not enabled (n_gpus<=1).
+    """
+    if os.environ.get('MNPBEM_VRAM_SHARE', '0') != '1':
+        return {}
+    n_gpus = int(os.environ.get('MNPBEM_VRAM_SHARE_GPUS', '1'))
+    if n_gpus <= 1:
+        return {}
+    backend = os.environ.get('MNPBEM_VRAM_SHARE_BACKEND', 'cusolvermg')
+    return {'n_gpus': n_gpus, 'backend': backend}
+
+
 def _bem_native_gpu() -> bool:
     """Phase 3: keep BEMRet matrices (Sigma1, L1/L2) on device when set.
 
@@ -324,9 +338,11 @@ class BEMRet(object):
             G1, H1_mat = self._refun(self.g, G1, H1_mat)
             G2, H2_mat = self._refun(self.g, G2, H2_mat)
 
-        # LU factorizations of Green functions
-        self.G1_lu = lu_factor_dispatch(G1)
-        self.G2_lu = lu_factor_dispatch(G2)
+        # LU factorizations of Green functions. Honor MNPBEM_VRAM_SHARE_* for
+        # multi-GPU dispatch on large meshes (1 worker pools VRAM across GPUs).
+        _lu_opts = _vram_share_lu_kwargs()
+        self.G1_lu = lu_factor_dispatch(G1, **_lu_opts)
+        self.G2_lu = lu_factor_dispatch(G2, **_lu_opts)
 
         # Compute inverses for intermediate matrix construction
         G1i = lu_solve_dispatch(self.G1_lu, np.eye(G1.shape[0]))
@@ -357,7 +373,7 @@ class BEMRet(object):
 
         # LU factorization of Delta matrix
         Delta = self.Sigma1 - Sigma2
-        self.Delta_lu = lu_factor_dispatch(Delta)
+        self.Delta_lu = lu_factor_dispatch(Delta, **_lu_opts)
         Deltai = lu_solve_dispatch(self.Delta_lu, np.eye(Delta.shape[0]))
 
         # Combined Sigma matrix [Eq. (21,22)]
@@ -381,7 +397,8 @@ class BEMRet(object):
         # the (M, M) reduced matrix (M = number of core faces) and the
         # cached _schur_reduce_rhs / _schur_recover callables are used in
         # solve() to keep the rest of the algorithm operating on full-size
-        # vectors.
+        # vectors. VRAM-share kwargs (_lu_opts) propagate into the Sigma_lu
+        # factor regardless of Schur path.
         self._schur_active = False
         if self._schur_opt:
             from .schur_helpers import (
@@ -397,11 +414,11 @@ class BEMRet(object):
                 self._schur_reduce_rhs = reduce_rhs
                 self._schur_recover = recover
                 self._schur_active = True
-                self.Sigma_lu = lu_factor_dispatch(Sigma_eff)
+                self.Sigma_lu = lu_factor_dispatch(Sigma_eff, **_lu_opts)
             else:
-                self.Sigma_lu = lu_factor_dispatch(Sigma)
+                self.Sigma_lu = lu_factor_dispatch(Sigma, **_lu_opts)
         else:
-            self.Sigma_lu = lu_factor_dispatch(Sigma)
+            self.Sigma_lu = lu_factor_dispatch(Sigma, **_lu_opts)
 
         return self
 
@@ -864,8 +881,8 @@ class BEMRet(object):
             return x
 
         def _ls(lu_piv, b):
-            if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu"):
-                if native:
+            if isinstance(lu_piv, tuple) and len(lu_piv) == 3 and lu_piv[0] in ("cpu", "gpu", "mgpu"):
+                if native and lu_piv[0] != "mgpu":
                     if b.ndim == 1:
                         return lu_solve_native(lu_piv, b)
                     return lu_solve_native(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
