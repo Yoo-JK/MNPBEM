@@ -337,9 +337,11 @@ F1 (Particle.quad 노드 정렬) 은 선택, 우선순위 낮음.
 | ~~25 k+ face dense LU 메모리~~ | ~~50+ GB peak~~ | **v1.3.0 부터 `BEMRetIter(hmatrix=True)` 로 `O(N log N)`** (Lane E2) |
 | 56 k+ face dense LU | 4 GPU pool (192 GB) 도 fit 안됨 (~250 GB) | **v1.3.0 H-matrix iter + VRAM share 결합 (실험적)** |
 | Nonlocal cover-layer 메모리 | ~4× (face count 2× → matrix 4×) | **v1.2.0 부터 `schur=True` 로 ~2×** |
+| ~~25 k+ near-resonance GMRES stall 위험 (preconditioner 없음)~~ | ~~수렴 미보장~~ | **v1.5.0 부분 해소** (256-face 55× iter 감소); 25 k+ 의 진짜 memory-friendly preconditioner 는 v1.6+ Sigma H-matrix 필요 |
+| ~~`BEM*Iter + Schur` 동시 활성 미지원~~ | ~~`NotImplementedError`~~ | **v1.5.0 구현됨** (`BEMRetIter(hmatrix=True, schur=True)`, 568-face 21.3% 절감) |
 | FMM (`fmm3dpy`) | optional dep | extras 로 분리 (`pyproject.toml [fmm]`) |
 
-**v1.2.0 / v1.3.0 갱신**:
+**v1.2.0 / v1.3.0 / v1.5.0 갱신**:
 - v1.2.0: 25k+ face dimer dense LU 가 단일 GPU OOM → 2 GPU pool
   (96 GB) 에서 fit. `MNPBEM_VRAM_SHARE_GPUS=2` 로 활성. wavelength
   분배와 결합 가능.
@@ -348,6 +350,11 @@ F1 (Particle.quad 노드 정렬) 은 선택, 우선순위 낮음.
 - **v1.3.0**: 25k+ face mesh 가 `BEMRetIter(p, hmatrix=True)` 로
   `O(N log N)` 메모리 / matvec 처리 가능 — dense LU 자체를 우회.
   Lane E2 후속 결과는 §11 참고.
+- **v1.5.0**: H-matrix LU preconditioner (`preconditioner='auto'`)
+  + Schur × Iterative (`schur=True` + `hmatrix=True`) 통합. 256-face
+  GMRES iter 55 → 1, 568-face nonlocal Schur×Iter 21.3% 절감.
+  25k face 의 진짜 memory-friendly preconditioner 는 Sigma/Delta
+  H-matrix 재구성이 필요 — v1.6+ scope.
 - Sommerfeld 본질 정밀도 한계 (warn 등급 5개 예상) — 변동 없음.
 
 ---
@@ -432,6 +439,28 @@ sphere 에서 모두 GMRES 가 단일 호출 (flag 0) 로 `relres < 1e-5`
 `htol` 강화 시 H-matrix rank 가 증가해 메모리 / matvec 비용도 증가.
 trade-off 는 사용자 mesh / wavelength 에 따라 직접 조정하면 된다.
 
+### 11.4 v1.5.0 — Preconditioner / Schur × Iter benchmark
+
+v1.5.0 의 H-matrix LU preconditioner (`preconditioner='auto'`) 와
+Schur × Iterative (`schur=True` + `hmatrix=True`) 조합이 추가된 후의
+실측. 측정 인프라는 `benchmarks/v150_preconditioner_sphere.py`,
+`benchmarks/v150_schur_iter_nanogap.py`.
+
+| 케이스 | 설정 | GMRES iter | wall | 비고 |
+|---|---|---:|---:|---|
+| 256-face sphere | `preconditioner='none'` | 55 | 1.03 s | dense baseline |
+| 256-face sphere | `preconditioner='auto'` | 1 | 0.82 s | 55× iter 감소 |
+| 568-face nano-gap nonlocal | `schur=False` | (n/a) | 21.17 s | 8N 결합 GMRES |
+| 568-face nano-gap nonlocal | `schur=True` (Schur×Iter) | (n/a) | 16.65 s | 21.3% 시간 절감, cover layer 소거 |
+
+큰 mesh (25k+) 에서는 G-only H-tree LU 의 가치가 제한적 — `BEMRetIter`
+의 8N×8N 결합 시스템 특성상 alpha-2 가 alpha-1 dense fallback 로
+동작한다. 진정한 25k+ memory-friendly preconditioner 는 Sigma/Delta
+자체를 H-matrix 로 재구성해야 하며, v1.6+ scope.
+
+회귀: `mnpbem/tests/test_preconditioner.py`,
+`mnpbem/tests/test_schur_iter.py`.
+
 ---
 
 ## 12. 변경 이력
@@ -442,3 +471,4 @@ trade-off 는 사용자 mesh / wavelength 에 따라 직접 조정하면 된다.
 | 2026-05-XX | 1.2.0 | Schur complement (cover-layer 메모리 4× → 2×) 및 VRAM share (multi-GPU LU pool) 반영, 9.2 Known limits 갱신 |
 | 2026-05-XX | 1.3.0 | H-matrix BEMRetIter integration (Lane E2 후속) 반영 — §9.2 Known limits 갱신, §11 Large-mesh benchmark 신규 |
 | 2026-05-02 | 1.3.0 | §11 Large-mesh benchmark 5k / 10k 실측 결과 채움 (ε agent), 25k 는 timeout placeholder 유지 |
+| 2026-05-02 | 1.5.0 | §9.2 Known limits 의 GMRES stall / `BEM*Iter + Schur` 한계 해소 표기, §11.4 v1.5.0 preconditioner / Schur×Iter benchmark 추가 (256-face 55× iter 감소, 568-face 21.3% 절감) |
