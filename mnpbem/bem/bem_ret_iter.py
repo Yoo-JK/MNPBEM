@@ -23,14 +23,20 @@ class BEMRetIter(BEMIter):
             enei: Optional[float] = None,
             **options: Any) -> None:
 
-        # Schur option (v1.2.0): not yet supported in the iterative path.
-        # H-matrix / ACA assembly is incompatible with the dense-block Schur
-        # reduction; combining the two is M5+ work. Raise early so the user
-        # gets an actionable error rather than a silently full-size solve.
-        if options.pop('schur', False):
-            raise NotImplementedError(
-                '[error] BEMRetIter does not support <schur> in v1.2.0; '
-                'use BEMRet (dense path) for Schur-complement reduction.')
+        # Schur option (v1.5.0): cover-layer (EpsNonlocal) shell-face
+        # elimination on the iterative retarded path.  Combines with
+        # hmatrix=True via SchurIterOperator: the eight retarded
+        # components (phi, a_x, a_y, a_z, phip, ap_x, ap_y, ap_z) share
+        # the same face-level partition, lifted to the 8N packed vector
+        # layout used by ``_pack`` / ``_unpack``.
+        self._schur_opt = options.pop('schur', False)
+        self._schur_g_ss_solver = options.pop('schur_g_ss_solver', 'auto')
+        self._schur_inner_tol = options.pop('schur_inner_tol', 1e-8)
+        self._schur_inner_maxit = options.pop('schur_inner_maxit', 200)
+        self._schur_active = False
+        self._shell_face_idx = None
+        self._core_face_idx = None
+        self._schur_op = None
 
         # H-matrix (v1.3.0): opt-in ACA acceleration of Green functions.
         # When True, the matvec used by GMRES uses HMatrix @ x compression
@@ -174,6 +180,35 @@ class BEMRetIter(BEMIter):
         # Initialize preconditioner
         if self.precond is not None:
             self._init_precond(enei)
+
+        # Schur (v1.5.0): detect cover-layer partition and prepare the
+        # SchurIterOperator wrapping the 8N packed _afun.  The Schur
+        # operator probes _afun for the shell block (lu_dense path) or
+        # delegates A_ss^{-1} to inner GMRES.  For BEMRetIter the eight
+        # retarded components share the same face-level partition --
+        # SchurIterOperator with components=8 lifts the indices to the
+        # full 8N packed layout (column-major / order='F').
+        self._schur_active = False
+        self._schur_op = None
+        if self._schur_opt:
+            from .schur_iter_helpers import SchurIterOperator, detect_iter_partition
+            partition = detect_iter_partition(self.p)
+            if partition is not None:
+                shell_idx, core_idx = partition
+                nfaces = self.p.n if hasattr(self.p, 'n') else self.p.nfaces
+                self._shell_face_idx = shell_idx
+                self._core_face_idx = core_idx
+                self._schur_op = SchurIterOperator(
+                        self._afun,
+                        shell_idx,
+                        core_idx,
+                        nfaces = nfaces,
+                        components = 8,
+                        dtype = complex,
+                        g_ss_solver = self._schur_g_ss_solver,
+                        inner_tol = self._schur_inner_tol,
+                        inner_maxit = self._schur_inner_maxit)
+                self._schur_active = True
 
         return self
 
@@ -574,14 +609,26 @@ class BEMRetIter(BEMIter):
         # Pack everything to single vector
         b = self._pack(phi, a, De, alpha)
 
-        # Function for matrix multiplication
-        fa = self._afun
-        fm = None
-        if self.precond is not None:
-            fm = self._mfun
+        if self._schur_active:
+            # v1.5.0 Schur path: GMRES iterates on the reduced (core-only)
+            # system.  Preconditioner is bypassed because _mfun was built
+            # for the full 8N system; rebuilding it on the reduced 8M
+            # block would require new G1/G2 LUs and is M5+ work.  For
+            # cover-layer geometries the reduced system is well-
+            # conditioned enough for unpreconditioned GMRES.
+            op = self._schur_op
+            b_eff = op.reduce_rhs(b)
+            x_core, _ = self._iter_solve(None, b_eff, op._matvec, None)
+            x = op.recover_full(x_core, b)
+        else:
+            # Function for matrix multiplication
+            fa = self._afun
+            fm = None
+            if self.precond is not None:
+                fm = self._mfun
 
-        # Iterative solution
-        x, self_updated = self._iter_solve(None, b, fa, fm)
+            # Iterative solution
+            x, self_updated = self._iter_solve(None, b, fa, fm)
 
         # Unpack and save solution vector
         sig1, h1, sig2, h2 = self._unpack(x)
