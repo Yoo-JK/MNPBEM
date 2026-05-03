@@ -196,17 +196,37 @@ class BEMRetLayerIter(BEMIter):
 
         # MATLAB: bemretlayeriter/private/initprecond.m
         # Waxenegger et al., Comp. Phys. Commun. 193, 128 (2015)
+        #
+        # v1.6.0 (agent B) — multi-material + substrate fix.  Mirrors the
+        # v1.5.1 BEMRetIter operator-form correction but for the layered
+        # preconditioner.  Dense ``BEMRetLayer`` (bem_ret_layer.py) builds
+        # ``Sigma1e = H1·eps1·G1⁻¹`` (NOT ``eps1·H1·G1⁻¹ = eps1·Sigma1``);
+        # algebraically the two agree only when eps1 is uniform.  For
+        # non-uniform ``eps1`` the legacy form was the source of the
+        # ``BEMRetIter`` 70 % drift — same mechanism applies here.
+        #
+        # Likewise ``L1 = G1·eps1·G1⁻¹`` replaces the bare ``eps1`` factor
+        # used in ``_mfun`` for ``alpha`` and ``De`` corrections.  When
+        # eps is uniform ``L1`` collapses to a scalar and we keep the
+        # legacy fast path bit-identical.
         k = 2 * np.pi / enei
         eps1 = self._eps1
         eps2 = self._eps2
         nvec = self._nvec
 
         # Dielectric as diagonal
-        if np.isscalar(eps1) or (isinstance(eps1, np.ndarray) and eps1.ndim == 0):
+        eps1_uniform = (np.isscalar(eps1) or (isinstance(eps1, np.ndarray)
+                and eps1.ndim == 0))
+        eps2_uniform = (np.isscalar(eps2) or (isinstance(eps2, np.ndarray)
+                and eps2.ndim == 0))
+
+        if eps1_uniform:
             eps1_diag = eps1 * np.eye(self._G1.shape[0])
-            eps2_diag = eps2 * np.eye(self._G1.shape[0])
         else:
             eps1_diag = np.diag(eps1)
+        if eps2_uniform:
+            eps2_diag = eps2 * np.eye(self._G1.shape[0])
+        else:
             eps2_diag = np.diag(eps2)
 
         ikdeps = 1j * k * (eps1_diag - eps2_diag)
@@ -231,6 +251,16 @@ class BEMRetLayerIter(BEMIter):
         Sigma1 = matmul_dispatch(H1, G1i)
         Sigma2p = matmul_dispatch(H2_p, G2pi)
 
+        # Operator-form Sigma1e and L1.  For uniform eps these reduce to
+        # ``eps1 * Sigma1`` / scalar ``eps1`` (fast path); for non-uniform
+        # eps they are the dense-BEMRetLayer combinations.
+        if eps1_uniform:
+            Sigma1e = eps1 * Sigma1
+            L1 = eps1
+        else:
+            Sigma1e = matmul_dispatch(H1, matmul_dispatch(eps1_diag, G1i))
+            L1 = matmul_dispatch(G1, matmul_dispatch(eps1_diag, G1i))
+
         # Perpendicular component of normal vector
         nperp_diag = np.diag(nvec[:, 3 - 1])  # nvec(:,3)
 
@@ -251,14 +281,24 @@ class BEMRetLayerIter(BEMIter):
         H2_hs = H2.hs if hasattr(H2, 'hs') else (H2['hs'] if isinstance(H2, dict) else np.zeros_like(H1))
         H2_hh = H2.hh if hasattr(H2, 'hh') else (H2['hh'] if isinstance(H2, dict) else H2)
 
-        # Set up full matrix, Eq. (10)
-        eps1_Sigma1 = matmul_dispatch(eps1_diag, Sigma1)
+        # Set up full matrix, Eq. (10).
+        # NOTE: ``Sigma1e`` is the operator-form ``H1·eps1·G1⁻¹`` (NOT
+        # ``eps1·Sigma1``) — bit-identical for uniform eps but correct for
+        # composite particles on a substrate.  ``eps2_diag @ H2_*`` is
+        # left as the legacy form: it reduces to ``eps2·H22 - eps2·H12``
+        # while the dense form needs ``eps2·H22 - eps1·H12``.  These two
+        # agree when eps1 == eps2 on the H12 cross-particle pairs (typical
+        # substrate-only sims where the substrate is uniform).  Composite
+        # *particles* with non-uniform eps1 + uniform eps2 — the most
+        # common substrate composite case — are now correct because the
+        # eps1·Sigma1 -> Sigma1e swap is the load-bearing fix.  Non-uniform
+        # eps2 (rare) is an approximation; GMRES re-converges via ``_afun``.
         Gammapar_ikdeps = matmul_dispatch(Gammapar, ikdeps)
         nperp_ikdeps = matmul_dispatch(nperp_diag, ikdeps)
-        m11 = (matmul_dispatch(eps1_Sigma1 - Gammapar_ikdeps, G2_ss)
+        m11 = (matmul_dispatch(Sigma1e - Gammapar_ikdeps, G2_ss)
             - matmul_dispatch(eps2_diag, H2_ss)
             - matmul_dispatch(nperp_ikdeps, G2_hs))
-        m12 = (matmul_dispatch(eps1_Sigma1 - Gammapar_ikdeps, G2_sh)
+        m12 = (matmul_dispatch(Sigma1e - Gammapar_ikdeps, G2_sh)
             - matmul_dispatch(eps2_diag, H2_sh)
             - matmul_dispatch(nperp_ikdeps, G2_hh))
         m21 = matmul_dispatch(Sigma1, G2_hs) - H2_hs - matmul_dispatch(nperp_ikdeps, G2_ss)
@@ -287,6 +327,8 @@ class BEMRetLayerIter(BEMIter):
         sav['G2p_lu'] = G2p_lu
         sav['G2'] = G2
         sav['Sigma1'] = Sigma1
+        sav['Sigma1e'] = Sigma1e        # v1.6.0: H1·eps1·G1⁻¹
+        sav['L1'] = L1                  # v1.6.0: G1·eps1·G1⁻¹ (or scalar)
         sav['Gamma'] = Gamma
         sav['im'] = [[im11, im12], [im21, im22]]
 
@@ -540,6 +582,21 @@ class BEMRetLayerIter(BEMIter):
 
         # MATLAB: bemretlayeriter/private/afun.m
         # Waxenegger et al., Comp. Phys. Commun. 193, 138 (2015)
+        #
+        # v1.6.0 (agent B) — multi-material + substrate fix.  Mirrors the
+        # v1.5.1 BEMRetIter operator-form correction.  The dense
+        # ``BEMRetLayer`` (bem_ret_layer.py) absorbs eps into combinations
+        # such as ``Sigma1e = H1·eps1·G1⁻¹`` and ``L1 = G1·eps1·G1⁻¹`` so
+        # eps acts at the *source* point of the BEM convolution.  The
+        # original Python iter form applied eps *after* the matvec
+        # (``eps · (M·sig)``); algebraically that equals the operator form
+        # only when eps is uniform.  For composite particles + substrate
+        # (e.g. Au@Ag dimer on glass) the two forms diverge by the same
+        # mechanism that drove the v1.5.1 70 % drift on BEMRetIter.
+        #
+        # Fix: for non-uniform eps, push the per-face eps multiply *into*
+        # the matvec (M·diag(eps)·v).  Scalar eps commutes so the cheap
+        # path is left bit-identical to the legacy behaviour.
         n = self.p.n if hasattr(self.p, 'n') else self.p.nfaces
 
         # Split vector array into 6 components
@@ -585,6 +642,19 @@ class BEMRetLayerIter(BEMIter):
                 return x * y
             return x[:, np.newaxis] * y if x.ndim == 1 else x * y
 
+        eps1_scalar = (np.isscalar(eps1) or (isinstance(eps1, np.ndarray)
+                and eps1.ndim == 0))
+        eps2_scalar = (np.isscalar(eps2) or (isinstance(eps2, np.ndarray)
+                and eps2.ndim == 0))
+
+        def _eps_apply(eps_val: Any, x: np.ndarray) -> np.ndarray:
+            if np.isscalar(eps_val) or (isinstance(eps_val, np.ndarray)
+                    and eps_val.ndim == 0):
+                return eps_val * x
+            if x.ndim == 1:
+                return eps_val * x
+            return eps_val.reshape(-1, *([1] * (x.ndim - 1))) * x
+
         # Apply Green functions to surface charges
         Gsig1 = G1 @ sig1
         Gsig2 = G2_ss @ sig2 + G2_sh @ h2perp
@@ -603,22 +673,55 @@ class BEMRetLayerIter(BEMIter):
         Hh1perp = H1 @ h1perp
         Hh2perp = H2_hh @ h2perp + H2_hs @ sig2
 
+        # eps-decorated Green-function applications for the alpha/De rows.
+        # Scalar eps: ``eps · (M·v) == M · (eps·v)``, so reuse the legacy
+        # post-matvec multiply (bit-identical).
+        # Non-scalar eps: redo G/H with the eps weights pushed *into* the
+        # source vector, matching the dense BEMRetLayer operator form.
+        if eps1_scalar:
+            L_Gsig1 = eps1 * Gsig1
+            L_Hsig1 = eps1 * Hsig1
+            L_Gh1par = eps1 * Gh1par
+            L_Gh1perp = eps1 * Gh1perp
+        else:
+            eps1_sig1 = _eps_apply(eps1, sig1)
+            eps1_h1par = _eps_apply(eps1, h1par)
+            eps1_h1perp = _eps_apply(eps1, h1perp)
+            L_Gsig1 = G1 @ eps1_sig1
+            L_Hsig1 = H1 @ eps1_sig1
+            L_Gh1par = matmul(G1, eps1_h1par)
+            L_Gh1perp = G1 @ eps1_h1perp
+
+        if eps2_scalar:
+            L_Gsig2 = eps2 * Gsig2
+            L_Hsig2 = eps2 * Hsig2
+            L_Gh2par = eps2 * Gh2par
+            L_Gh2perp = eps2 * Gh2perp
+        else:
+            eps2_sig2 = _eps_apply(eps2, sig2)
+            eps2_h2par = _eps_apply(eps2, h2par)
+            eps2_h2perp = _eps_apply(eps2, h2perp)
+            L_Gsig2 = G2_ss @ eps2_sig2 + G2_sh @ eps2_h2perp
+            L_Hsig2 = H2_ss @ eps2_sig2 + H2_sh @ eps2_h2perp
+            L_Gh2par = matmul(G2_p, eps2_h2par)
+            L_Gh2perp = G2_hh @ eps2_h2perp + G2_hs @ eps2_sig2
+
         # Eq. (7a)
         phi = Gsig1 - Gsig2
         # Eqs. (7b, c)
         apar = Gh1par - Gh2par
         aperp = Gh1perp - Gh2perp
 
-        # Eqs. (8a, b)
+        # Eqs. (8a, b) — operator form
         alphapar = Hh1par - Hh2par - \
-            1j * k * (self._outer(npar, Gsig1, eps1) - self._outer(npar, Gsig2, eps2))
+            1j * k * (self._outer(npar, L_Gsig1) - self._outer(npar, L_Gsig2))
         alphaperp = Hh1perp - Hh2perp - \
-            1j * k * (mul(Gsig1, eps1 * nperp) - mul(Gsig2, eps2 * nperp))
+            1j * k * (mul(L_Gsig1, nperp) - mul(L_Gsig2, nperp))
 
-        # Eq. (9)
-        De = mul(Hsig1, eps1) - mul(Hsig2, eps2) - \
-            1j * k * (self._inner(npar, Gh1par, eps1) - self._inner(npar, Gh2par, eps2)) - \
-            1j * k * (mul(Gh1perp, eps1 * nperp) - mul(Gh2perp, eps2 * nperp))
+        # Eq. (9) — operator form
+        De = L_Hsig1 - L_Hsig2 - \
+            1j * k * (self._inner(npar, L_Gh1par) - self._inner(npar, L_Gh2par)) - \
+            1j * k * (mul(L_Gh1perp, nperp) - mul(L_Gh2perp, nperp))
 
         return self._pack(phi, apar, aperp, De, alphapar, alphaperp)
 
@@ -627,6 +730,14 @@ class BEMRetLayerIter(BEMIter):
 
         # MATLAB: bemretlayeriter/private/mfun.m
         # Waxenegger et al., Comp. Phys. Commun. 193, 138 (2015)
+        #
+        # v1.6.0 (agent B) — operator-form alpha/De modifications.  The
+        # legacy expression ``eps1 · phi`` and ``eps1 · (Sigma1·phi)`` is
+        # replaced by ``L1 · phi`` and ``Sigma1e · phi`` where
+        # ``L1 = G1·eps1·G1⁻¹`` and ``Sigma1e = H1·eps1·G1⁻¹``.  For uniform
+        # eps these reduce to scalar multiplies (bit-identical) but for
+        # composite particles on a substrate they correct the iter-precond
+        # to the dense-BEMRetLayer reduction.
 
         # Unpack matrices
         phi, a, De, alpha = self._unpack(vec, nout = 4)
@@ -640,6 +751,8 @@ class BEMRetLayerIter(BEMIter):
         eps1 = sav['eps1']
         eps2 = sav['eps2']
         Sigma1 = sav['Sigma1']
+        Sigma1e = sav['Sigma1e']
+        L1 = sav['L1']
         Gamma = sav['Gamma']
         im = sav['im']
 
@@ -674,8 +787,19 @@ class BEMRetLayerIter(BEMIter):
                 return eps_mat @ b
             return (eps_mat @ b.reshape(b.shape[0], -1)).reshape(b.shape)
 
-        # Modify alpha
-        alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, matmul_eps(eps1, phi))
+        def matmul_op(op_val: Any, b: np.ndarray) -> np.ndarray:
+            # Apply operator (scalar / dense (n,n)) to (n, ...) array.
+            if np.isscalar(op_val) or (isinstance(op_val, np.ndarray)
+                    and op_val.ndim == 0):
+                return op_val * b
+            if b.ndim == 1:
+                return op_val @ b
+            return (op_val @ b.reshape(b.shape[0], -1)).reshape(b.shape)
+
+        # Modify alpha — operator form: L1·phi instead of eps1·phi.
+        L1_phi = matmul_op(L1, phi)
+        L1_a = matmul_op(L1, a)
+        alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, L1_phi)
         if alpha.ndim == 2:
             alphapar = alpha[:, :2]
             alphaperp = alpha[:, 2]
@@ -683,9 +807,10 @@ class BEMRetLayerIter(BEMIter):
             alphapar = alpha[:, :2, :]
             alphaperp = alpha[:, 2, :]
 
-        # Modify De
-        De = De - matmul_eps(eps1, matmul1(Sigma1, phi)) + \
-            1j * k * self._inner(nvec, matmul_eps(eps1, a)) + \
+        # Modify De — operator form: Sigma1e·phi instead of eps1·(Sigma1·phi),
+        # and L1·a instead of eps1·a.
+        De = De - matmul1(Sigma1e, phi) + \
+            1j * k * self._inner(nvec, L1_a) + \
             1j * k * self._inner(npar, matmul1(deps @ Gamma, alphapar))
 
         # Solve Eq. (10) using block LU
