@@ -2368,9 +2368,14 @@ class LayerStructure(object):
             z = np.array([mean_z + 0.5 * scale * (z[0] - z[1]),
                           mean_z - 0.5 * scale * (z[0] - z[1])])
 
-        if z[0] < zlayer[0]:
+        # NOTE: use <= / >= so that values exactly on a layer boundary are
+        # nudged inward by 1e-10. Without this nudge the downstream
+        # _zlinlogspace evaluates log10(zmin - obj.z[i]) = log10(0) = -inf and
+        # produces NaN tabulation grids (Issue 3 — metal substrate trigger
+        # case where the particle bottom sits exactly on the interface).
+        if z[0] <= zlayer[0]:
             z[0] = zlayer[0] + 1e-10
-        if z[1] > zlayer[1]:
+        if z[1] >= zlayer[1]:
             z[1] = zlayer[1] - 1e-10
 
         if range_mode == 'full':
