@@ -279,7 +279,13 @@ sig, bem = bem.solve(exc.potential(p, enei))   # solve at one wavelength
 
 - `aca={"htol": 1e-6, "kmax": 100, "cleaf": 32, "eta": 2.5}` — ACA tolerance.
 - `iter={"tol": 1e-6, "restart": 30, "maxit": 200}` — GMRES parameters.
-- `precond="diag"` — Jacobi preconditioner (default).
+- `precond="diag"` — Jacobi preconditioner (default, legacy).
+- `preconditioner='auto'`, `htol_precond=1e-4` — H-matrix LU
+  preconditioner (v1.5.0, `hmatrix=True` 시 권장). 자세한 내용은
+  아래 §"Preconditioner (v1.5.0)" 참고.
+- `schur=True`, `schur_g_ss_solver='auto'` — Schur × Iterative
+  (v1.5.0, cover-layer 자동 소거). 자세한 내용은 아래 §"Schur ×
+  Iterative (v1.5.0)" 참고.
 
 ### Iterative BEM solvers — H-matrix mode (v1.3.0)
 
@@ -322,8 +328,97 @@ sig, bem = bem.solve(exc.potential(p, enei))
 
 - `BEMRetLayerIter + hmatrix` → `NotImplementedError`. cover layer +
   planar substrate 결합 시나리오는 현재 없음.
-- `BEM*Iter + Schur (v1.2.0)` 동시 활성 미지원 — H-matrix + Schur
-  통합은 후속 작업.
+- ~~`BEM*Iter + Schur (v1.2.0)` 동시 활성 미지원~~ → **v1.5.0 부터 지원**
+  (`BEMRetIter(p, hmatrix=True, schur=True)`). 아래 §"Schur × Iterative"
+  참고.
+
+### Preconditioner (v1.5.0)
+
+H-matrix LU preconditioner 로 GMRES 수렴 가속. 256-face sphere benchmark
+에서 GMRES iter 55 → 1 (55× 감소).
+
+**Constructor**:
+
+```python
+BEMRetIter(p, hmatrix=True,
+           preconditioner='auto',     # auto | none | hlu_dense | hlu_tree
+           htol_precond=1e-4)
+```
+
+`preconditioner` modes:
+
+- `auto` (default) — `hmatrix=True` 시 자동 ON, 아니면 OFF.
+- `none` — preconditioner 없음 (v1.4.0 동작).
+- `hlu_dense` — alpha-1, full N×N dense LU on `H.full()`. 작은 mesh
+  용 baseline.
+- `hlu_tree` — alpha-2, hierarchical block-Schur LU on H-tree root
+  partition. 큰 mesh 용. `BEMRetIter` 의 8N×8N 결합 시스템에서는
+  단독 효과 제한적이라 dense 로 fallback 되는 경우 있음.
+
+256-face sphere benchmark:
+
+| 설정 | GMRES iter | wall |
+|---|---:|---:|
+| `preconditioner='none'` | 55 | 1.03 s |
+| `preconditioner='auto'` | 1 | 0.82 s |
+
+```python
+from mnpbem.bem import BEMRetIter
+
+bem = BEMRetIter(p, hmatrix=True,
+                 preconditioner='auto',  # default when hmatrix=True
+                 htol_precond=1e-4,
+                 tol=1e-6, maxiter=200)
+sig, bem = bem.solve(exc.potential(p, enei))
+```
+
+`BEMStatIter` 도 동일한 옵션. `BEMStatIter` tree mode 는 diagonal
+term 깨져서 dense fallback (one-time log).
+
+### Schur × Iterative (v1.5.0)
+
+Cover layer (nonlocal) 의 shell 변수를 GMRES 외부에서 implicit 소거 →
+reduced 문제 풀이. v1.2.0 의 dense Schur 와 v1.3.0 의 H-matrix iter 가
+v1.5.0 부터 동시 활성 가능.
+
+**Constructor**:
+
+```python
+BEMRetIter(p, hmatrix=True, schur=True,
+           schur_g_ss_solver='auto',  # lu_dense | gmres | callable | auto
+           schur_inner_tol=1e-8,
+           schur_inner_maxit=200)
+```
+
+`schur_g_ss_solver`:
+
+- `lu_dense` — shell DOF < 500 권장 (한 번 dense LU 후 reuse).
+- `gmres` — 큰 shell, inner GMRES (느리지만 메모리 적음).
+- `callable` — user-supplied `A_ss^{-1}` apply 함수.
+- `auto` — shell DOF 자동 선택 (`< 500` → `lu_dense`, otherwise `gmres`).
+
+**연산 형태**:
+`A_eff(x_c) = A_cc x_c − A_cs · A_ss⁻¹ · A_sc x_c` LinearOperator —
+GMRES 가 reduced (core) 차원만 보면 됨.
+
+568-face nano-gap nonlocal benchmark:
+
+| 설정 | solve wall | 비고 |
+|---|---:|---|
+| `schur=False` | 21.17 s | 8N 결합 GMRES |
+| `schur=True` | 16.65 s | 21.3% 절감 |
+
+```python
+from mnpbem.bem import BEMRetIter
+
+bem = BEMRetIter(p, refun=refun,
+                 hmatrix=True, schur=True,        # v1.5.0
+                 preconditioner='auto',           # v1.5.0
+                 tol=1e-6, maxiter=200)
+sig, bem = bem.solve(exc.potential(p, enei))
+```
+
+`BEMStatIter` 도 동일하게 `schur=True` + `hmatrix=True` 동시 활성 가능.
 
 ### Schur complement (v1.2.0)
 
