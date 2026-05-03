@@ -448,6 +448,49 @@ Runtime auto-detect (`mnpbem/utils/gpu.py`):
 (CPU only / single GPU / multi-GPU / multi-node / 개발) install
 절차를 한 곳에 모아 둠.
 
+### 3.15 H-matrix LU preconditioner + Schur × Iter (v1.5.0)
+
+큰 nonlocal mesh 의 GMRES stall 해결 + cover layer 변수 implicit
+소거. v1.3.0 의 H-matrix BEMRetIter (`O(N log N)` 메모리/matvec) 가
+"풀리는가" 문제는 해결했지만, "충분히 빠르게 수렴하는가" 문제는
+preconditioner 가 필요했고, "cover layer 가 추가된 8N×8N 시스템"
+문제는 Schur × Iter 통합이 필요했다. v1.5.0 이 두 격차를 메운다.
+
+#### Preconditioner
+
+- 구현: `mnpbem/bem/preconditioner.py` (`HMatrixLUPreconditioner`).
+- modes: `dense` (alpha-1, full N×N LU on `H.full()`), `tree`
+  (alpha-2, hierarchical block-Schur LU on H-tree root partition),
+  `auto` (size 기반 dispatch).
+- BEM solver 측 노출: `BEMRetIter(p, hmatrix=True,
+  preconditioner='auto', htol_precond=1e-4)`. `BEMStatIter` 동일.
+- 256-face sphere benchmark: GMRES iter 55 → 1 (55× 감소),
+  wall 1.03 s → 0.82 s.
+- 한계 — `BEMRetIter` 의 8N×8N 결합 시스템에서는 G-only H-tree LU
+  단독 효과가 제한적이라 `hlu_tree` 가 dense fallback 으로 동작하는
+  경우가 있음. 25k face 의 진정한 memory-friendly preconditioner 는
+  Sigma/Delta 자체를 H-matrix 로 재구성해야 하는데, 이는 v1.6+
+  과제. `BEMStatIter` tree mode 는 diagonal term 깨져서 dense
+  fallback (one-time log).
+
+#### Schur × Iter
+
+- 구현: `mnpbem/bem/schur_iter_helpers.py` (`SchurIterOperator`,
+  `LinearOperator` subclass).
+- 연산: `A_eff(x_c) = A_cc x_c − A_cs · A_ss⁻¹ · A_sc x_c` —
+  GMRES 가 reduced (core) 차원만 보면 됨. `A_ss⁻¹` 은
+  `lu_dense` (한 번 dense LU + reuse) / `gmres` (inner Krylov) /
+  `callable` (user-supplied) / `auto` (shell DOF 기반 dispatch)
+  중 선택.
+- BEM solver 측 노출: `BEMRetIter(p, hmatrix=True, schur=True)` —
+  v1.4 까지 `NotImplementedError` 였던 조합이 v1.5.0 부터 가능.
+  cover layer 자동 감지 (v1.2.0 `detect_shell_core_partition` 재활용).
+- 568-face nano-gap nonlocal benchmark: solve 21.17 s → 16.65 s
+  (21.3% 절감). reduced GMRES Krylov 차원 + `A_ss⁻¹` reuse 효과.
+- v1.2.0 dense Schur 와 비교 — dense 는 `G_ss` 를 직접 inverse
+  하므로 H-matrix 와 호환 X. `SchurIterOperator` 는 *full matvec
+  A·v* 만 사용해 H-matrix 와 자연스럽게 맞물린다.
+
 ## 4. Performance summary
 
 See `docs/PERFORMANCE.md` for the numbers. The strategy is documented in
