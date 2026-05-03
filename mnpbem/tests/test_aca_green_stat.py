@@ -31,6 +31,19 @@ class MockParticle(object):
         self.n = self.pos.shape[0]
         self.p = [self]
         self.closed = [None]
+        # Tangent vectors orthogonal to nvec (needed by compgreen_stat
+        # cart-deriv refinement path).  Construct any pair forming a
+        # right-handed basis with nvec.
+        ref = np.zeros_like(self.nvec)
+        ref[:, 0] = 1.0
+        parallel_mask = np.abs(np.einsum('ij,ij->i', self.nvec, ref)) > 0.9
+        ref[parallel_mask] = np.array([0.0, 1.0, 0.0])
+        tvec1 = np.cross(self.nvec, ref)
+        tvec1 /= np.linalg.norm(tvec1, axis = 1, keepdims = True)
+        tvec2 = np.cross(self.nvec, tvec1)
+        tvec2 /= np.linalg.norm(tvec2, axis = 1, keepdims = True)
+        self.tvec1 = tvec1
+        self.tvec2 = tvec2
 
     @property
     def nfaces(self) -> int:
