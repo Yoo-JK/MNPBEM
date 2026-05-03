@@ -239,6 +239,24 @@ class BEMRetIter(BEMIter):
 
         # MATLAB: bemretiter/private/initprecond.m
         # Garcia de Abajo and Howie, PRB 65, 115418 (2002)
+        #
+        # v1.5.1 (agent beta) — non-uniform-eps fix.  When ``g.con[0][1]``
+        # is non-zero AND eps1/eps2 are non-uniform within their region
+        # (composite particle, e.g. Au@Ag dimer), the dense ``BEMRet``
+        # path (`bem_ret.py:360-393`) uses the operator form ``L1 =
+        # G1·diag(eps1)·G1⁻¹``.  Algebraically, ``Sigma1·L1 =
+        # H1·G1⁻¹·G1·diag(eps1)·G1⁻¹ = H1·diag(eps1)·G1⁻¹``.  The
+        # original Python (and MATLAB) preconditioner instead built
+        # ``diag(eps1)·H1·G1⁻¹``, which is **not** the same operator and
+        # is the source of the Au@Ag mid-band drift.  The fix is to
+        # build the corrected combined Sigma:
+        #
+        #     Sigma_mat = H1·diag(eps1)·G1⁻¹ - H2·diag(eps2)·G2⁻¹
+        #               + k² · ((L1-L2)·Deltai * nvec·nvec') · (L1-L2)
+        #
+        # where ``L1, L2`` are themselves the dense G·eps·G⁻¹ operators.
+        # This makes the iter preconditioner numerically equivalent to
+        # the dense ``BEMRet`` Sigma factorisation.
         k = 2 * np.pi / enei
         eps1 = self._eps1
         eps2 = self._eps2
@@ -284,25 +302,42 @@ class BEMRetIter(BEMIter):
         eye_d = eye_like_lu(Delta_lu, Sigma1.shape[0])
         Deltai = to_host(lu_solve_native(Delta_lu, eye_d))
 
-        # deps = eps1 - eps2
+        # L matrices [Eq. (22)] - dense BEMRet form
+        # L1 = G1 · eps1 · G1⁻¹  (operator generalisation of scalar eps)
+        # When eps is scalar, L = eps and we save the densification.
         if np.isscalar(eps1_diag):
-            deps = eps1_diag - eps2_diag
+            L1 = eps1_diag
+            L2 = eps2_diag
+            L = L1 - L2
+            # Sigma1 · L1 = (eps1) · Sigma1  for scalar eps
+            Sigma_L1 = eps1_diag * Sigma1
+            Sigma_L2 = eps2_diag * Sigma2
+            Deltai_nvec = self._decorate_deltai(Deltai, nvec)
+            Sigma_mat = (Sigma_L1 - Sigma_L2
+                    + k ** 2 * L * Deltai_nvec * L)
         else:
-            deps = eps1_diag - eps2_diag
-
-        # Sigma matrix [Eq. (21,22)]
-        # MATLAB: Sigma = eps1 * Sigma1 - eps2 * Sigma2 + k^2 * deps * fun(Deltai, nvec) * deps
-        # fun(Deltai, nvec) = sum_i nvec_i * Deltai * nvec_i
-        Deltai_nvec = self._decorate_deltai(Deltai, nvec)
-
-        if np.isscalar(eps1_diag):
-            Sigma_mat = eps1_diag * Sigma1 - eps2_diag * Sigma2 + k ** 2 * deps * Deltai_nvec * deps
-        else:
-            Sigma_mat = eps1_diag @ Sigma1 - eps2_diag @ Sigma2 + k ** 2 * deps @ Deltai_nvec @ deps
+            # Non-uniform eps: build the operator form L1 = G1·diag(eps1)·G1⁻¹.
+            L1 = G1 @ eps1_diag @ G1i
+            L2 = G2 @ eps2_diag @ G2i
+            L = L1 - L2
+            # Sigma1·L1 = H1·G1⁻¹·G1·diag(eps1)·G1⁻¹ = H1·diag(eps1)·G1⁻¹
+            # Compute via H1 @ diag(eps1) @ G1i.
+            Sigma_L1 = H1 @ eps1_diag @ G1i
+            Sigma_L2 = H2 @ eps2_diag @ G2i
+            # Magnetic coupling term: k² · ((L · Deltai) ⊙ nvec·nvecᵀ) · L
+            # MATLAB: k^2 * ( ( L * Deltai ) .* ( nvec * nvec' ) ) * L
+            nvec_outer = nvec @ nvec.T
+            magnetic = k ** 2 * ((L @ Deltai) * nvec_outer) @ L
+            Sigma_mat = Sigma_L1 - Sigma_L2 + magnetic
 
         Sigma_lu = lu_factor_dispatch(Sigma_mat)
 
-        # Save variables for preconditioner
+        # Save variables for preconditioner.  Note: ``Sigma1`` cached here
+        # is the v1.5.1 operator-form Sigma1·L1 (= H1·eps1·G1⁻¹), used by
+        # ``_mfun`` for the modify-alpha / modify-De step in place of the
+        # legacy ``eps1·(Sigma1·phi)``.  The original ``Sigma1`` (= H1·G1⁻¹)
+        # is also stored so we can build correct ``-matmul1(Sigma1, a)``
+        # corrections when needed by ``_mfun``.
         sav = {}
         sav['k'] = k
         sav['nvec'] = nvec
@@ -310,7 +345,10 @@ class BEMRetIter(BEMIter):
         sav['G2_lu'] = G2_lu
         sav['eps1'] = eps1_diag
         sav['eps2'] = eps2_diag
-        sav['Sigma1'] = Sigma1
+        sav['Sigma1'] = Sigma1                    # H1·G1⁻¹  (legacy)
+        sav['Sigma1_L1'] = Sigma_L1               # v1.5.1 operator form: H1·eps1·G1⁻¹
+        sav['L1'] = L1                            # G1·eps1·G1⁻¹ (or scalar)
+        sav['L2'] = L2
         sav['Delta_lu'] = Delta_lu
         sav['Sigma_lu'] = Sigma_lu
 
@@ -501,6 +539,22 @@ class BEMRetIter(BEMIter):
 
         # MATLAB: bemretiter/private/afun.m
         # Garcia de Abajo and Howie, PRB 65, 115418 (2002)
+        #
+        # v1.5.1 (agent beta) — non-uniform-eps fix.  When the particle has
+        # multiple materials sharing a region (e.g. Au@Ag dimer:
+        # eps1 = ε_Au on Au-Ag faces, ε_Ag on Ag-medium faces) AND the
+        # Green-function connectivity ``g.con[0][1]`` is non-zero, the
+        # MATLAB / pre-1.5.1 iter form ``ε(r) · (G·σ)(r)`` is **not** the
+        # physically correct convolution — eps lives at the source point
+        # of the integrand, not the field point.  The dense ``BEMRet`` path
+        # captures this with the operator ``L1 = G1·diag(eps1)·G1⁻¹`` (see
+        # ``bem_ret.py:360``).  Algebraically that operator, applied to
+        # ``G1·σ1``, equals ``G1·(eps1·σ1)``.  So the fix is to push
+        # ``eps`` *before* the Green / surface-derivative matvec.
+        #
+        # The two forms are bit-identical when eps is a scalar (uniform
+        # within the region), so we always use the corrected form — its
+        # only cost is extra matvecs when eps is non-uniform.
         n = self.p.n if hasattr(self.p, 'n') else self.p.nfaces
         siz = int(vec.size / 2)
 
@@ -508,7 +562,24 @@ class BEMRetIter(BEMIter):
         vec1 = vec[:siz].reshape(n, -1, order = 'F')
         vec2 = vec[siz:].reshape(n, -1, order = 'F')
 
-        # Multiplication with Green functions
+        eps1 = self._eps1
+        eps2 = self._eps2
+
+        def _eps_apply(eps_val: Any, x: np.ndarray) -> np.ndarray:
+            # Multiply per-face eps (scalar or (n,) array) into a (n, ...)
+            # array along axis 0.  Leaves x unchanged for the scalar /
+            # 0-d case (commutes with the matvec, so we still want a
+            # scalar multiply for correctness — but the caller folds the
+            # scalar through G to save a matvec).
+            if np.isscalar(eps_val) or (isinstance(eps_val, np.ndarray)
+                    and eps_val.ndim == 0):
+                return eps_val * x
+            if x.ndim == 1:
+                return eps_val * x
+            return eps_val.reshape(-1, *([1] * (x.ndim - 1))) * x
+
+        # Multiplications with Green functions.
+        # Phi / a equations (no eps) use plain G·vec.
         G1_vec1 = self._G1 @ vec1
         G2_vec2 = self._G2 @ vec2
 
@@ -518,39 +589,79 @@ class BEMRetIter(BEMIter):
         combined_g[G1_vec1.size:] = G2_vec2.ravel(order = 'F')
         Gsig1, Gh1, Gsig2, Gh2 = self._unpack(combined_g)
 
-        H1_vec1 = self._H1 @ vec1
-        H2_vec2 = self._H2 @ vec2
-        combined_h = np.empty(H1_vec1.size + H2_vec2.size, dtype = complex)
-        combined_h[:H1_vec1.size] = H1_vec1.ravel(order = 'F')
-        combined_h[H1_vec1.size:] = H2_vec2.ravel(order = 'F')
-        Hsig1, Hh1, Hsig2, Hh2 = self._unpack(combined_h)
+        # Alpha / De equations use ``M @ (eps · vec)`` with M ∈ {G, H}.
+        # For scalar eps we can save the extra matvec by reusing the
+        # plain Gsig / Gh / Hsig / Hh and pulling the scalar out.
+        eps1_scalar = (np.isscalar(eps1) or (isinstance(eps1, np.ndarray)
+                and eps1.ndim == 0))
+        eps2_scalar = (np.isscalar(eps2) or (isinstance(eps2, np.ndarray)
+                and eps2.ndim == 0))
+
+        if eps1_scalar and eps2_scalar:
+            # Cheap path: scalar eps commutes with G/H, so M(eps·v) = eps·(M·v).
+            H1_vec1 = self._H1 @ vec1
+            H2_vec2 = self._H2 @ vec2
+            combined_h = np.empty(H1_vec1.size + H2_vec2.size, dtype = complex)
+            combined_h[:H1_vec1.size] = H1_vec1.ravel(order = 'F')
+            combined_h[H1_vec1.size:] = H2_vec2.ravel(order = 'F')
+            Hsig1, Hh1, Hsig2, Hh2 = self._unpack(combined_h)
+
+            L_Gsig1, L_Gh1 = eps1 * Gsig1, eps1 * Gh1
+            L_Gsig2, L_Gh2 = eps2 * Gsig2, eps2 * Gh2
+            L_Hsig1, L_Hsig2 = eps1 * Hsig1, eps2 * Hsig2
+        else:
+            # Non-uniform eps: do the per-face multiply *before* the matvec.
+            # This is what the dense BEMRet's ``L1 = G·eps·G⁻¹`` reduces to
+            # when applied to the iter unknown σ1 (see commentary above).
+            eps1_vec1 = _eps_apply(eps1, vec1)
+            eps2_vec2 = _eps_apply(eps2, vec2)
+            G1_eps_vec1 = self._G1 @ eps1_vec1
+            G2_eps_vec2 = self._G2 @ eps2_vec2
+            H1_eps_vec1 = self._H1 @ eps1_vec1
+            H2_eps_vec2 = self._H2 @ eps2_vec2
+
+            combined_geps = np.empty(G1_eps_vec1.size + G2_eps_vec2.size,
+                    dtype = complex)
+            combined_geps[:G1_eps_vec1.size] = G1_eps_vec1.ravel(order = 'F')
+            combined_geps[G1_eps_vec1.size:] = G2_eps_vec2.ravel(order = 'F')
+            L_Gsig1, L_Gh1, L_Gsig2, L_Gh2 = self._unpack(combined_geps)
+
+            combined_heps = np.empty(H1_eps_vec1.size + H2_eps_vec2.size,
+                    dtype = complex)
+            combined_heps[:H1_eps_vec1.size] = H1_eps_vec1.ravel(order = 'F')
+            combined_heps[H1_eps_vec1.size:] = H2_eps_vec2.ravel(order = 'F')
+            L_Hsig1, _L_Hh1, L_Hsig2, _L_Hh2 = self._unpack(combined_heps)
+
+            # Hh1 / Hh2 (no eps) still needed for the alpha equation.
+            H1_vec1 = self._H1 @ vec1
+            H2_vec2 = self._H2 @ vec2
+            combined_h = np.empty(H1_vec1.size + H2_vec2.size, dtype = complex)
+            combined_h[:H1_vec1.size] = H1_vec1.ravel(order = 'F')
+            combined_h[H1_vec1.size:] = H2_vec2.ravel(order = 'F')
+            _Hsig1, Hh1, _Hsig2, Hh2 = self._unpack(combined_h)
 
         k = self._k
         nvec = self._nvec
-        eps1 = self._eps1
-        eps2 = self._eps2
-
-        def _matmul_diag(a_val: Any, b: np.ndarray) -> np.ndarray:
-            if np.isscalar(a_val):
-                return a_val * b
-            if b.ndim == 1:
-                return a_val * b
-            if a_val.ndim == 1:
-                # Reshape a_val to (n, 1, 1, ...) to broadcast against trailing dims of b.
-                return a_val.reshape(-1, *([1] * (b.ndim - 1))) * b
-            return a_val * b
 
         # Eq. (10)
         phi = Gsig1 - Gsig2
         # Eq. (11)
         a = Gh1 - Gh2
 
-        # Eq. (14)
-        alpha = Hh1 - Hh2 - \
-            1j * k * self._outer(nvec, _matmul_diag(eps1, Gsig1) - _matmul_diag(eps2, Gsig2))
-        # Eq. (17)
-        De = _matmul_diag(eps1, Hsig1) - _matmul_diag(eps2, Hsig2) - \
-            1j * k * self._inner(nvec, _matmul_diag(eps1, Gh1) - _matmul_diag(eps2, Gh2))
+        if eps1_scalar and eps2_scalar:
+            # Eq. (14) - scalar eps path keeps the original ordering for
+            # bit-identical reproduction of legacy MATLAB outputs.
+            alpha = Hh1 - Hh2 - 1j * k * self._outer(nvec,
+                    L_Gsig1 - L_Gsig2)
+            De = (L_Hsig1 - L_Hsig2) - 1j * k * self._inner(nvec,
+                    L_Gh1 - L_Gh2)
+        else:
+            # Eq. (14) - operator form: alpha = Hh1 - Hh2 - i k n × G·(eps·sig).
+            alpha = Hh1 - Hh2 - 1j * k * self._outer(nvec,
+                    L_Gsig1 - L_Gsig2)
+            # Eq. (17) - operator form: De = H·(eps·sig) - i k n · G·(eps·h).
+            De = (L_Hsig1 - L_Hsig2) - 1j * k * self._inner(nvec,
+                    L_Gh1 - L_Gh2)
 
         return self._pack(phi, a, De, alpha)
 
@@ -559,6 +670,11 @@ class BEMRetIter(BEMIter):
 
         # MATLAB: bemretiter/private/mfun.m
         # Garcia de Abajo and Howie, PRB 65, 115418 (2002)
+        #
+        # v1.5.1 (agent beta) — non-uniform-eps fix.  Mirrors the dense
+        # ``BEMRet.mldivide`` reduction.  ``L1`` is the operator
+        # ``G1·diag(eps1)·G1⁻¹`` (or a scalar when eps is uniform), so
+        # ``matmul(L1, phi)`` replaces the legacy ``eps1 · phi``.
 
         # Unpack matrices
         phi, a, De, alpha = self._unpack(vec)
@@ -571,6 +687,8 @@ class BEMRetIter(BEMIter):
         eps1 = sav['eps1']
         eps2 = sav['eps2']
         Sigma1 = sav['Sigma1']
+        L1 = sav['L1']
+        L2 = sav['L2']
         Delta_lu = sav['Delta_lu']
         Sigma_lu = sav['Sigma_lu']
 
@@ -586,26 +704,40 @@ class BEMRetIter(BEMIter):
                 return lu_solve_dispatch(lu_piv, b)
             return lu_solve_dispatch(lu_piv, b.reshape(b.shape[0], -1)).reshape(b.shape)
 
-        def matmul_eps(eps_mat: Any, b: np.ndarray) -> np.ndarray:
-            # Apply diagonal eps (scalar / (n,n) diag matrix) to (n, ...) array.
-            if np.isscalar(eps_mat):
-                return eps_mat * b
+        def matmul_op(op_val: Any, b: np.ndarray) -> np.ndarray:
+            # Apply L1 / L2 / scalar eps to (n, ...) array along axis 0.
+            # When op_val is scalar we just multiply; when it is the dense
+            # operator G·eps·G⁻¹ we do the full matmul.
+            if np.isscalar(op_val) or (isinstance(op_val, np.ndarray)
+                    and op_val.ndim == 0):
+                return op_val * b
             if b.ndim == 1:
-                return eps_mat @ b
-            return (eps_mat @ b.reshape(b.shape[0], -1)).reshape(b.shape)
+                return op_val @ b
+            return (op_val @ b.reshape(b.shape[0], -1)).reshape(b.shape)
 
-        # Modify alpha and De
-        # MATLAB: alpha = alpha - matmul1(Sigma1, a) + 1i*k*outer(nvec, eps1*phi)
-        alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, matmul_eps(eps1, phi))
-        De = De - matmul_eps(eps1, matmul1(Sigma1, phi)) + 1j * k * self._inner(nvec, matmul_eps(eps1, a))
+        # Modify alpha and De  (dense BEMRet.mldivide lines 31-35)
+        # MATLAB: alpha = alpha - matmul(Sigma1, a) + 1i*k*outer(nvec, matmul(L1, phi))
+        # MATLAB: De    = De - matmul(Sigma1, matmul(L1, phi))
+        #                  + 1i*k*inner(nvec, matmul(L1, a))
+        L1_phi = matmul_op(L1, phi)
+        L1_a = matmul_op(L1, a)
+        alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, L1_phi)
+        De = De - matmul1(Sigma1, L1_phi) + 1j * k * self._inner(nvec, L1_a)
 
-        # Eq. (19)
-        deps = eps1 - eps2
-        inner_alpha = self._inner(nvec, _ls(Delta_lu, alpha))
-        sig2 = _ls(Sigma_lu, De + 1j * k * matmul_eps(deps, inner_alpha))
+        # Eq. (19)  (dense BEMRet.mldivide line 38-39)
+        # MATLAB: sig2 = matmul(Sigmai, De + 1i*k*inner(nvec, matmul(L1-L2, matmul(Deltai, alpha))))
+        if np.isscalar(L1) or (isinstance(L1, np.ndarray) and L1.ndim == 0):
+            L_diff = L1 - L2
+        else:
+            L_diff = L1 - L2
+        Deltai_alpha = _ls(Delta_lu, alpha)
+        L_Deltai_alpha = matmul_op(L_diff, Deltai_alpha)
+        sig2 = _ls(Sigma_lu, De + 1j * k * self._inner(nvec, L_Deltai_alpha))
 
-        # Eq. (20)
-        h2 = _ls(Delta_lu, 1j * k * self._outer(nvec, matmul_eps(deps, sig2)) + alpha)
+        # Eq. (20)  (dense BEMRet.mldivide line 41-42)
+        # MATLAB: h2 = matmul(Deltai, 1i*k*outer(nvec, matmul(L1-L2, sig2)) + alpha)
+        L_sig2 = matmul_op(L_diff, sig2)
+        h2 = _ls(Delta_lu, 1j * k * self._outer(nvec, L_sig2) + alpha)
 
         # Surface charges and currents
         sig1 = _ls(G1_lu, sig2 + phi)
