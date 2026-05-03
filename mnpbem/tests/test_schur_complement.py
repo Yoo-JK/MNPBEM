@@ -303,10 +303,16 @@ def test_bemret_schur_no_coverlayer_passthrough():
 
 
 # ---------------------------------------------------------------------------
-# Iterative path safety
+# Iterative path: v1.5.0 enabled <schur> on BEMStatIter / BEMRetIter
 # ---------------------------------------------------------------------------
+# v1.2.0 raised NotImplementedError when schur=True met the iterative path.
+# v1.5.0 ships SchurIterOperator (mnpbem/bem/schur_iter_helpers.py) which
+# combines Schur reduction with hmatrix=True.  The two tests below assert
+# that schur=True no longer raises *and* falls back transparently when no
+# EpsNonlocal cover layer is present.  Functional correctness is covered
+# by mnpbem/tests/test_schur_iter.py.
 
-def test_bemstatiter_schur_raises_notimplemented():
+def test_bemstatiter_schur_no_coverlayer_passthrough():
     from mnpbem.bem import BEMStatIter
 
     eps_b = EpsConst(1.0)
@@ -314,11 +320,12 @@ def test_bemstatiter_schur_raises_notimplemented():
     p = trisphere(144, 10.0)
     cp = ComParticle([eps_b, eps_m], [p], [[2, 1]])
 
-    with pytest.raises(NotImplementedError):
-        BEMStatIter(cp, schur = True)
+    bem = BEMStatIter(cp, schur = True)
+    bem._init_matrices(600.0)
+    assert bem._schur_active is False
 
 
-def test_bemretiter_schur_raises_notimplemented():
+def test_bemretiter_schur_no_coverlayer_passthrough():
     from mnpbem.bem import BEMRetIter
 
     eps_b = EpsConst(1.0)
@@ -326,5 +333,6 @@ def test_bemretiter_schur_raises_notimplemented():
     p = trisphere(144, 10.0)
     cp = ComParticle([eps_b, eps_m], [p], [[2, 1]])
 
-    with pytest.raises(NotImplementedError):
-        BEMRetIter(cp, schur = True)
+    bem = BEMRetIter(cp, schur = True, precond = None)
+    bem._init_matrices(600.0)
+    assert bem._schur_active is False

@@ -23,14 +23,18 @@ class BEMStatIter(BEMIter):
             enei: Optional[float] = None,
             **options: Any) -> None:
 
-        # Schur option (v1.2.0): not yet supported in the iterative path.
-        # H-matrix / ACA assembly is incompatible with the dense-block Schur
-        # reduction; combining the two is M5+ work. Raise early so the user
-        # gets an actionable error rather than a silently full-size solve.
-        if options.pop('schur', False):
-            raise NotImplementedError(
-                '[error] BEMStatIter does not support <schur> in v1.2.0; '
-                'use BEMStat (dense path) for Schur-complement reduction.')
+        # Schur option (v1.5.0): cover-layer (EpsNonlocal) shell-face
+        # elimination on the iterative path. Combines with hmatrix=True
+        # via SchurIterOperator -- no explicit inv(G_ss) is built, only
+        # full matvecs and a small shell-block solve are required.
+        self._schur_opt = options.pop('schur', False)
+        self._schur_g_ss_solver = options.pop('schur_g_ss_solver', 'auto')
+        self._schur_inner_tol = options.pop('schur_inner_tol', 1e-8)
+        self._schur_inner_maxit = options.pop('schur_inner_maxit', 200)
+        self._schur_active = False
+        self._shell_face_idx = None
+        self._core_face_idx = None
+        self._schur_op = None
 
         # H-matrix (v1.3.0): opt-in ACA acceleration of F. The matvec used
         # by GMRES then uses HMatrix @ x rather than dense matmul.
@@ -151,6 +155,33 @@ class BEMStatIter(BEMIter):
             else:
                 raise ValueError('[error] preconditioner not known: <{}>'.format(self.precond))
 
+        # Schur (v1.5.0): detect cover-layer partition and prepare the
+        # SchurIterOperator that wraps _afun. Done lazily here so that
+        # the partition is recomputed if the user constructs the solver
+        # without enei and queries it later. When no EpsNonlocal cover
+        # layer is present, schur silently falls back to the full path.
+        self._schur_active = False
+        self._schur_op = None
+        if self._schur_opt:
+            from .schur_iter_helpers import SchurIterOperator, detect_iter_partition
+            partition = detect_iter_partition(self.p)
+            if partition is not None:
+                shell_idx, core_idx = partition
+                nfaces = self.p.n if hasattr(self.p, 'n') else self.p.nfaces
+                self._shell_face_idx = shell_idx
+                self._core_face_idx = core_idx
+                self._schur_op = SchurIterOperator(
+                        self._afun,
+                        shell_idx,
+                        core_idx,
+                        nfaces = nfaces,
+                        components = 1,
+                        dtype = complex,
+                        g_ss_solver = self._schur_g_ss_solver,
+                        inner_tol = self._schur_inner_tol,
+                        inner_maxit = self._schur_inner_maxit)
+                self._schur_active = True
+
         return self
 
     def _afun(self,
@@ -194,19 +225,30 @@ class BEMStatIter(BEMIter):
         b = exc.phip.ravel().astype(complex)
         siz = exc.phip.shape
 
-        # Function for matrix multiplication
-        fa = self._afun
-        fm = None
-        if self.precond is not None:
-            fm = self._mfun
+        if self._schur_active:
+            # Schur path: GMRES is run on the reduced (core-only) operator.
+            # The preconditioner is bypassed because _mfun was built for the
+            # full (N, N) (-Lambda - F) factor and would need re-factoring on
+            # the core block. The reduced system is well-conditioned for
+            # cover-layer geometries so this is acceptable for v1.5.0.
+            op = self._schur_op
+            b_eff = op.reduce_rhs(b)
+            x_core, _ = self._iter_solve(None, b_eff, op._matvec, None)
+            x = op.recover_full(x_core, b)
+        else:
+            # Function for matrix multiplication
+            fa = self._afun
+            fm = None
+            if self.precond is not None:
+                fm = self._mfun
 
-        # v1.5.0 H-matrix LU preconditioner (agent alpha). Replaces fm when
-        # active on the H-matrix path.
-        if self._hmatrix and self._hlu_mode != 'none':
-            fm = self._build_hlu_preconditioner(b.shape[0])
+            # v1.5.0 H-matrix LU preconditioner (agent alpha). Replaces fm
+            # when active on the H-matrix path.
+            if self._hmatrix and self._hlu_mode != 'none':
+                fm = self._build_hlu_preconditioner(b.shape[0])
 
-        # Iterative solution
-        x, self_updated = self._iter_solve(None, b, fa, fm)
+            # Iterative solution
+            x, self_updated = self._iter_solve(None, b, fa, fm)
 
         # Save everything in single structure
         sig = CompStruct(self.p, exc.enei, sig = x.reshape(siz))
