@@ -295,55 +295,68 @@ class BEMRetIter(BEMIter):
             eps2_diag = np.diag(eps2)
 
         # LU factorizations of Green functions.  Tier-3 12672-face note:
-        # each cuSolver LU keeps the factor + pivots on device (~5 GB
-        # working set per matrix when overwrite_a=True+scratch).  We
-        # build G1_lu, drain the pool, then G2_lu so the two factor
-        # buffers don't double up alongside transient cuSolver scratch.
-        G1_lu = lu_factor_dispatch(G1)
-        try:
-            import cupy as _cp_local
-            _cp_local.get_default_memory_pool().free_all_blocks()
-        except Exception:
-            pass
-        G2_lu = lu_factor_dispatch(G2)
-        try:
-            import cupy as _cp_local
-            _cp_local.get_default_memory_pool().free_all_blocks()
-        except Exception:
-            pass
-        # Bug 2 fix: build identity on the same device as the LU and
-        # bring the inverse back to host for the H @ G^{-1} GEMM.
-        eye_g1 = eye_like_lu(G1_lu, G1.shape[0])
-        G1i = to_host(lu_solve_native(G1_lu, eye_g1))
-        del eye_g1
-        try:
-            import cupy as _cp_local
-            _cp_local.get_default_memory_pool().free_all_blocks()
-        except Exception:
-            pass
-        eye_g2 = eye_like_lu(G2_lu, G2.shape[0])
-        G2i = to_host(lu_solve_native(G2_lu, eye_g2))
-        del eye_g2
-        try:
-            import cupy as _cp_local
-            _cp_local.get_default_memory_pool().free_all_blocks()
-        except Exception:
-            pass
+        # the dense preconditioner needs G1_lu, G2_lu, eye(N), inverse,
+        # and Sigma_lu simultaneously alive — at complex128 / N=12672
+        # that is well over 30 GB peak on a single GPU.  Combined with
+        # cusolver scratch and pool fragmentation we routinely overshoot
+        # the 49 GB single-A6000 cap (Bug 5/6 follow-up OOM at line 308
+        # in the v1.5.2 first-pass run).  Route the LU pipeline through
+        # scipy on the host when running this large.  The matrices are
+        # already host arrays (after the _compress() Bug 5 fix), so the
+        # round-trip cost is zero — we only avoid the GPU buffer.
+        gpu_overflow_cutoff = int(os.environ.get(
+            'MNPBEM_GPU_PRECOND_HOST_THRESHOLD', '8000'))
+        if G1.shape[0] >= gpu_overflow_cutoff:
+            from scipy.linalg import lu_factor as _scipy_lu_factor
+            from scipy.linalg import lu_solve as _scipy_lu_solve
+            print('[info] BEMRetIter precond: N={} >= {}, '
+                    'routing dense LU through host (GPU memory safety).'.format(
+                    G1.shape[0], gpu_overflow_cutoff))
+            G1_lu_pkg = _scipy_lu_factor(G1, check_finite=False)
+            G2_lu_pkg = _scipy_lu_factor(G2, check_finite=False)
+            G1i = _scipy_lu_solve(G1_lu_pkg, np.eye(G1.shape[0]),
+                    check_finite=False)
+            G2i = _scipy_lu_solve(G2_lu_pkg, np.eye(G2.shape[0]),
+                    check_finite=False)
+            G1_lu = ('cpu', G1_lu_pkg[0], G1_lu_pkg[1])
+            G2_lu = ('cpu', G2_lu_pkg[0], G2_lu_pkg[1])
+        else:
+            G1_lu = lu_factor_dispatch(G1)
+            G2_lu = lu_factor_dispatch(G2)
+            eye_g1 = eye_like_lu(G1_lu, G1.shape[0])
+            G1i = to_host(lu_solve_native(G1_lu, eye_g1))
+            del eye_g1
+            eye_g2 = eye_like_lu(G2_lu, G2.shape[0])
+            G2i = to_host(lu_solve_native(G2_lu, eye_g2))
+            del eye_g2
+            try:
+                import cupy as _cp_local
+                _cp_local.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         # Sigma matrices [Eq. (21)]
         Sigma1 = H1 @ G1i
         Sigma2 = H2 @ G2i
 
         # LU factorization of Delta matrix
-        Delta_lu = lu_factor_dispatch(Sigma1 - Sigma2)
-        eye_d = eye_like_lu(Delta_lu, Sigma1.shape[0])
-        Deltai = to_host(lu_solve_native(Delta_lu, eye_d))
-        del eye_d
-        try:
-            import cupy as _cp_local
-            _cp_local.get_default_memory_pool().free_all_blocks()
-        except Exception:
-            pass
+        if (Sigma1.shape[0] >= gpu_overflow_cutoff):
+            from scipy.linalg import lu_factor as _scipy_lu_factor
+            from scipy.linalg import lu_solve as _scipy_lu_solve
+            Delta_lu_pkg = _scipy_lu_factor(Sigma1 - Sigma2, check_finite=False)
+            Deltai = _scipy_lu_solve(Delta_lu_pkg,
+                    np.eye(Sigma1.shape[0]), check_finite=False)
+            Delta_lu = ('cpu', Delta_lu_pkg[0], Delta_lu_pkg[1])
+        else:
+            Delta_lu = lu_factor_dispatch(Sigma1 - Sigma2)
+            eye_d = eye_like_lu(Delta_lu, Sigma1.shape[0])
+            Deltai = to_host(lu_solve_native(Delta_lu, eye_d))
+            del eye_d
+            try:
+                import cupy as _cp_local
+                _cp_local.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         # L matrices [Eq. (22)] - dense BEMRet form
         # L1 = G1 · eps1 · G1⁻¹  (operator generalisation of scalar eps)
@@ -373,12 +386,17 @@ class BEMRetIter(BEMIter):
             magnetic = k ** 2 * ((L @ Deltai) * nvec_outer) @ L
             Sigma_mat = Sigma_L1 - Sigma_L2 + magnetic
 
-        Sigma_lu = lu_factor_dispatch(Sigma_mat)
-        try:
-            import cupy as _cp_local
-            _cp_local.get_default_memory_pool().free_all_blocks()
-        except Exception:
-            pass
+        if Sigma_mat.shape[0] >= gpu_overflow_cutoff:
+            from scipy.linalg import lu_factor as _scipy_lu_factor
+            Sigma_lu_pkg = _scipy_lu_factor(Sigma_mat, check_finite=False)
+            Sigma_lu = ('cpu', Sigma_lu_pkg[0], Sigma_lu_pkg[1])
+        else:
+            Sigma_lu = lu_factor_dispatch(Sigma_mat)
+            try:
+                import cupy as _cp_local
+                _cp_local.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         # Save variables for preconditioner.  Note: ``Sigma1`` cached here
         # is the v1.5.1 operator-form Sigma1·L1 (= H1·eps1·G1⁻¹), used by
