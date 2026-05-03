@@ -44,7 +44,13 @@ class TestPlasmonmodeBasic(object):
         nev = 5
         ene, ur, ul = plasmonmode(p, nev = nev)
 
-        assert ene.dtype in (np.float64, np.float32)
+        # Eigenvalues may be returned as complex with negligible imag part
+        # (np.linalg.eig returns complex even for real symmetric output).
+        if np.iscomplexobj(ene):
+            assert np.allclose(ene.imag, 0.0, atol = 1e-10), \
+                '[error] plasmonmode eigenvalues have non-trivial imag part'
+        else:
+            assert ene.dtype in (np.float64, np.float32)
         assert np.all(np.isfinite(ene))
 
     def test_eigenvalues_sorted_ascending(self):

@@ -337,6 +337,8 @@ class TestableACACompGreenRet(ACACompGreenRet):
             htol: float = 1e-6,
             kmax: int = 100,
             cleaf: int = 32,
+            fadmiss: Any = None,
+            eta: float = 2.5,
             **options: Any):
 
         self.p = p
@@ -344,7 +346,12 @@ class TestableACACompGreenRet(ACACompGreenRet):
         pos = p.pos
         ipart_arr = self._build_ipart_arr(p)
         self.tree = ClusterTree(pos, cleaf = cleaf, ipart_arr = ipart_arr)
-        self.hmat_template = HMatrix(tree = self.tree, htol = htol, kmax = kmax)
+        self.eta = eta
+        self._user_fadmiss = fadmiss
+        self.hmat_template = HMatrix(
+                tree = self.tree, htol = htol, kmax = kmax,
+                fadmiss = fadmiss if fadmiss is not None else
+                        (lambda r1, r2, d: eta * min(r1, r2) < d))
         self._cache = {}
         self.htol = htol
         self.kmax = kmax

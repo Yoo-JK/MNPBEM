@@ -291,7 +291,15 @@ class MockComParticle(object):
             self._mask = [ind - 1]
 
     def closedparticle(self, ind):
-        return self.closed[ind - 1], 1
+        # MATLAB: [p, dir, loc] = closedparticle(obj, ind)
+        # Returns 3-tuple: (closed_particle, dir, loc).
+        # If self.closed[ind-1] is None or empty, the particle is not
+        # closed -> return (None, 1, None) to signal skip.
+        entry = self.closed[ind - 1]
+        if entry is None:
+            return None, 1, None
+        # Otherwise treat the particle itself as closed.
+        return self.p[ind - 1], 1, None
 
 
 class MockComPoint(object):
