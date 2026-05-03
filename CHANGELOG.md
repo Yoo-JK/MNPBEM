@@ -9,7 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (none — see [1.5.0] for the most recent release)
+- (none — see [1.5.1] for the most recent release)
+
+## [1.5.1] - 2026-05-02
+
+### Fixed
+
+- **4 mnpbem GPU 버그 fix** (Au@Ag GPU full mesh acceptance 위해)
+  - `mnpbem/bem/bem_ret.py` (Bug 1) — CPU init path `G1i/G2i/Deltai`
+    LU 백엔드 일관화.
+  - `mnpbem/bem/bem_ret_iter.py:264` (Bug 2) — `Sigma1 = H1 @ G1i`
+    numpy/cupy mix 제거 (dense LU preconditioner 빌드).
+  - `mnpbem/greenfun/hmatrix.py:250` (Bug 3) — `_aca_block`
+    `cols[pivot_col_local]` cupy/numpy index 혼용 방어.
+  - `mnpbem/utils/multi_gpu.py::_worker` (Bug 4) — `BEM` 클래스를
+    `bem_class` 인자로 명시적으로 받도록 확장. 이전엔 `simulation.type=ret_iter`
+    여도 wavelength-split 경로가 `BEMRet` (dense) 강제.
+- **BEMRetIter operator-form eps fix** — Au@Ag (multi-material) iter
+  drift 70% → 0%. Non-uniform eps + cross-connectivity 케이스에서
+  iter formulation 알고리즘 버그. dense `BEMRet` 의
+  `L1 = G1·diag(eps1)·G1⁻¹` 와 일치.
+- **`pymnpbem_simulation` `simulation.type=ret + iterative=true`
+  자동 라우팅** (Issue A) — `dispatch_single_node` /
+  `convert_py_to_yaml` 양쪽에서 `_iter` variant 로 in-place rewrite.
+- **`pymnpbem_simulation.dispatch.multi_gpu`** —
+  wavelength-split 경로가 `simulation.type` 에서 `bem_class` 를
+  유도하여 `solve_spectrum_multi_gpu(bem_class=…)` 로 전달.
+  `compute.iter.{hmatrix, preconditioner, schur, htol, tol, maxit}` 도
+  worker BEM 으로 전파. v1.5.0 까지는 multi-GPU 경로가 항상 `BEMRet`
+  를 강제하던 Bug 4 후속을 wrapper-side 로 메움.
+
+### Added
+
+- `mnpbem/tests/test_gpu_cupy_consistency.py` — 14 tests, GPU
+  cupy/numpy interop 회귀.
+- `mnpbem/tests/test_iter_convergence.py` — 8 tests, BEMRetIter
+  operator-form 회귀 (case_g 1136-face Au@Ag).
+
+### Known issues
+
+- `BEMRetLayerIter` 에 같은 operator-form eps 패치 필요 — substrate
+  + iter 결합 시나리오. v1.5.2 또는 v1.6 후속.
+- `mnpbem/tests/test_schur_iter.py::TestBEMRetIterSchur::test_schur_dense_matches_no_schur` 가
+  현재 환경에서 hang — 별도 조사 항목 (회귀 통계에서 단독 격리; 다른
+  10 schur_iter 테스트는 PASS).
+- **Bug 5 — `mnpbem/greenfun/hmatrix.py:374` `HMatrix.full()` 의
+  cupy/numpy mix** — `BEMRetIter(hmatrix=True, preconditioner='auto')`
+  경로에서 dense LU preconditioner 빌드 시 `_compress` → `hmat.full()`
+  가 cupy `self.val[i]` 를 numpy `mat` 으로 implicit cast 하려다 실패.
+  Tier-3 12672-face Au@Ag GPU iter 시나리오에서 발견. v1.5.1 의 α
+  4 GPU 버그 fix 와 동일 카테고리. 후속 (v1.5.2) 에서 `xp.zeros` /
+  `cupy.asnumpy` dispatch 로 정리 필요.
 
 ## [1.5.0] - 2026-05-03
 
@@ -442,4 +492,5 @@ See `docs/PERFORMANCE.md` for the full table.
 [1.3.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.3.0
 [1.4.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.4.0
 [1.5.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.5.0
-[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.5.0...HEAD
+[1.5.1]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.5.1
+[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.5.1...HEAD
