@@ -442,8 +442,9 @@ os.environ['MNPBEM_VRAM_SHARE_GPUS'] = '4'
 - `tol` 완화 (예: 1e-4) 또는 `maxiter` 증가.
 - `htol` 강화 (예: 1e-7) — H-matrix 압축이 너무 느슨해 condition
   악화 시 효과적.
-- preconditioner 강화 (현재는 Jacobi `precond='diag'` 만 H-matrix
-  와 호환; H-matrix block-LU preconditioner 는 후속 작업).
+- ~~preconditioner 강화~~ → **v1.5.0 부터 `preconditioner='auto'`
+  지원** (H-matrix LU). 256-face sphere 에서 GMRES iter 55 → 1.
+  pitfall #21 참고.
 
 H-matrix vs dense 결과는 `htol` 기반 — `htol=1e-6` 에서
 relative `< 1e-4` 수준으로 일치 (`docs/PERFORMANCE.md` §11).
@@ -485,6 +486,45 @@ if not has_gpu_capability(verbose=True):
 ```
 
 자세한 시나리오별 install 절차는 `docs/INSTALL.md` 참고.
+
+### 21. Large nonlocal mesh strategy (v1.5.0)
+
+v1.5.0 부터 cover-layer (nonlocal) 계열 시뮬레이션에 H-matrix LU
+preconditioner + Schur × Iterative 가 추가되어, 큰 nonlocal mesh 에서
+GMRES 수렴 가속 및 cover layer 변수 implicit 소거가 가능하다.
+
+| 시나리오 | 권장 옵션 |
+|---|---|
+| 작은 nonlocal (< 1k face cover) | `BEMStat(p, schur=True)` (v1.2.0) |
+| 중간 nonlocal (1-5k) | `BEMRetIter(p, hmatrix=True, schur=True)` |
+| 큰 nonlocal (5k+) | + `preconditioner='auto'` |
+| 25k+ nonlocal (cover 50k+ face) | + VRAM share (v1.2.0) — Sigma H-matrix 재구성은 v1.6+ |
+
+**예시**:
+
+```python
+from mnpbem.bem import BEMRetIter
+
+bem = BEMRetIter(p, refun=refun,
+                 hmatrix=True,           # v1.3.0
+                 schur=True,             # v1.5.0 (cover layer 자동 감지)
+                 preconditioner='auto')  # v1.5.0 (수렴 가속)
+
+# 25k+ 면 추가:
+import os
+os.environ['MNPBEM_VRAM_SHARE_GPUS'] = '4'  # v1.2.0
+```
+
+`pymnpbem_simulation` 사용자는 YAML 의 `iter.preconditioner: 'auto'`,
+`iter.schur: 'auto'` 만 켜두면 자동 활성된다 (v1.5.0).
+
+**Common issue**:
+
+- 25k+ face 의 진짜 memory-friendly preconditioner 는 Sigma/Delta
+  H-matrix 재구성이 필요 — v1.6+ 과제. 현재 `hlu_tree` 는 8N×8N
+  결합 시스템 특성상 dense fallback 로 동작하는 경우가 있다.
+- `BEMStatIter` tree mode 는 diagonal term 깨짐으로 자동 dense
+  fallback (one-time log).
 
 ---
 
