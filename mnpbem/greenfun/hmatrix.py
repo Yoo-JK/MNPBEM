@@ -365,6 +365,7 @@ class HMatrix(object):
             if on_gpu:
                 break
 
+        xp_was_auto = (xp is None)
         if xp is None:
             if on_gpu:
                 import cupy as _xp_module
@@ -428,16 +429,23 @@ class HMatrix(object):
             # lhs @ rhs.T (kept on the destination backend)
             mat[r_start:r_end, c_start:c_end] = lhs_blk @ rhs_blk.T
 
-        # Transform from cluster ordering to particle ordering.  Cupy
-        # supports ``np.ix_`` only via tuple indexing of cupy index
-        # arrays, so build the index arrays on the active backend.
+        # Transform from cluster ordering to particle ordering.  Fancy
+        # indexing materialises a fresh N x N buffer; on GPU this would
+        # double the working set and OOM the 49 GB A6000 at Tier-3
+        # (12672 face -> 50 GB matrix).  Pull to host first when the
+        # operand lives on GPU; the immediate downstream consumer
+        # (BEMRetIter._init_precond) calls ``to_host(...)`` on the
+        # result anyway.  Callers wanting to keep the result on GPU can
+        # pass ``xp=cupy`` and accept the extra device allocation.
         perm = tree.ind[:, 1]
+        if is_cupy_backend and xp_was_auto:
+            mat_h = xp.asnumpy(mat)
+            del mat
+            return mat_h[np.ix_(perm, perm)]
         if is_cupy_backend:
             perm_xp = xp.asarray(perm)
-            result = mat[xp.ix_(perm_xp, perm_xp)]
-        else:
-            result = mat[np.ix_(perm, perm)]
-        return result
+            return mat[xp.ix_(perm_xp, perm_xp)]
+        return mat[np.ix_(perm, perm)]
 
     def mtimes_vec(self, v: np.ndarray) -> np.ndarray:
 

@@ -95,12 +95,16 @@ def test_full_cpu_matches_reference_real():
 
 
 @cupy_required
-def test_full_gpu_blocks_returns_cupy():
+def test_full_gpu_blocks_autoreturn_host():
     # Bug 5 root cause: when val/lhs/rhs hold cupy arrays the v1.5.1
     # implementation allocated a numpy host buffer and tried to slice-assign
-    # cupy ndarrays into it -> TypeError.  After the fix, full() returns a
-    # cupy ndarray when blocks live on GPU and matches the CPU result
-    # within machine precision.
+    # cupy ndarrays into it -> TypeError.  After the v1.5.2 fix, full()
+    # auto-detects GPU blocks, fills the result on GPU (no TypeError) and
+    # — to keep the working set within the 49 GB single-GPU cap on
+    # Tier-3-class problems — pulls the matrix to host before the
+    # final cluster->particle permutation (which would otherwise allocate
+    # a second NxN buffer on device).  Caller can override with
+    # ``xp=cupy`` to keep the result on device.
     pos = _two_cluster_points()
     h_cpu, ref = _build_cpu_hmatrix(pos, complex_kernel = True)
 
@@ -110,13 +114,17 @@ def test_full_gpu_blocks_returns_cupy():
     h_gpu.lhs = [cp.asarray(l) if l is not None else None for l in h_gpu.lhs]
     h_gpu.rhs = [cp.asarray(r) if r is not None else None for r in h_gpu.rhs]
 
-    full_gpu = h_gpu.full()  # auto-detect: cupy
-    assert isinstance(full_gpu, cp.ndarray), \
-        '[error] full() should keep cupy backend when blocks are cupy'
+    full_auto = h_gpu.full()  # auto-detect: cupy fill, host return
+    assert isinstance(full_auto, np.ndarray), \
+        '[error] auto full() on GPU blocks should return host (memory-safe)'
+    err = np.linalg.norm(full_auto - ref) / np.linalg.norm(ref)
+    assert err < 1e-6, '[error] auto GPU full() drifts: rel={:.2e}'.format(err)
 
-    full_host = cp.asnumpy(full_gpu)
-    err = np.linalg.norm(full_host - ref) / np.linalg.norm(ref)
-    assert err < 1e-6, '[error] GPU full() drifts: rel={:.2e}'.format(err)
+    # Forced xp=cupy keeps result on device.
+    full_gpu = h_gpu.full(xp = cp)
+    assert isinstance(full_gpu, cp.ndarray)
+    err = np.linalg.norm(cp.asnumpy(full_gpu) - ref) / np.linalg.norm(ref)
+    assert err < 1e-6, '[error] forced GPU full() drifts: rel={:.2e}'.format(err)
 
 
 @cupy_required
@@ -164,9 +172,9 @@ def test_full_mixed_blocks_cupy_dominates():
     if len(h_mix.val) > 0 and h_mix.val[0] is not None:
         h_mix.val[0] = cp.asarray(h_mix.val[0])
 
-    full_mix = h_mix.full()  # auto-detected as cupy due to one GPU block
-    assert isinstance(full_mix, cp.ndarray)
-    err = np.linalg.norm(cp.asnumpy(full_mix) - ref) / np.linalg.norm(ref)
+    full_mix = h_mix.full()  # auto-detected GPU; returns host (memory-safe)
+    assert isinstance(full_mix, np.ndarray)
+    err = np.linalg.norm(full_mix - ref) / np.linalg.norm(ref)
     assert err < 1e-6, '[error] mixed full() drifts: rel={:.2e}'.format(err)
 
 
@@ -191,9 +199,9 @@ def test_full_with_aca_built_cupy_dense_blocks():
     h_real.lhs = [l for l in h_real.lhs]  # numpy untouched
     h_real.rhs = [r for r in h_real.rhs]
 
-    full_real = h_real.full()  # auto-detect GPU because val[*] is cupy
-    assert isinstance(full_real, cp.ndarray)
-    err = np.linalg.norm(cp.asnumpy(full_real) - ref) / np.linalg.norm(ref)
+    full_real = h_real.full()  # auto: GPU fill, host return (memory-safe)
+    assert isinstance(full_real, np.ndarray)
+    err = np.linalg.norm(full_real - ref) / np.linalg.norm(ref)
     assert err < 1e-6, '[error] mixed dense-gpu / lr-cpu drifts: rel={:.2e}'.format(err)
 
 
