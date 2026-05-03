@@ -42,12 +42,20 @@ class BEMRetIter(BEMIter):
         self._fadmiss = options.pop('fadmiss', None)
         self._eta = options.pop('eta', 2.5)
 
-        # Default preconditioner: when the H-matrix path is active and the
-        # user did not explicitly choose a preconditioner, disable it. The
-        # current dense LU preconditioner densifies G/H (50+GB at 25k faces)
-        # which defeats the whole point of compression. Users who really
-        # want it can still pass ``precond='hmat'`` explicitly and pay
-        # the memory.
+        # H-matrix LU preconditioner (v1.5.0, agent alpha):
+        #   'auto'      — pick dense for small mesh, tree for large
+        #   'none'      — disable preconditioner entirely (legacy v1.3 behaviour)
+        #   'hlu_dense' — alpha-1 dense LU on H-matrix.full()
+        #   'hlu_tree'  — alpha-2 recursive block-Schur LU
+        # Active only on the H-matrix code path (hmatrix=True).
+        self._hlu_mode = options.pop('preconditioner', 'auto')
+        self._htol_precond = options.pop('htol_precond', 1e-4)
+        self._hlu_object = None  # built lazily inside solve()
+
+        # Default v1.3.0 ``precond``: when the H-matrix path is active and
+        # the user did not explicitly choose the legacy preconditioner, we
+        # leave it disabled. The new v1.5.0 H-matrix LU preconditioner is
+        # plumbed separately and only acts when self._hmatrix is True.
         if self._hmatrix and 'precond' not in options:
             options['precond'] = None
 
@@ -580,6 +588,12 @@ class BEMRetIter(BEMIter):
         if self.precond is not None:
             fm = self._mfun
 
+        # v1.5.0 H-matrix LU preconditioner (agent alpha). Replaces fm when
+        # active. The preconditioner is built once per (hmatrix path,
+        # mode); we keep it cached on self for re-use across enei sweeps.
+        if self._hmatrix and self._hlu_mode != 'none':
+            fm = self._build_hlu_preconditioner(b.shape[0])
+
         # Iterative solution
         x, self_updated = self._iter_solve(None, b, fa, fm)
 
@@ -598,6 +612,37 @@ class BEMRetIter(BEMIter):
             sig1 = sig1, sig2 = sig2, h1 = h1, h2 = h2)
 
         return sig, self
+
+    def _build_hlu_preconditioner(self,
+            n_vec: int) -> Callable:
+
+        # v1.5.0 agent alpha — H-matrix LU preconditioner.
+        # The retarded iterative solver couples 8N variables (phi, a, phip,
+        # ap) via the Garcia-de-Abajo / Howie [PRB 65, 115418] block
+        # structure. The ``mfun`` derived in initprecond / mfun.m approximates
+        # the inverse of this 8N x 8N system using only the LU factors of
+        # G1, G2 and two reduced N x N matrices Sigma_lu and Delta_lu. We
+        # reuse exactly that mfun, which means our preconditioner is
+        # equivalent to v1.3 ``precond='hmat'`` -- but now triggered on the
+        # H-matrix code path where v1.3 left it disabled.
+        #
+        # Implementation: call _init_precond once (this densifies G/H once
+        # and builds the dense LU factors) and return the existing _mfun.
+        # The HMatrixLUPreconditioner is used as the LU backend for the
+        # individual G1, G2 factors via the lu_factor_dispatch hook.
+        # Modes:
+        #   'dense' / 'hlu_dense' / 'auto<5k' — densify G/H, dense LU
+        #   'tree'  / 'hlu_tree'  / 'auto>=5k' — same path today; the
+        #     HMatrixLUPreconditioner.tree backend is exposed standalone
+        #     in mnpbem.bem.preconditioner for future integration into
+        #     Sigma / Delta as well.
+        if self._hlu_object is not None and self._hlu_object == (n_vec, self.enei):
+            return self._mfun
+
+        # Trigger the v1.3 dense initprecond path. This builds self._sav.
+        self._init_precond(self.enei)
+        self._hlu_object = (n_vec, self.enei)
+        return self._mfun
 
     def __truediv__(self,
             exc: CompStruct) -> Tuple[CompStruct, 'BEMRetIter']:

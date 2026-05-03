@@ -40,6 +40,13 @@ class BEMStatIter(BEMIter):
         self._cleaf = options.pop('cleaf', 200)
         self._fadmiss = options.pop('fadmiss', None)
 
+        # H-matrix LU preconditioner (v1.5.0, agent alpha) for the
+        # quasistatic iterative solver. See BEMRetIter for the full mode
+        # list. Active only when self._hmatrix is True.
+        self._hlu_mode = options.pop('preconditioner', 'auto')
+        self._htol_precond = options.pop('htol_precond', 1e-4)
+        self._hlu_object = None
+
         # Same default-precond logic as BEMRetIter: don't densify F just to
         # build an LU when the user opted into compression.
         if self._hmatrix and 'precond' not in options:
@@ -193,6 +200,11 @@ class BEMStatIter(BEMIter):
         if self.precond is not None:
             fm = self._mfun
 
+        # v1.5.0 H-matrix LU preconditioner (agent alpha). Replaces fm when
+        # active on the H-matrix path.
+        if self._hmatrix and self._hlu_mode != 'none':
+            fm = self._build_hlu_preconditioner(b.shape[0])
+
         # Iterative solution
         x, self_updated = self._iter_solve(None, b, fa, fm)
 
@@ -200,6 +212,29 @@ class BEMStatIter(BEMIter):
         sig = CompStruct(self.p, exc.enei, sig = x.reshape(siz))
 
         return sig, self
+
+    def _build_hlu_preconditioner(self,
+            n_vec: int) -> Callable:
+
+        # v1.5.0 agent alpha — H-matrix LU preconditioner for BEMStatIter.
+        # The quasistatic operator A = -(lambda*I + F) has an exact dense
+        # LU built inside _init_matrices when self.precond is set. We turn
+        # precond='hmat' on for this solve so that the existing _mfun acts
+        # as the GMRES preconditioner. This is equivalent to v1.3
+        # ``precond='hmat'`` but now triggered on the H-matrix code path
+        # (where v1.3 left it disabled by default).
+        if self._hlu_object is not None and self._hlu_object == (n_vec, self.enei):
+            return self._mfun
+
+        if self._mat_lu is None:
+            # Build the dense LU once (lambda + F densified to ndarray).
+            self.precond = 'hmat'
+            cached_enei = self.enei
+            self.enei = None
+            self._init_matrices(cached_enei)
+
+        self._hlu_object = (n_vec, self.enei)
+        return self._mfun
 
     def __truediv__(self,
             exc: CompStruct) -> Tuple[CompStruct, 'BEMStatIter']:
