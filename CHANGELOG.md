@@ -9,7 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (none currently — v1.4.0 release prep in progress)
+- (none currently — v1.5.0 release prep in progress)
+
+## [1.5.0] - 2026-05-XX
+
+### Added
+
+- **H-matrix LU preconditioner** for iterative BEM solvers (Lane E2 후속)
+  - `BEMRetIter(p, hmatrix=True, preconditioner='auto', htol_precond=1e-4)`,
+    `BEMStatIter` 동일.
+  - 256-face sphere GMRES iter 55 → 1 (55× 감소).
+  - modes: `auto` (default ON when `hmatrix=True`), `none`, `hlu_dense`,
+    `hlu_tree`.
+  - 구현: `mnpbem/bem/preconditioner.py` (`HMatrixLUPreconditioner`).
+- **Schur complement × Iterative BEM** integration
+  - `BEMRetIter(p, schur=True, hmatrix=True)` (둘 다 ON 가능; v1.4
+    까지는 `NotImplementedError`).
+  - `SchurIterOperator` `LinearOperator`:
+    `A_eff(x_c) = A_cc x_c − A_cs · A_ss⁻¹ · A_sc x_c`.
+  - `g_ss_solver`: `lu_dense` / `gmres` / `callable` / `auto`.
+  - 568-face nano-gap nonlocal: solve 21.17s → 16.65s (21.3% 절감).
+  - 구현: `mnpbem/bem/schur_iter_helpers.py`.
+- **51 pre-existing test failures cleanup** (51 → 0)
+  - Stale 11 삭제, infra 38 fix, 1 fix, 1 갱신.
+- **jk-config 3 follow-up issues** fix
+  - Issue 2: multi-shell `core_shell` builder N-layer 일반화.
+  - Issue 3: Metal substrate `IndexError` (`LayerStructure._enlarge`
+    boundary clip).
+  - Issue 4: field-only config 자동 변환
+    (`py_to_yaml._redirect_field_only_simulation`).
+- `pymnpbem_simulation` 의 `iter.preconditioner`, `iter.schur` 옵션 노출.
+
+### Changed
+
+- (none — backward compatible with v1.4.0)
+
+### Performance
+
+- 256-face sphere GMRES: iter 55 → 1, wall 1.03s → 0.82s.
+- 568-face nonlocal Schur×Iter: 21.3% 시간 절감.
+- 25k face: alpha-2 H-tree LU 의 진정한 가치는 Sigma/Delta H-matrix
+  재구성이 필요 — v1.6+ scope.
+
+### Known limits
+
+- `BEMRetIter` 의 8N×8N 결합 시스템 → G-only H-tree LU 단독 효과
+  제한적 (alpha-2 ≈ alpha-1 dense fallback).
+- 25k face 의 진짜 memory-friendly preconditioner = Sigma/Delta
+  H-matrix 재구성 = v1.6+.
+- `BEMStatIter` tree mode → diagonal term 깨져서 dense fallback
+  (one-time log).
 
 ## [1.4.0] - 2026-05-XX
 
@@ -392,4 +441,5 @@ See `docs/PERFORMANCE.md` for the full table.
 [1.2.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.2.0
 [1.3.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.3.0
 [1.4.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.4.0
-[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.4.0...HEAD
+[1.5.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.5.0
+[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.5.0...HEAD
