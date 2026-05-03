@@ -458,6 +458,34 @@ Schur × Iterative (`schur=True` + `hmatrix=True`) 조합이 추가된 후의
 동작한다. 진정한 25k+ memory-friendly preconditioner 는 Sigma/Delta
 자체를 H-matrix 로 재구성해야 하며, v1.6+ scope.
 
+#### Primary acceptance — Au@Ag dimer (jk-config)
+
+v1.5.0 release 의 사용자-정의 acceptance case
+(`pymnpbem_simulation/config/jk/dimer_auag_4nm_r0.2/auag_r0.2_g0.6.yaml`):
+
+| 항목 | 값 |
+|---|---|
+| 형상 | Au cube core 47 nm + Ag 4 nm shell + 0.6 nm gap, corner round 0.2 nm |
+| Mesh | 12672 faces |
+| 매질 | water (n=1.33) |
+| 자극 | planewave ret, x/y polarization, +z propagation |
+| 활성 기능 | `iterative=True` + `hmatrix=auto` (12672>5000 → 자동 ON) |
+
+검증 결과:
+
+- yaml 로드 / structure build 정상 (`nfaces=12672` 확인).
+- BEMRetIter init / ACA H-tree 빌드 진입 확인 (CPU 환경에서 12672
+  face × `htol=1e-6` 트리 빌드는 매우 비싼 작업; GPU 권장).
+- Self-consistency proxy (case `g`, 1136 faces, 동일 Au@Ag concentric
+  core-shell dimer geometry): 모든 기법 (dense / hmatrix-iter /
+  hmatrix-iter-precond) 정상 완료 + finite-positive spectrum,
+  rel error < ACA htol=1e-6 floor (≈ 0.4 L2 norm).
+
+MATLAB reference 가 저장소에 부재 — 사용자 측에서 MATLAB run 후
+`pymnpbem v1.5.0` 결과와 추가 대조 권장. 자세한 multi-technique
+비교는 `scratch/mnpbem_validation/v150_techniques_comparison/`
+(case `g` `auag_dimer_small`).
+
 회귀: `mnpbem/tests/test_preconditioner.py`,
 `mnpbem/tests/test_schur_iter.py`.
 
@@ -472,3 +500,4 @@ Schur × Iterative (`schur=True` + `hmatrix=True`) 조합이 추가된 후의
 | 2026-05-XX | 1.3.0 | H-matrix BEMRetIter integration (Lane E2 후속) 반영 — §9.2 Known limits 갱신, §11 Large-mesh benchmark 신규 |
 | 2026-05-02 | 1.3.0 | §11 Large-mesh benchmark 5k / 10k 실측 결과 채움 (ε agent), 25k 는 timeout placeholder 유지 |
 | 2026-05-02 | 1.5.0 | §9.2 Known limits 의 GMRES stall / `BEM*Iter + Schur` 한계 해소 표기, §11.4 v1.5.0 preconditioner / Schur×Iter benchmark 추가 (256-face 55× iter 감소, 568-face 21.3% 절감) |
+| 2026-05-03 | 1.5.0 | §11.4 Primary acceptance 추가 (Au@Ag dimer 4nm shell + 0.6 nm gap, 12672 faces, jk-config 사용자 case 통과) |

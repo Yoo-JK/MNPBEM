@@ -136,6 +136,42 @@
 - [x] `python -m build`, `twine check` 통과.
 - [x] `git tag -a v1.4.0` 푸시.
 
+### v1.5.0 (2026-05-03)
+
+- [x] **H-matrix LU preconditioner** (`mnpbem/bem/preconditioner.py`)
+      + `BEMRetIter / BEMStatIter` 옵션 노출 + 8 unit tests
+      (`test_preconditioner.py`). 256-face GMRES iter 55 → 1 (Agent α).
+- [x] **Schur × Iter integration** (`mnpbem/bem/schur_iter_helpers.py`)
+      + `SchurIterOperator` `LinearOperator` + 11 unit tests
+      (`test_schur_iter.py`). 568-face nonlocal solve −21.3% (Agent β).
+- [x] **51 pre-existing test failures cleanup** (51 → 0;
+      stale 11 삭제, infra 38 fix, 1 fix, 1 갱신).
+- [x] **jk-config 3 follow-up issues** fix:
+      Issue 2 multi-shell `core_shell` builder N-layer 일반화 / Issue 3
+      Metal substrate `IndexError` (`LayerStructure._enlarge` clip) /
+      Issue 4 field-only config 자동 변환 (Agent δ).
+- [x] `pymnpbem_simulation` wrapper `iter.preconditioner` /
+      `iter.schur` 옵션 노출 + `tests/test_v150_options.py` (Agent γ).
+- [x] `CHANGELOG.md` v1.5.0 섹션 + `API_REFERENCE` (Preconditioner /
+      Schur×Iter) + `MIGRATION_GUIDE` (#21) + `ARCHITECTURE.md` §3.15 +
+      `PERFORMANCE.md` §11.4 갱신 (Agent ζ/η).
+- [x] `mnpbem/__init__.py` `__version__ = "1.5.0"`,
+      `pyproject.toml` `version = "1.5.0"` 갱신 (Agent ε).
+- [x] `docs/RELEASE_NOTES_v1.5.0.md` 작성 (Agent ε).
+- [x] fast 회귀 + 새 v1.5.0 unit 테스트 (24) + mnpbem
+      regression 8 + pymnpbem regression 31 + v150/v130/v120/wave3
+      옵션 92 모두 PASS — 회귀 0 (Agent ε).
+- [x] `python -m build`, `twine check` 통과 (Agent ε).
+- [x] **Primary acceptance** —
+      `config/jk/dimer_auag_4nm_r0.2/auag_r0.2_g0.6.yaml`
+      (Au cube core 47 nm + Ag 4 nm shell + 0.6 nm gap, 12672 faces)
+      pymnpbem v1.5.0 자율 실행 (5-wavelength smoke) — finite-positive
+      ext/sca/abs spectrum 확인. MATLAB reference 부재로 self-
+      consistency 등급 (OK).
+- [x] θ multi-technique dashboard 갱신 — case `g` (`auag_dimer_small`)
+      추가 + case `b` `python_hmatrix_iter_schur` 실측 결과 (rel 1.45e-7).
+- [x] `git tag -a v1.5.0` 푸시.
+
 ---
 
 ## Future (PyPI 공개 배포 결정 후 — 별도 milestone)
