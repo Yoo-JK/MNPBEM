@@ -86,14 +86,36 @@ test_iterative, test_eps_nonlocal, test_gpu_cupy_consistency) **206 PASS,
 
 5 wavelengths × 4× RTX A6000 GPU (49 GB ea) on `mnpbem` env (cupy 14.0.1):
 
-| 시나리오 | 경로 | wall | self-cons vs ref | 통과 |
-|---|---|---:|---|:---:|
-| 1 | 4 worker × 1 GPU each, BEMRetIter (hmatrix=auto, precond=lu_dense) | (Tier-3 iter 측정값) | (rel diff vs scenario 2) | (status) |
-| 2 | VRAM share 4 GPU dense (cusolverMg) | (Tier-3 vram 측정값) | reference | (status) |
+| 시나리오 | 경로 | 결과 | 비고 |
+|---|---|---|---|
+| 1 | 4 worker × 1 GPU each, BEMRetIter | **warn**: Bug 5 의 TypeError 는 해소되어 dense-LU precond 빌드 단계까지 진입하지만, BEMRetIter 의 dense LU precond peak working set ~30 GB + cuSolver scratch + cupy pool fragmentation 으로 49 GB 단일 A6000 cap 초과 OOM. v1.5.2 의 mempool drain + host-LU 분기 (`MNPBEM_GPU_PRECOND_HOST_THRESHOLD`) 로 완화 가능하지만 BEMRet/BEMRetIter 의 GMRES 단계가 여전히 동일 GPU 의 G/H matrix 를 사용. | 권장: 시나리오 2 (VRAM share) 사용 |
+| 2 | VRAM share 4 GPU dense (cusolverMg) | **OK (machine)** — Bug 5/6 fixed enabled this path; BEMRetIter dense precond LU on 196 GB combined VRAM | 권장 path |
 
 > 상세는 `docs/PERFORMANCE.md` §11.5 (v1.5.1 Au@Ag Tier-3 acceptance)
 > 와 `scratch/mnpbem_validation/v150_techniques_comparison/AUAG_REPORT.md`
 > v1.5.2 섹션 참고.
+
+### Tier-3 single-GPU iter+hmat — root-cause analysis
+
+`mnpbem/bem/bem_ret_iter.py::_init_precond` 의 dense LU pipeline 은:
+
+1. `G1, G2, H1, H2` 4 개 dense matrices on host (Bug 5 fix 결과; 각 2.57 GB).
+2. `lu_factor_dispatch(G1)` → cuSolver → 2.5 GB factor + 2.5 GB pivots + scratch.
+3. `lu_factor_dispatch(G2)` → 동일.
+4. `eye_like_lu(G1_lu, N)` → 2.5 GB I matrix on GPU.
+5. `lu_solve_native(G1_lu, eye)` → 2.5 GB inverse on GPU, then `to_host`.
+6. eye_g2 / G2i / Delta_lu / Sigma_lu 동일 패턴.
+
+Peak GPU working set ~30+ GB; cupy memory pool fragmentation 추가; 49 GB
+A6000 cap 초과. v1.5.2 mitigation: pool drain between steps + host-LU
+fallback when N >= `MNPBEM_GPU_PRECOND_HOST_THRESHOLD` (default 8000).
+Trade-off: scipy host LU on N=12672 / complex128 single-thread ~5 min,
+multi-thread (`--n-threads 4`) ~1-2 min. 권장 (Tier-3 single-GPU 회피
+unable-to-VRAM-share 시): `--n-threads 4` + 3 wavelengths.
+
+본 architecture 한계 의 근본적 해소는 v1.6+ 의 H-matrix LU
+preconditioner 통합 (현재 dense N x N 을 hierarchical 로 교체) 으로
+계획.
 
 ### iter convergence 회귀 (β + Bug 5/6 통합)
 
