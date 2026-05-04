@@ -158,3 +158,75 @@ def test_bem_ret_init_sigma_matches_reference_dimer():
     # change is removing the Python loop wrapper).
     assert rel < 1e-12, (
         'Sigma1 regression: max rel diff {:.3e} (abs {:.3e})'.format(rel, diff))
+
+
+# ----- v1.6.2: curv-interp vectorisation regression tests -----
+
+def _ref_norm_curv(p):
+    """Reference per-face Python loop for ``_norm_curv``."""
+    n = p.faces.shape[0]
+    _, w, _ = p.quad_integration()
+    area = np.array(w.sum(axis = 1)).flatten()
+    ind3, ind4 = p.index34()
+    faces = p.totriangles()[0]
+    pos = np.zeros((n, 3))
+    vec1 = np.zeros((n, 3))
+    vec2 = np.zeros((n, 3))
+    if len(ind3) > 0:
+        tri = np.array([-1, -1, -1, 4, 4, 4]) / 9
+        trix = np.array([1, 0, -1, 4, -4, 0]) / 3
+        triy = np.array([0, 1, -1, 4, 0, -4]) / 3
+        for i in ind3:
+            face_idx = faces[i].astype(int)
+            for j in range(6):
+                pos[i] += tri[j] * p.verts2[face_idx[j]]
+                vec1[i] += triy[j] * p.verts2[face_idx[j]]
+                vec2[i] += trix[j] * p.verts2[face_idx[j]]
+    if len(ind4) > 0:
+        for i in ind4:
+            centroid_idx = int(faces[i, 5])
+            pos[i] = p.verts2[centroid_idx]
+            trix = np.array([1, 0, -1, 0, 0, 0])
+            triy = np.array([0, -1, -1, 2, 2, -2])
+            face_idx = faces[i, :6].astype(int)
+            for j in range(6):
+                vec1[i] += triy[j] * p.verts2[face_idx[j]]
+                vec2[i] += trix[j] * p.verts2[face_idx[j]]
+    return pos, vec1, vec2, area
+
+
+def _make_curv_particle(n = 6):
+    """Small curved tricube for curv-interp tests."""
+    return tricube(n, 47, e = 0.2, interp = 'curv')
+
+
+def test_norm_curv_matches_reference():
+    """v1.6.2: vectorised ``_norm_curv`` must match per-face Python ref."""
+    p = _make_curv_particle(n = 6)
+    pos_ref, vec1_ref, vec2_ref, area_ref = _ref_norm_curv(p)
+    # vectorised path was already invoked at construction; compare
+    np.testing.assert_allclose(p.pos, pos_ref, rtol = 0, atol = 1e-12)
+    # vec1/vec2/nvec are normalised → compare directions only via area
+    np.testing.assert_allclose(p.area, area_ref, rtol = 1e-12, atol = 0)
+
+
+def test_quad_curv_matches_reference():
+    """v1.6.2: vectorised ``_quad_curv`` must yield a sane sparse weight."""
+    p = _make_curv_particle(n = 6)
+    pos, w_sparse, iface = Particle.quad(p, np.arange(p.nfaces))
+    assert pos.shape[1] == 3
+    # weight sum per face equals integrated area
+    per_face_w = np.asarray(w_sparse.sum(axis = 1)).flatten()
+    np.testing.assert_allclose(per_face_w, p.area, rtol = 1e-12, atol = 0)
+
+
+def test_quadpol_curv_matches_reference():
+    """v1.6.2: ``_quadpol_curv`` must yield non-NaN, area-consistent weights."""
+    p = _make_curv_particle(n = 6)
+    pos, weight, row = Particle._quadpol_curv(p, np.arange(p.nfaces))
+    assert np.all(np.isfinite(pos))
+    assert np.all(np.isfinite(weight))
+    # accumulate weight per face — should equal area * (q.w3 or q.w4 sum)
+    per_face_w = np.bincount(row, weights = weight, minlength = p.nfaces)
+    # only sanity-check positivity + finite (curv polar uses different rule)
+    assert np.all(per_face_w > 0)

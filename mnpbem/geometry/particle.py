@@ -553,63 +553,58 @@ class Particle(object):
         Compute centroids, areas, and basis vectors for curved elements.
 
         MATLAB: norm_curv.m
+
+        v1.6.2: per-face Python loop replaced by tensor contractions for
+        curved interp particles. On the 47nm Au@Ag dimer this collapsed
+        12 calls × 24 s into batched indexing (286 s → ~1 s scale).
         """
         n = self.faces.shape[0]
 
         # Get area from integration weights
         _, w, _ = self.quad_integration()
-        self.area = np.array(w.sum(axis=1)).flatten()
+        self.area = np.array(w.sum(axis = 1)).flatten()
 
         ind3, ind4 = self.index34()
-        # Use totriangles to get the 6-column face layout
-        # MATLAB: faces = totriangles(obj)
-        # For triangles: [v0, v1, v2, e01, e12, e20]
-        # For quads (first tri): [v0, v1, v2, e01, e12, centroid]
+        # totriangles 6-column layout:
+        #   triangles: [v0, v1, v2, e01, e12, e20]
+        #   quads (first tri): [v0, v1, v2, e01, e12, centroid]
         faces = self.totriangles()[0]
 
-        # Allocate arrays
         pos = np.zeros((n, 3))
         vec1 = np.zeros((n, 3))
         vec2 = np.zeros((n, 3))
 
-        # Triangular elements
+        # Triangular elements — batched 6-node sum
         if len(ind3) > 0:
-            # Shape functions at centroid
             tri = np.array([-1, -1, -1, 4, 4, 4]) / 9
             trix = np.array([1, 0, -1, 4, -4, 0]) / 3
             triy = np.array([0, 1, -1, 4, 0, -4]) / 3
 
-            for i in ind3:
-                face_idx = faces[i].astype(int)
-                for j in range(6):
-                    pos[i] += tri[j] * self.verts2[face_idx[j]]
-                    vec1[i] += triy[j] * self.verts2[face_idx[j]]
-                    vec2[i] += trix[j] * self.verts2[face_idx[j]]
+            face_idx3 = faces[ind3, :6].astype(int)                       # (k3, 6)
+            verts_block = self.verts2[face_idx3]                          # (k3, 6, 3)
+            pos[ind3] = np.einsum('c,icd->id', tri, verts_block)
+            vec1[ind3] = np.einsum('c,icd->id', triy, verts_block)
+            vec2[ind3] = np.einsum('c,icd->id', trix, verts_block)
 
-        # Quadrilateral elements
-        # MATLAB: pos(ind4,:) = obj.verts2(faces(ind4, 6), :)
-        # faces(ind4, 6) is the centroid (6th column of totriangles output)
+        # Quadrilateral elements — centroid + batched 6-node derivative sum
         if len(ind4) > 0:
-            for i in ind4:
-                # Centroid is the 6th element (index 5) of the totriangles output
-                centroid_idx = int(faces[i, 5])
-                pos[i] = self.verts2[centroid_idx]
+            face_idx4 = faces[ind4, :6].astype(int)                       # (k4, 6)
+            centroid_idx = face_idx4[:, 5]
+            pos[ind4] = self.verts2[centroid_idx]
 
-                # Derivatives using the 6-column totriangles face layout
-                trix = np.array([1, 0, -1, 0, 0, 0])
-                triy = np.array([0, -1, -1, 2, 2, -2])
+            trix4 = np.array([1, 0, -1, 0, 0, 0])
+            triy4 = np.array([0, -1, -1, 2, 2, -2])
 
-                face_idx = faces[i, :6].astype(int)
-                for j in range(6):
-                    vec1[i] += triy[j] * self.verts2[face_idx[j]]
-                    vec2[i] += trix[j] * self.verts2[face_idx[j]]
+            verts_block = self.verts2[face_idx4]                          # (k4, 6, 3)
+            vec1[ind4] = np.einsum('c,icd->id', triy4, verts_block)
+            vec2[ind4] = np.einsum('c,icd->id', trix4, verts_block)
 
-        # Normalize
+        # Normalize and orthogonalise
         nvec = np.cross(vec1, vec2)
-        nvec_norm = np.linalg.norm(nvec, axis=1, keepdims=True)
+        nvec_norm = np.linalg.norm(nvec, axis = 1, keepdims = True)
         nvec = nvec / np.maximum(nvec_norm, 1e-14)
 
-        vec1_norm = np.linalg.norm(vec1, axis=1, keepdims=True)
+        vec1_norm = np.linalg.norm(vec1, axis = 1, keepdims = True)
         vec1 = vec1 / np.maximum(vec1_norm, 1e-14)
 
         vec2 = np.cross(nvec, vec1)
@@ -1367,7 +1362,13 @@ class Particle(object):
         return pos, weight, row
 
     def _quadpol_curv(self, ind=None):
-        """Polar quadrature for curved elements."""
+        """Polar quadrature for curved elements.
+
+        v1.6.2: per-face Python loops replaced by tensor contractions
+        (mirrors ``_quadpol_flat``). For curv-interp dimer / cube meshes
+        this collapses ``n_face`` Python iterations of ``shape @ verts``
+        into batched einsum.
+        """
         if ind is None:
             ind = np.arange(self.nfaces)
         ind = np.asarray(ind)
@@ -1381,49 +1382,49 @@ class Particle(object):
 
         pos = np.zeros((n_total, 3))
         weight = np.zeros(n_total)
-        row = np.zeros(n_total, dtype=int)
+        row = np.zeros(n_total, dtype = int)
 
         offset = 0
 
         # Triangular elements
         if len(ind3) > 0:
-            tri_shape = self._tri6_shape(q.x3, q.y3)
-            tri_dx, tri_dy = self._tri6_deriv(q.x3, q.y3)
+            tri_shape = self._tri6_shape(q.x3, q.y3)                      # (m3, 6)
+            tri_dx, tri_dy = self._tri6_deriv(q.x3, q.y3)                 # (m3, 6) each
 
-            for i in ind3:
-                it = slice(offset, offset + m3)
-                face_idx = faces[i, [0, 1, 2, 4, 5, 6]].astype(int)
+            ind3 = np.asarray(ind3)
+            face_idx = faces[ind3][:, [0, 1, 2, 4, 5, 6]].astype(int)     # (k3, 6)
+            verts_block = self.verts2[face_idx]                           # (k3, 6, 3)
+            pos_block = np.einsum('tc,icd->itd', tri_shape, verts_block)
+            posx_block = np.einsum('tc,icd->itd', tri_dx, verts_block)
+            posy_block = np.einsum('tc,icd->itd', tri_dy, verts_block)
+            nvec_block = np.cross(posx_block, posy_block, axis = 2)
+            jac_block = 0.5 * np.linalg.norm(nvec_block, axis = 2)        # (k3, m3)
 
-                pos[it] = tri_shape @ self.verts2[face_idx]
-                posx = tri_dx @ self.verts2[face_idx]
-                posy = tri_dy @ self.verts2[face_idx]
-
-                nvec = np.cross(posx, posy)
-                jac = 0.5 * np.linalg.norm(nvec, axis=1)
-
-                weight[it] = q.w3 * jac
-                row[it] = i
-                offset += m3
+            n_block = len(ind3) * m3
+            pos[offset:offset + n_block] = pos_block.reshape(-1, 3)
+            weight[offset:offset + n_block] = (q.w3[np.newaxis, :] * jac_block).ravel()
+            row[offset:offset + n_block] = np.repeat(ind3, m3)
+            offset += n_block
 
         # Quadrilateral elements
         if len(ind4) > 0:
-            quad_shape = self._quad9_shape(q.x4, q.y4)
-            quad_dx, quad_dy = self._quad9_deriv(q.x4, q.y4)
+            quad_shape = self._quad9_shape(q.x4, q.y4)                    # (m4, 9)
+            quad_dx, quad_dy = self._quad9_deriv(q.x4, q.y4)              # (m4, 9) each
 
-            for i in ind4:
-                it = slice(offset, offset + m4)
-                face_idx = faces[i, :9].astype(int)
+            ind4 = np.asarray(ind4)
+            face_idx = faces[ind4][:, :9].astype(int)                     # (k4, 9)
+            verts_block = self.verts2[face_idx]                           # (k4, 9, 3)
+            pos_block = np.einsum('tc,icd->itd', quad_shape, verts_block)
+            posx_block = np.einsum('tc,icd->itd', quad_dx, verts_block)
+            posy_block = np.einsum('tc,icd->itd', quad_dy, verts_block)
+            nvec_block = np.cross(posx_block, posy_block, axis = 2)
+            jac_block = np.linalg.norm(nvec_block, axis = 2)              # (k4, m4)
 
-                pos[it] = quad_shape @ self.verts2[face_idx]
-                posx = quad_dx @ self.verts2[face_idx]
-                posy = quad_dy @ self.verts2[face_idx]
-
-                nvec = np.cross(posx, posy)
-                jac = np.linalg.norm(nvec, axis=1)
-
-                weight[it] = q.w4 * jac
-                row[it] = i
-                offset += m4
+            n_block = len(ind4) * m4
+            pos[offset:offset + n_block] = pos_block.reshape(-1, 3)
+            weight[offset:offset + n_block] = (q.w4[np.newaxis, :] * jac_block).ravel()
+            row[offset:offset + n_block] = np.repeat(ind4, m4)
+            offset += n_block
 
         return pos, weight, row
 
@@ -1521,6 +1522,12 @@ class Particle(object):
         Boundary element quadrature for curved surfaces.
 
         MATLAB: /Particles/@particle/private/quad_curv.m
+
+        v1.6.2: per-triangle Python loop replaced by tensor contractions —
+        same einsum batch as ``_quad_flat`` / ``_quadpol_flat``. On the
+        47nm Au@Ag dimer (interp='curv', 1176 face) this collapses 32 calls
+        × 15 s into a single batched contraction (``_quad_curv`` was the
+        85 % construct-time bottleneck identified by cProfile).
         """
         if ind is None:
             ind = np.arange(self.nfaces)
@@ -1529,72 +1536,43 @@ class Particle(object):
         if self.verts2 is None or self.faces2 is None:
             raise ValueError("Curved integration requires verts2 and faces2")
 
-        # Get curved faces
-        faces = self.faces2[ind]
-
-        # Decompose into triangles
+        # Decompose into triangles (n_tri × 6 node columns)
         faces_tri, ind4 = self._totriangles_curv(ind)
 
-        # Index to triangles
+        # Triangle → original-face index mapping
         ind3 = np.arange(len(ind))
         if len(ind4) > 0:
             ind3 = np.hstack([ind3, ind4[:, 0]])
 
-        # Integration points and weights
+        # Quadrature rule
         q = self.quad
         x, y, w = q.x, q.y, q.w
         m = len(w)
+        n_tri = len(ind3)
+        n_total = m * n_tri
 
-        # Total number of points
-        n_total = m * len(ind3)
+        # Shape functions and derivatives at quadrature points (precomputed once)
+        tri_shape = self._tri6_shape(x, y)                                # (m, 6)
+        tri_dx, tri_dy = self._tri6_deriv(x, y)                           # (m, 6) each
 
-        # Allocate arrays
-        pos = np.zeros((n_total, 3))
-        weight = np.zeros(n_total)
-        row = np.zeros(n_total, dtype=int)
-        col = np.zeros(n_total, dtype=int)
+        # Batched contraction: every triangle's 6 nodes at once
+        face_idx = faces_tri[:, :6].astype(int)                           # (n_tri, 6)
+        verts_block = self.verts2[face_idx]                               # (n_tri, 6, 3)
+        pos_block = np.einsum('tc,icd->itd', tri_shape, verts_block)      # (n_tri, m, 3)
+        posx_block = np.einsum('tc,icd->itd', tri_dx, verts_block)        # (n_tri, m, 3)
+        posy_block = np.einsum('tc,icd->itd', tri_dy, verts_block)        # (n_tri, m, 3)
+        nvec_block = np.cross(posx_block, posy_block, axis = 2)           # (n_tri, m, 3)
+        jac_block = np.linalg.norm(nvec_block, axis = 2)                  # (n_tri, m)
 
-        # 6-node triangle shape functions
-        tri_shape = TriangleShape(6)
+        pos = pos_block.reshape(-1, 3)
+        # 0.5 factor for triangle
+        weight = (0.5 * w[np.newaxis, :] * jac_block).ravel()
+        row = np.repeat(np.asarray(ind3), m)
+        col = np.arange(n_total)
 
-        # Loop over triangular elements
-        offset = 0
-        for i, idx in enumerate(ind3):
-            it = slice(offset, offset + m)
+        w_sparse = csr_matrix((weight, (row, col)), shape = (len(ind), n_total))
 
-            # 6-node vertices for this triangle
-            face_idx = faces_tri[i, :6].astype(int)
-            verts_6 = self.verts2[face_idx]
-
-            # Interpolate positions
-            N = tri_shape(x, y)
-            pos[it] = N @ verts_6
-
-            # Compute Jacobian for area
-            Nx = tri_shape.x(x, y)
-            Ny = tri_shape.y(x, y)
-            posx = Nx @ verts_6
-            posy = Ny @ verts_6
-            nvec = np.cross(posx, posy)
-            jac = np.linalg.norm(nvec, axis=1)
-
-            # Integration weights
-            weight[it] = 0.5 * w * jac  # 0.5 factor for triangle
-
-            # Row and column indices
-            row[it] = idx
-            col[it] = np.arange(offset, offset + m)
-
-            offset += m
-
-        # Create sparse weight matrix
-        from scipy.sparse import csr_matrix
-        w_sparse = csr_matrix((weight, (row, col)), shape=(len(ind), n_total))
-
-        # Face index for integration points
-        iface = row
-
-        return pos, w_sparse, iface
+        return pos, w_sparse, row
 
     def _totriangles(self, ind):
         """Decompose quadrilaterals into triangles (flat)."""
