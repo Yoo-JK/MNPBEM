@@ -108,6 +108,40 @@ def require_gpu_or_raise() -> None:
     raise RuntimeError(msg)
 
 
+def _vram_share_env_defaults() -> Tuple[Optional[int], Optional[str], Optional[list]]:
+    """Read ``MNPBEM_VRAM_SHARE_*`` env vars to fill in dispatch kwargs.
+
+    Returns ``(n_gpus, backend, device_ids)`` triple where each entry is
+    ``None`` when the corresponding env var is unset / disabled. The
+    distributed multi-GPU path is gated by ``MNPBEM_VRAM_SHARE_GPUS>=2``;
+    the optional ``MNPBEM_VRAM_SHARE`` master switch (when set to '0')
+    forces the helper off so callers can disable wiring without unsetting
+    every variable. Backend default is ``'cusolvermg'``; ``device_ids``
+    is parsed from a comma-separated list (e.g. '0,1,2,3').
+    """
+    if os.environ.get('MNPBEM_VRAM_SHARE', '1').strip() in ('0', 'false', 'False'):
+        return None, None, None
+    raw = os.environ.get('MNPBEM_VRAM_SHARE_GPUS', '').strip()
+    if raw == '':
+        return None, None, None
+    try:
+        n_gpus_env = int(raw)
+    except ValueError:
+        return None, None, None
+    if n_gpus_env < 2:
+        return None, None, None
+    backend_env = os.environ.get('MNPBEM_VRAM_SHARE_BACKEND', 'cusolvermg').strip() or 'cusolvermg'
+    devs_raw = os.environ.get('MNPBEM_VRAM_SHARE_DEVICE_IDS', '').strip()
+    if devs_raw:
+        try:
+            device_ids_env: Optional[list] = [int(x) for x in devs_raw.split(',') if x.strip() != '']
+        except ValueError:
+            device_ids_env = None
+    else:
+        device_ids_env = None
+    return n_gpus_env, backend_env, device_ids_env
+
+
 def lu_factor_dispatch(A: np.ndarray, **kwargs: Any) -> Tuple:
     """Factorize A on GPU when beneficial, else CPU.
 
@@ -123,10 +157,19 @@ def lu_factor_dispatch(A: np.ndarray, **kwargs: Any) -> Tuple:
     GPU / CPU with a warning when cuSolverMg / drivers are unavailable.
     Optional kwargs: ``backend`` ('cusolvermg'|'magma'|'nccl'),
     ``device_ids`` (list of CUDA device ids).
+
+    Env-var auto-wiring (v1.6.2)
+    ----------------------------
+    When ``n_gpus`` is omitted, ``MNPBEM_VRAM_SHARE_GPUS`` (>=2) is read
+    automatically along with ``MNPBEM_VRAM_SHARE_BACKEND`` and
+    ``MNPBEM_VRAM_SHARE_DEVICE_IDS``. Explicit kwargs always win over
+    the env defaults. Set ``MNPBEM_VRAM_SHARE=0`` to disable the
+    auto-wiring without unsetting the other variables.
     """
-    n_gpus = int(kwargs.pop('n_gpus', 1))
-    backend = kwargs.pop('backend', 'cusolvermg')
-    device_ids = kwargs.pop('device_ids', None)
+    env_n, env_backend, env_devs = _vram_share_env_defaults()
+    n_gpus = int(kwargs.pop('n_gpus', env_n if env_n is not None else 1))
+    backend = kwargs.pop('backend', env_backend if env_backend is not None else 'cusolvermg')
+    device_ids = kwargs.pop('device_ids', env_devs)
     if n_gpus >= 2:
         try:
             from .multi_gpu_lu import factor_multi_gpu, cusolvermg_available, warn_fallback
@@ -243,7 +286,16 @@ def solve_dispatch(A: np.ndarray, b: np.ndarray, **kwargs: Any) -> np.ndarray:
     Used by code paths that build a small dense system on the fly without
     reusing the factorization.  Falls back to ``scipy.linalg.solve`` below
     threshold or when CuPy is unavailable.
+
+    When ``MNPBEM_VRAM_SHARE_GPUS>=2`` is set (v1.6.2), the system is
+    factorized via the cuSolverMg multi-GPU path and solved in one step.
+    Explicit ``n_gpus`` / ``backend`` kwargs override the env defaults.
     """
+    env_n, _, _ = _vram_share_env_defaults()
+    has_mgpu_kw = ('n_gpus' in kwargs and int(kwargs['n_gpus']) >= 2)
+    if env_n is not None or has_mgpu_kw:
+        lu_pkg = lu_factor_dispatch(A, **kwargs)
+        return lu_solve_dispatch(lu_pkg, b)
     if _CUPY_OK and USE_GPU and A.shape[0] >= GPU_THRESHOLD:
         A_gpu = _cp.asarray(A)
         b_gpu = _cp.asarray(b)
