@@ -636,9 +636,21 @@ class CompGreenRetLayer(object):
         # For each component name in gr_comp:
         #   'ss', 'hh', 'p' -> G_direct + G_refl (diagonal coupling)
         #   'sh', 'hs'      -> 0 + G_refl (off-diagonal coupling)
+        #
+        # MATLAB init.m line 25-28 selects the layer-face sub-particle before
+        # building greenretlayer, so gr.G is sized (len(ind1), len(ind2)).
+        # The Python GreenRetLayer is built on the full ComParticle and gives
+        # a full (n_p1, n_p2) reflected matrix — for ComParticle with
+        # multi-material per particle (e.g. Au@Ag core-shell on substrate)
+        # only a subset of faces touches the layer (ind1/ind2 < n_total),
+        # so we must restrict gr_val to the [ind1, ind2] sub-block before
+        # adding to g_base.  For uniform-eps single-particle / dimer (where
+        # ind1 = range(n_total)) this is a no-op.
         result = {}
         ind1 = self.ind1
         ind2 = self.ind2
+        n_p1 = self.p1.n
+        n_p2 = self.p2.n
 
         for name in gr_comp:
             if name in ('ss', 'hh', 'p'):
@@ -647,11 +659,30 @@ class CompGreenRetLayer(object):
                 g_base = g_direct * 0
 
             gr_val = gr_comp[name]
+
             if g_direct.ndim == 2:
-                g_base[np.ix_(ind1, ind2)] = g_base[np.ix_(ind1, ind2)] + gr_val
+                # gr_val expected shape: (len(ind1), len(ind2)) MATLAB-style,
+                # or (n_p1, n_p2) full-Python-style.  Restrict to sub-block
+                # if needed.
+                if gr_val.shape == (n_p1, n_p2):
+                    if len(ind1) < n_p1 or len(ind2) < n_p2:
+                        gr_block = gr_val[np.ix_(ind1, ind2)]
+                    else:
+                        gr_block = gr_val
+                else:
+                    gr_block = gr_val
+                g_base[np.ix_(ind1, ind2)] = g_base[np.ix_(ind1, ind2)] + gr_block
             else:
+                # 3D: shape (n_p1, 3, n_p2) full or (len(ind1), 3, len(ind2)) sub
+                if gr_val.shape == (n_p1, 3, n_p2):
+                    if len(ind1) < n_p1 or len(ind2) < n_p2:
+                        gr_block = gr_val[np.ix_(ind1, range(3), ind2)]
+                    else:
+                        gr_block = gr_val
+                else:
+                    gr_block = gr_val
                 g_base[np.ix_(ind1, range(3), ind2)] = (
-                    g_base[np.ix_(ind1, range(3), ind2)] + gr_val)
+                    g_base[np.ix_(ind1, range(3), ind2)] + gr_block)
 
             result[name] = g_base
 
