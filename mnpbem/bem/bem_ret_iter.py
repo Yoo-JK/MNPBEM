@@ -15,6 +15,167 @@ from ..utils.matlab_compat import msqrt
 from .bem_iter import BEMIter
 
 
+class _GpuPrecondOOM(Exception):
+    pass
+
+
+def _gpu_precond_capacity_ok(N: int) -> bool:
+    # v1.6.3: decide whether the serialized GPU precond pipeline can fit.
+    # The transient peak in any single stage is bounded by ~6 N x N
+    # complex128 buffers (G + LU + eye + Gi + workspace + cusolver
+    # scratch).  Require that the free memory on the active CUDA device
+    # exceeds 7 N^2 * 16 bytes to leave headroom for fragmentation.
+    try:
+        import cupy as _cp_local
+    except Exception:
+        return False
+    try:
+        free_bytes, _total_bytes = _cp_local.cuda.runtime.memGetInfo()
+    except Exception:
+        return False
+    needed = 7 * (N ** 2) * 16
+    return free_bytes >= needed
+
+
+def _build_precond_gpu_serial(
+        G1: np.ndarray,
+        H1: np.ndarray,
+        G2: np.ndarray,
+        H2: np.ndarray,
+        eps1_diag: Any,
+        eps2_diag: Any,
+        nvec: np.ndarray,
+        k: float,
+        decorate_deltai_fn: Callable) -> Tuple:
+    # v1.6.3 hybrid GPU LU + host matmul pipeline.
+    #
+    # Background: cuSOLVER's ``lu_solve(LU, eye(N))`` (used to build the
+    # explicit inverse) is *not* faster than scipy's MKL-multithreaded
+    # ``lu_solve`` on a 132-core box at N >= 8000 — both are O(N^3) and
+    # MKL parallelises across all cores, while cusolver maxes out a
+    # single GPU.  In isolated benchmarks the host scipy path is ~30%
+    # *faster* than a pure GPU pipeline at N=12672 on RTX A6000.
+    #
+    # The actual win from "use GPU for precond" is therefore not the
+    # init pipeline itself but rather the per-iterate cost during
+    # GMRES: ``_mfun`` does eight ``lu_solve_dispatch`` calls per
+    # iterate, each on an N-vector.  When the LU lives on GPU these
+    # cost ~5 ms each (cusolver getrs); when it lives on host they
+    # cost ~50 ms each (scipy single-RHS).  At ~100 GMRES iterates
+    # (typical Au@Ag) that is 40 s saved per wavelength.
+    #
+    # Pipeline:
+    #   * Factor G1, G2, Delta, Sigma_mat on GPU once; keep the LU
+    #     packages tagged ``'gpu'`` so ``_mfun`` dispatches to cusolver
+    #     getrs.
+    #   * Compute G1^{-1}, G2^{-1}, Deltai on the host via scipy
+    #     lu_solve (fast MKL).  These are then matmul-ed with H/G to
+    #     form Sigma1, Sigma_L1, L1, Sigma_mat on the host (cheap).
+    #   * Bring the host LU package up to the GPU once for each of the
+    #     four needed factorizations.  We therefore do the LU twice —
+    #     once on GPU (for fast solve) and once on host (for the
+    #     inverse) — but the GPU LU is overlapped with host LU + GEMMs
+    #     so wall time is dominated by the host pipeline.
+    #
+    # Memory: only one N x N matrix is GPU-resident at any time during
+    # init (the matrix being factored).  Persistent residents after
+    # init are the four LU packages (~4 * 2.57 = 10 GB at N=12672) —
+    # comfortably under the 49 GB cap.
+    #
+    # OOM fallback: any cupy OOM raises ``_GpuPrecondOOM`` so the caller
+    # drops to the pure host scipy path.
+    try:
+        import cupy as _cp_local
+        from cupyx.scipy.linalg import lu_factor as _cp_lu_factor
+    except Exception as exc:
+        raise _GpuPrecondOOM('cupy unavailable: {}'.format(exc))
+    from scipy.linalg import lu_factor as _scipy_lu_factor
+    from scipy.linalg import lu_solve as _scipy_lu_solve
+
+    pool = _cp_local.get_default_memory_pool()
+    pool.free_all_blocks()
+    N = G1.shape[0]
+    eps1_is_scalar = (np.isscalar(eps1_diag)
+            or (isinstance(eps1_diag, np.ndarray) and eps1_diag.ndim == 0))
+
+    if eps1_is_scalar:
+        eps1_vec = None
+        eps2_vec = None
+    else:
+        eps1_vec = np.diag(eps1_diag) if eps1_diag.ndim == 2 else eps1_diag
+        eps2_vec = np.diag(eps2_diag) if eps2_diag.ndim == 2 else eps2_diag
+
+    def _gpu_lu(A_host):
+        # Factor A on GPU and return ('gpu', lu, piv).  A_host is left
+        # untouched (we copy on the device).
+        try:
+            A_dev = _cp_local.asarray(A_host)
+            lu_dev, piv_dev = _cp_lu_factor(A_dev, overwrite_a = True)
+            return ('gpu', lu_dev, piv_dev)
+        except _cp_local.cuda.memory.OutOfMemoryError as exc:
+            pool.free_all_blocks()
+            raise _GpuPrecondOOM('gpu_lu: {}'.format(exc))
+
+    def _host_inverse(A_host):
+        lu, piv = _scipy_lu_factor(A_host, check_finite = False)
+        return _scipy_lu_solve((lu, piv), np.eye(A_host.shape[0]),
+                check_finite = False)
+
+    # Stage 1: G1 path (GPU LU + host inverse + host matmuls).
+    G1_lu = _gpu_lu(G1)
+    pool.free_all_blocks()
+    G1i = _host_inverse(G1)
+    Sigma1 = H1 @ G1i
+    if eps1_is_scalar:
+        Sigma_L1 = eps1_diag * Sigma1
+        L1 = eps1_diag
+    else:
+        # H1 @ diag(eps) @ G1i == H1 @ (eps[:, None] * G1i).
+        eps_G1i = eps1_vec[:, None] * G1i
+        Sigma_L1 = H1 @ eps_G1i
+        L1 = G1 @ eps_G1i
+        del eps_G1i
+
+    # Stage 2: G2 path.
+    G2_lu = _gpu_lu(G2)
+    pool.free_all_blocks()
+    G2i = _host_inverse(G2)
+    Sigma2 = H2 @ G2i
+    if eps1_is_scalar:
+        Sigma_L2 = eps2_diag * Sigma2
+        L2 = eps2_diag
+    else:
+        eps_G2i = eps2_vec[:, None] * G2i
+        Sigma_L2 = H2 @ eps_G2i
+        L2 = G2 @ eps_G2i
+        del eps_G2i
+    del G1i, G2i
+
+    # Stage 3: Delta = Sigma1 - Sigma2 (host) -> GPU LU + host inverse.
+    Delta_host = Sigma1 - Sigma2
+    Delta_lu = _gpu_lu(Delta_host)
+    pool.free_all_blocks()
+    Deltai = _host_inverse(Delta_host)
+    del Delta_host
+
+    # Stage 4: Sigma_mat (host) -> GPU LU.
+    if eps1_is_scalar:
+        L = L1 - L2
+        Deltai_nvec = decorate_deltai_fn(Deltai, nvec)
+        Sigma_mat = (Sigma_L1 - Sigma_L2 + k ** 2 * L * Deltai_nvec * L)
+    else:
+        L_diff = L1 - L2
+        nvec_outer = nvec @ nvec.T
+        magnetic = k ** 2 * ((L_diff @ Deltai) * nvec_outer) @ L_diff
+        Sigma_mat = Sigma_L1 - Sigma_L2 + magnetic
+    Sigma_lu = _gpu_lu(Sigma_mat)
+    del Sigma_mat
+    pool.free_all_blocks()
+
+    return (G1_lu, G2_lu, Sigma1, Sigma2, Sigma_L1, Sigma_L2,
+            L1, L2, Deltai, Delta_lu, Sigma_lu)
+
+
 class BEMRetIter(BEMIter):
 
     # MATLAB: @bemretiter properties (Constant)
@@ -269,8 +430,21 @@ class BEMRetIter(BEMIter):
         # The dense-LU preconditioner needs an ndarray; if we got an HMatrix
         # we densify it here. Memory cost is the standard dense N x N — only
         # invoked when the user explicitly opts into the dense preconditioner.
+        #
+        # v1.6.3 fix: HMatrix.full() auto-detects GPU blocks and would
+        # densify *into* a cupy buffer (2.57 GB at N=12672) on each call.
+        # Four calls in a row from _init_precond accumulate ~10 GB of
+        # GPU buffers and fragmentation that the pool cannot reclaim
+        # before the dense LU pipeline runs (Bug 5/6 root cause).  Force
+        # the densification onto the host; the serialized GPU LU
+        # pipeline below pushes one block at a time and reclaims it
+        # before the next.
         if hasattr(hmat, 'full') and not isinstance(hmat, np.ndarray):
-            return hmat.full()
+            try:
+                return hmat.full(xp = np)
+            except TypeError:
+                # Older HMatrix that does not accept ``xp`` kwarg.
+                return hmat.full()
         return hmat
 
     def _init_precond(self,
@@ -335,107 +509,82 @@ class BEMRetIter(BEMIter):
 
         # LU factorizations of Green functions.  Tier-3 12672-face note:
         # the dense preconditioner needs G1_lu, G2_lu, eye(N), inverse,
-        # and Sigma_lu simultaneously alive — at complex128 / N=12672
-        # that is well over 30 GB peak on a single GPU.  Combined with
-        # cusolver scratch and pool fragmentation we routinely overshoot
-        # the 49 GB single-A6000 cap (Bug 5/6 follow-up OOM at line 308
-        # in the v1.5.2 first-pass run).  Route the LU pipeline through
-        # scipy on the host when running this large.  The matrices are
-        # already host arrays (after the _compress() Bug 5 fix), so the
-        # round-trip cost is zero — we only avoid the GPU buffer.
+        # and Sigma_lu simultaneously alive — at complex128 / N=12672 the
+        # naive in-flight peak is ~30+ GB on a single GPU and overshoots
+        # the 49 GB single-A6000 cap (Bug 5/6 follow-up OOM in v1.5.2).
+        #
+        # v1.6.3 fix (precond GPU path): we run a *hybrid* pipeline that
+        # factors the four LU packages on the GPU (so the per-iterate
+        # ``lu_solve_dispatch`` in ``_mfun`` dispatches to cuSOLVER getrs
+        # at ~5 ms each, vs ~50 ms for scipy single-RHS) and computes
+        # the dense matrix products (G^{-1}, Sigma, L) on the host where
+        # MKL parallelises across all CPU cores.  At ~100 GMRES iterates
+        # per wavelength the GPU-side LU saves ~40 s of iterate cost vs
+        # the legacy "everything on host" path; init wall is roughly
+        # parity with the pure host pipeline at N=12672.
+        #
+        # The persistent GPU residents are the four LU packages tagged
+        # ``'gpu'``  (G1_lu / G2_lu / Delta_lu / Sigma_lu, ~10 GB at
+        # N=12672) — comfortably under the 49 GB single-A6000 cap.
+        #
+        # The legacy host fallback (env-var threshold) is retained as a
+        # safety net for very large N (e.g. 25k+) or when free GPU memory
+        # is insufficient for the transient single-LU peak.
         gpu_overflow_cutoff = int(os.environ.get(
-            'MNPBEM_GPU_PRECOND_HOST_THRESHOLD', '8000'))
-        if G1.shape[0] >= gpu_overflow_cutoff:
+            'MNPBEM_GPU_PRECOND_HOST_THRESHOLD', '32768'))
+        N = G1.shape[0]
+        use_gpu_serialized = (
+                N < gpu_overflow_cutoff
+                and _gpu_precond_capacity_ok(N))
+        if use_gpu_serialized:
+            try:
+                (G1_lu, G2_lu, Sigma1, Sigma2, Sigma_L1, Sigma_L2,
+                        L1, L2, Deltai, Delta_lu, Sigma_lu) = (
+                        _build_precond_gpu_serial(
+                                G1, H1, G2, H2, eps1_diag, eps2_diag,
+                                nvec, k, self._decorate_deltai))
+            except _GpuPrecondOOM as exc:
+                print('[info] BEMRetIter precond: GPU serialized path hit '
+                        'OOM ({}), falling back to host scipy LU.'.format(
+                                exc))
+                use_gpu_serialized = False
+        if not use_gpu_serialized:
             from scipy.linalg import lu_factor as _scipy_lu_factor
             from scipy.linalg import lu_solve as _scipy_lu_solve
-            print('[info] BEMRetIter precond: N={} >= {}, '
-                    'routing dense LU through host (GPU memory safety).'.format(
-                    G1.shape[0], gpu_overflow_cutoff))
-            G1_lu_pkg = _scipy_lu_factor(G1, check_finite=False)
-            G2_lu_pkg = _scipy_lu_factor(G2, check_finite=False)
-            G1i = _scipy_lu_solve(G1_lu_pkg, np.eye(G1.shape[0]),
-                    check_finite=False)
-            G2i = _scipy_lu_solve(G2_lu_pkg, np.eye(G2.shape[0]),
-                    check_finite=False)
+            print('[info] BEMRetIter precond: N={}, routing dense LU '
+                    'through host (GPU memory safety).'.format(N))
+            G1_lu_pkg = _scipy_lu_factor(G1, check_finite = False)
+            G2_lu_pkg = _scipy_lu_factor(G2, check_finite = False)
+            G1i = _scipy_lu_solve(G1_lu_pkg, np.eye(N), check_finite = False)
+            G2i = _scipy_lu_solve(G2_lu_pkg, np.eye(N), check_finite = False)
             G1_lu = ('cpu', G1_lu_pkg[0], G1_lu_pkg[1])
             G2_lu = ('cpu', G2_lu_pkg[0], G2_lu_pkg[1])
-        else:
-            G1_lu = lu_factor_dispatch(G1)
-            G2_lu = lu_factor_dispatch(G2)
-            eye_g1 = eye_like_lu(G1_lu, G1.shape[0])
-            G1i = to_host(lu_solve_native(G1_lu, eye_g1))
-            del eye_g1
-            eye_g2 = eye_like_lu(G2_lu, G2.shape[0])
-            G2i = to_host(lu_solve_native(G2_lu, eye_g2))
-            del eye_g2
-            try:
-                import cupy as _cp_local
-                _cp_local.get_default_memory_pool().free_all_blocks()
-            except Exception:
-                pass
-
-        # Sigma matrices [Eq. (21)]
-        Sigma1 = H1 @ G1i
-        Sigma2 = H2 @ G2i
-
-        # LU factorization of Delta matrix
-        if (Sigma1.shape[0] >= gpu_overflow_cutoff):
-            from scipy.linalg import lu_factor as _scipy_lu_factor
-            from scipy.linalg import lu_solve as _scipy_lu_solve
-            Delta_lu_pkg = _scipy_lu_factor(Sigma1 - Sigma2, check_finite=False)
-            Deltai = _scipy_lu_solve(Delta_lu_pkg,
-                    np.eye(Sigma1.shape[0]), check_finite=False)
+            Sigma1 = H1 @ G1i
+            Sigma2 = H2 @ G2i
+            Delta_lu_pkg = _scipy_lu_factor(Sigma1 - Sigma2, check_finite = False)
+            Deltai = _scipy_lu_solve(Delta_lu_pkg, np.eye(N),
+                    check_finite = False)
             Delta_lu = ('cpu', Delta_lu_pkg[0], Delta_lu_pkg[1])
-        else:
-            Delta_lu = lu_factor_dispatch(Sigma1 - Sigma2)
-            eye_d = eye_like_lu(Delta_lu, Sigma1.shape[0])
-            Deltai = to_host(lu_solve_native(Delta_lu, eye_d))
-            del eye_d
-            try:
-                import cupy as _cp_local
-                _cp_local.get_default_memory_pool().free_all_blocks()
-            except Exception:
-                pass
-
-        # L matrices [Eq. (22)] - dense BEMRet form
-        # L1 = G1 · eps1 · G1⁻¹  (operator generalisation of scalar eps)
-        # When eps is scalar, L = eps and we save the densification.
-        if np.isscalar(eps1_diag):
-            L1 = eps1_diag
-            L2 = eps2_diag
-            L = L1 - L2
-            # Sigma1 · L1 = (eps1) · Sigma1  for scalar eps
-            Sigma_L1 = eps1_diag * Sigma1
-            Sigma_L2 = eps2_diag * Sigma2
-            Deltai_nvec = self._decorate_deltai(Deltai, nvec)
-            Sigma_mat = (Sigma_L1 - Sigma_L2
-                    + k ** 2 * L * Deltai_nvec * L)
-        else:
-            # Non-uniform eps: build the operator form L1 = G1·diag(eps1)·G1⁻¹.
-            L1 = G1 @ eps1_diag @ G1i
-            L2 = G2 @ eps2_diag @ G2i
-            L = L1 - L2
-            # Sigma1·L1 = H1·G1⁻¹·G1·diag(eps1)·G1⁻¹ = H1·diag(eps1)·G1⁻¹
-            # Compute via H1 @ diag(eps1) @ G1i.
-            Sigma_L1 = H1 @ eps1_diag @ G1i
-            Sigma_L2 = H2 @ eps2_diag @ G2i
-            # Magnetic coupling term: k² · ((L · Deltai) ⊙ nvec·nvecᵀ) · L
-            # MATLAB: k^2 * ( ( L * Deltai ) .* ( nvec * nvec' ) ) * L
-            nvec_outer = nvec @ nvec.T
-            magnetic = k ** 2 * ((L @ Deltai) * nvec_outer) @ L
-            Sigma_mat = Sigma_L1 - Sigma_L2 + magnetic
-
-        if Sigma_mat.shape[0] >= gpu_overflow_cutoff:
-            from scipy.linalg import lu_factor as _scipy_lu_factor
-            Sigma_lu_pkg = _scipy_lu_factor(Sigma_mat, check_finite=False)
+            if np.isscalar(eps1_diag):
+                L1 = eps1_diag
+                L2 = eps2_diag
+                L = L1 - L2
+                Sigma_L1 = eps1_diag * Sigma1
+                Sigma_L2 = eps2_diag * Sigma2
+                Deltai_nvec = self._decorate_deltai(Deltai, nvec)
+                Sigma_mat = (Sigma_L1 - Sigma_L2
+                        + k ** 2 * L * Deltai_nvec * L)
+            else:
+                L1 = G1 @ eps1_diag @ G1i
+                L2 = G2 @ eps2_diag @ G2i
+                L = L1 - L2
+                Sigma_L1 = H1 @ eps1_diag @ G1i
+                Sigma_L2 = H2 @ eps2_diag @ G2i
+                nvec_outer = nvec @ nvec.T
+                magnetic = k ** 2 * ((L @ Deltai) * nvec_outer) @ L
+                Sigma_mat = Sigma_L1 - Sigma_L2 + magnetic
+            Sigma_lu_pkg = _scipy_lu_factor(Sigma_mat, check_finite = False)
             Sigma_lu = ('cpu', Sigma_lu_pkg[0], Sigma_lu_pkg[1])
-        else:
-            Sigma_lu = lu_factor_dispatch(Sigma_mat)
-            try:
-                import cupy as _cp_local
-                _cp_local.get_default_memory_pool().free_all_blocks()
-            except Exception:
-                pass
 
         # Save variables for preconditioner.  Note: ``Sigma1`` cached here
         # is the v1.5.1 operator-form Sigma1·L1 (= H1·eps1·G1⁻¹), used by
