@@ -9,7 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- (none — see [1.6.2] for the most recent release)
+- (none — see [1.6.4] for the most recent release)
+
+## [1.6.4] - 2026-05-08
+
+### Fixed
+
+- **HMatrix matvec backend/dtype 일관성** (Phase 1): 입력이
+  numpy 인데 일부 ACA 블록이 cupy 거주하는 경우 `mtimes_vec`
+  내부에서 host result + GPU block 간 backend 가 섞이는 경로
+  가 있었음. 이제 블록 GPU 거주 여부를 sniff 하여 destination
+  backend 를 통일하고, 끝에서 입력 backend 로 다시 변환하여
+  numpy 입력 → numpy 출력을 보장한다. `bem_ret_iter._afun` 의
+  6 곳 HMatrix matvec 호출에는 방어용 `_ensure_numpy` wrapper
+  추가 (정상 경로에서는 no-op, host slice assignment 안전성
+  보장).
+- 영향: GPU + iter+hmat+precond 경로에서 numpy/cupy mix 로
+  인한 무작위적 실패/속도 저하 차단. 1176-face Au@Ag dimer
+  에서 ext = 25759.0950 (CPU/GPU/모든 모드 일치, rel diff
+  1e-15).
+
+### Added
+
+- **`MNPBEM_AGGRESSIVE_GPU_MFUN=1` 환경변수** (Phase 2 opt-in):
+  `BEMRetIter._mfun` 의 dense Sigma1 / L_diff / L1 행렬을 GPU
+  에 업로드하여 GMRES iterate 동안 호출되는 Sigma1·v / L·v
+  를 cupy matmul 로 디스패치. 메모리 capacity 부족 시 tier
+  별 자동 fallback (Sigma1 only → Sigma1 + L_diff → 모두).
+  flag off (default) 시 v1.6.3 와 bit-identical.
+- 측정:
+  - 5400-face Au@Ag dimer: 111s → 103s (1.08x speedup, 풀
+    Sigma1+L_diff+L1 GPU 거주).
+  - 12672-face Au@Ag dimer: 608s → 620s (flat). 12672 face
+    스케일에서는 GMRES 가 1 outer iter 로 수렴 (mfun call =
+    3 회) → mfun GPU dispatch 는 의미 없음. 효과는 GMRES iter
+    가 많은 wider geometry / 다른 sweep 에서 나타남.
+- 회귀 가드: `mnpbem/tests/test_mfun_gpu_dispatch.py` (1136-
+  face Au@Ag dimer 에서 flag off / on rel diff < 1e-10 검증).
+
+## [1.6.3] - 2026-05-05
+
+### Changed
+
+- **BEMRetIter precond GPU LU 하이브리드 파이프라인**:
+  N >= 8000 브랜치에서 전부 host scipy 로 라우팅하던 기존
+  preconditioner 를 cuSOLVER getrs LU + host MKL 행렬곱
+  하이브리드로 재구성. G/Delta/Sigma_mat 의 LU 인수분해를
+  GPU 에서 실행하고 `('gpu', lu, piv)` 태그로 보존하여
+  `_mfun` 의 GMRES iterate 가 cuSOLVER getrs (~5 ms / call)
+  로 라우팅됨. G^{-1} / Sigma1 / L1 GEMM 은 132-core MKL
+  파이프라인이 더 빠르므로 host scipy 에 위임.
+- `_gpu_precond_capacity_ok(N)`: 7 N² × 16 byte 가용 GPU
+  메모리 검사 후 시도, 부족하면 자동 host fallback +
+  `_GpuPrecondOOM` raise 시에도 host scipy 에 안전 fallback.
+- `MNPBEM_GPU_PRECOND_HOST_THRESHOLD` env (default 32768)
+  로 강제 host fallback 가능.
 
 ## [1.6.2] - 2026-05-02
 

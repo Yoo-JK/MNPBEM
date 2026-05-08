@@ -606,7 +606,109 @@ class BEMRetIter(BEMIter):
         sav['Delta_lu'] = Delta_lu
         sav['Sigma_lu'] = Sigma_lu
 
+        # v1.6.4 Phase 2: optional GPU residency for the dense matrices
+        # consumed by ``_mfun`` (Sigma1, L1, L2, L_diff).  Triggered by
+        # ``MNPBEM_AGGRESSIVE_GPU_MFUN=1`` only.  When the flag is off
+        # the GPU keys are absent and ``_mfun`` keeps the host matmul
+        # path bit-identical to v1.6.3.
+        #
+        # Tiered capacity check: at N=12672 the BEM path has already
+        # consumed ~42 GB on a 49 GB A6000 by the time precond runs
+        # (HMatrix ACA blocks live on GPU).  We therefore upload
+        # Sigma1 first (4 matvec hits per GMRES iterate) and only add
+        # L1/L2/L_diff when extra headroom remains.  Each tier checks
+        # its own ~2 N^2 * 16 byte budget (matrix + transient asarray
+        # buffer + cusolver scratch).
+        sav['Sigma1_gpu'] = None
+        sav['L1_gpu'] = None
+        sav['L2_gpu'] = None
+        sav['L_diff_gpu'] = None
+        if self._gpu_mfun_enabled():
+            try:
+                import cupy as _cp_local
+                _cp_local.get_default_memory_pool().free_all_blocks()
+                N_local = Sigma1.shape[0]
+                tier_bytes = int(1.2 * (N_local ** 2) * 16)
+                free_bytes, _total = _cp_local.cuda.runtime.memGetInfo()
+
+                # Tier 1: Sigma1 (always uploaded when at all possible).
+                if free_bytes >= tier_bytes:
+                    sav['Sigma1_gpu'] = _cp_local.asarray(Sigma1)
+                    print('[info] BEMRetIter mfun GPU: Sigma1 GPU-resident '
+                            '({:.1f} GB)'.format(
+                                    (N_local ** 2) * 16 / (1024 ** 3)),
+                            flush = True)
+                else:
+                    print('[info] BEMRetIter mfun GPU: insufficient '
+                            'GPU memory for Sigma1 ({:.1f} GB free, need '
+                            '{:.1f} GB), falling back to host matmul.'.format(
+                                    free_bytes / (1024 ** 3),
+                                    tier_bytes / (1024 ** 3)),
+                            flush = True)
+
+                # Tier 2a: L_diff (used 2x per iter for sig2 / h2 update).
+                # Prefer L_diff alone over L1+L2+L_diff because the diff
+                # is the only L-product on the bottleneck path; L1 is
+                # used twice on (N,) / (N, 3) inputs and L2 never
+                # standalone.  Uploading L_diff captures most of the
+                # L-side iter cost at half the GPU footprint.  We only
+                # need the matrix itself plus a small (N, 3) transient
+                # on the device so the budget is ~ 1.2 * N^2 * 16 B.
+                non_scalar_L = not (np.isscalar(L1) or (isinstance(L1, np.ndarray)
+                        and L1.ndim == 0))
+                if sav['Sigma1_gpu'] is not None and non_scalar_L:
+                    _cp_local.get_default_memory_pool().free_all_blocks()
+                    free_bytes, _total = _cp_local.cuda.runtime.memGetInfo()
+                    needed_ldiff = int(1.2 * (N_local ** 2) * 16)
+                    if free_bytes >= needed_ldiff:
+                        L_diff_host = L1 - L2
+                        sav['L_diff_gpu'] = _cp_local.asarray(L_diff_host)
+                        del L_diff_host
+                        print('[info] BEMRetIter mfun GPU: L_diff '
+                                'GPU-resident ({:.1f} GB)'.format(
+                                        (N_local ** 2) * 16 / (1024 ** 3)),
+                                flush = True)
+                    else:
+                        print('[info] BEMRetIter mfun GPU: insufficient '
+                                'GPU memory for L_diff ({:.1f} GB free, '
+                                'need {:.1f} GB), keeping L_diff on '
+                                'host.'.format(free_bytes / (1024 ** 3),
+                                        needed_ldiff / (1024 ** 3)),
+                                flush = True)
+
+                # Tier 2b: L1 (used 2x per iter on phi/a; minor bonus).
+                if sav['L_diff_gpu'] is not None:
+                    _cp_local.get_default_memory_pool().free_all_blocks()
+                    free_bytes, _total = _cp_local.cuda.runtime.memGetInfo()
+                    needed_l1 = int(1.2 * (N_local ** 2) * 16)
+                    if free_bytes >= needed_l1:
+                        sav['L1_gpu'] = _cp_local.asarray(L1)
+                        print('[info] BEMRetIter mfun GPU: L1 GPU-resident '
+                                '({:.1f} GB)'.format(
+                                        (N_local ** 2) * 16 / (1024 ** 3)),
+                                flush = True)
+                    else:
+                        print('[info] BEMRetIter mfun GPU: insufficient '
+                                'GPU memory for L1 ({:.1f} GB free, need '
+                                '{:.1f} GB), keeping L1 on host.'.format(
+                                        free_bytes / (1024 ** 3),
+                                        needed_l1 / (1024 ** 3)),
+                                flush = True)
+            except Exception as exc:
+                print('[info] BEMRetIter mfun GPU: residency setup failed '
+                        '({}), falling back to host matmul.'.format(exc),
+                        flush = True)
+                sav['Sigma1_gpu'] = None
+                sav['L1_gpu'] = None
+                sav['L2_gpu'] = None
+                sav['L_diff_gpu'] = None
+
         self._sav = sav
+
+    @staticmethod
+    def _gpu_mfun_enabled() -> bool:
+        # v1.6.4 Phase 2 opt-in.  Default OFF → bit-identical to v1.6.3.
+        return os.environ.get('MNPBEM_AGGRESSIVE_GPU_MFUN', '0') == '1'
 
     @staticmethod
     def _decorate_deltai(
@@ -956,6 +1058,47 @@ class BEMRetIter(BEMIter):
         Delta_lu = sav['Delta_lu']
         Sigma_lu = sav['Sigma_lu']
 
+        # v1.6.4 Phase 2: GPU-resident dense matrices (None when flag off).
+        Sigma1_gpu = sav.get('Sigma1_gpu')
+        L1_gpu = sav.get('L1_gpu')
+        L2_gpu = sav.get('L2_gpu')
+        L_diff_gpu = sav.get('L_diff_gpu')
+
+        # When any GPU resident is present we lazily import cupy once and
+        # reuse it for the dispatch helpers below.  ``cp`` stays local so
+        # CPU-only environments never touch cupy.
+        cp_mod = None
+        if Sigma1_gpu is not None:
+            try:
+                import cupy as cp_mod
+            except ImportError:
+                cp_mod = None
+                Sigma1_gpu = None
+                L1_gpu = None
+                L_diff_gpu = None
+
+        def _matvec_dispatch(M_host: Any, M_gpu: Any, b: np.ndarray) -> np.ndarray:
+            # When M_gpu is set we move b to GPU, do the matmul there and
+            # bring the result back.  OOM at the asarray / matmul falls
+            # back silently to the host path.
+            if M_gpu is not None and cp_mod is not None:
+                try:
+                    if b.ndim == 1:
+                        b_gpu = cp_mod.asarray(b)
+                        out_gpu = M_gpu @ b_gpu
+                        return cp_mod.asnumpy(out_gpu)
+                    b_flat = b.reshape(b.shape[0], -1)
+                    b_gpu = cp_mod.asarray(b_flat)
+                    out_gpu = M_gpu @ b_gpu
+                    out_host = cp_mod.asnumpy(out_gpu)
+                    return out_host.reshape(M_host.shape[0], *b.shape[1:])
+                except cp_mod.cuda.memory.OutOfMemoryError:
+                    pass
+            n_rows = M_host.shape[0]
+            if b.ndim == 1:
+                return M_host @ b
+            return (M_host @ b.reshape(b.shape[0], -1)).reshape(n_rows, *b.shape[1:])
+
         def matmul1(a_mat: np.ndarray, b: np.ndarray) -> np.ndarray:
             # Multiply (n, n) matrix with (n, ...) array, preserving trailing dims.
             if b.ndim == 1:
@@ -979,28 +1122,37 @@ class BEMRetIter(BEMIter):
                 return op_val @ b
             return (op_val @ b.reshape(b.shape[0], -1)).reshape(b.shape)
 
+        def matmul_op_disp(op_val: Any, op_gpu: Any, b: np.ndarray) -> np.ndarray:
+            # Phase 2 GPU dispatch for L1 / L2 / L_diff.  Scalar op_val
+            # short-circuits to the cheap scalar multiply (eps uniform).
+            if np.isscalar(op_val) or (isinstance(op_val, np.ndarray)
+                    and op_val.ndim == 0):
+                return op_val * b
+            return _matvec_dispatch(op_val, op_gpu, b)
+
         # Modify alpha and De  (dense BEMRet.mldivide lines 31-35)
         # MATLAB: alpha = alpha - matmul(Sigma1, a) + 1i*k*outer(nvec, matmul(L1, phi))
         # MATLAB: De    = De - matmul(Sigma1, matmul(L1, phi))
         #                  + 1i*k*inner(nvec, matmul(L1, a))
-        L1_phi = matmul_op(L1, phi)
-        L1_a = matmul_op(L1, a)
-        alpha = alpha - matmul1(Sigma1, a) + 1j * k * self._outer(nvec, L1_phi)
-        De = De - matmul1(Sigma1, L1_phi) + 1j * k * self._inner(nvec, L1_a)
+        L1_phi = matmul_op_disp(L1, L1_gpu, phi)
+        L1_a = matmul_op_disp(L1, L1_gpu, a)
+        alpha = (alpha
+                - _matvec_dispatch(Sigma1, Sigma1_gpu, a)
+                + 1j * k * self._outer(nvec, L1_phi))
+        De = (De
+                - _matvec_dispatch(Sigma1, Sigma1_gpu, L1_phi)
+                + 1j * k * self._inner(nvec, L1_a))
 
         # Eq. (19)  (dense BEMRet.mldivide line 38-39)
         # MATLAB: sig2 = matmul(Sigmai, De + 1i*k*inner(nvec, matmul(L1-L2, matmul(Deltai, alpha))))
-        if np.isscalar(L1) or (isinstance(L1, np.ndarray) and L1.ndim == 0):
-            L_diff = L1 - L2
-        else:
-            L_diff = L1 - L2
+        L_diff = L1 - L2
         Deltai_alpha = _ls(Delta_lu, alpha)
-        L_Deltai_alpha = matmul_op(L_diff, Deltai_alpha)
+        L_Deltai_alpha = matmul_op_disp(L_diff, L_diff_gpu, Deltai_alpha)
         sig2 = _ls(Sigma_lu, De + 1j * k * self._inner(nvec, L_Deltai_alpha))
 
         # Eq. (20)  (dense BEMRet.mldivide line 41-42)
         # MATLAB: h2 = matmul(Deltai, 1i*k*outer(nvec, matmul(L1-L2, sig2)) + alpha)
-        L_sig2 = matmul_op(L_diff, sig2)
+        L_sig2 = matmul_op_disp(L_diff, L_diff_gpu, sig2)
         h2 = _ls(Delta_lu, 1j * k * self._outer(nvec, L_sig2) + alpha)
 
         # Surface charges and currents
