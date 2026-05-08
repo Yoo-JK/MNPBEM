@@ -453,13 +453,54 @@ class HMatrix(object):
         tree = self.tree
         n = tree.n
 
-        # Convert to cluster ordering
-        if v.ndim == 1:
-            v_cluster = tree.part2cluster(v)
-            result = np.zeros(n, dtype = v.dtype)
+        # v1.6.4 dtype/backend consistency fix.  Sniff whether any block
+        # lives on a CUDA device.  If so we run the matvec on GPU (host
+        # input is promoted via cupy.asarray) and pull the result back to
+        # numpy for downstream consumers (BEMRetIter._afun packs the
+        # result into a host buffer via np.empty).  Earlier versions
+        # allocated ``result`` on host while blocks lived on GPU, mixing
+        # backends and silently producing host arrays in some paths and
+        # cupy arrays in others.  Callers (e.g. ``_afun``) rely on the
+        # output being a numpy ndarray with the same dtype as the input.
+        on_gpu = False
+        for blk_list in (self.val, self.lhs, self.rhs):
+            for blk in blk_list:
+                if blk is not None and hasattr(blk, 'get') and not isinstance(blk, np.ndarray):
+                    on_gpu = True
+                    break
+            if on_gpu:
+                break
+
+        v_is_cupy = hasattr(v, 'get') and not isinstance(v, np.ndarray)
+        if on_gpu:
+            import cupy as _cp_local
+            xp = _cp_local
         else:
-            v_cluster = tree.part2cluster(v)
-            result = np.zeros((n, v.shape[1]), dtype = v.dtype)
+            xp = np
+
+        # Promote v to the destination backend.
+        if on_gpu and not v_is_cupy:
+            v_xp = xp.asarray(v)
+        elif (not on_gpu) and v_is_cupy:
+            v_xp = v.get()
+        else:
+            v_xp = v
+
+        # Convert to cluster ordering (works on both numpy and cupy).
+        if v_xp.ndim == 1:
+            v_cluster = v_xp[tree.ind[:, 0]]
+            result = xp.zeros(n, dtype = v_xp.dtype)
+        else:
+            v_cluster = v_xp[tree.ind[:, 0]]
+            result = xp.zeros((n, v_xp.shape[1]), dtype = v_xp.dtype)
+
+        def _cast(blk: Any) -> Any:
+            blk_is_cupy = hasattr(blk, 'get') and not isinstance(blk, np.ndarray)
+            if on_gpu and not blk_is_cupy:
+                return xp.asarray(blk)
+            if (not on_gpu) and blk_is_cupy:
+                return blk.get()
+            return blk
 
         # Dense blocks
         for i in range(len(self.row1)):
@@ -469,11 +510,8 @@ class HMatrix(object):
             r_end = tree.cind[self.row1[i], 1] + 1
             c_start = tree.cind[self.col1[i], 0]
             c_end = tree.cind[self.col1[i], 1] + 1
-
-            if v.ndim == 1:
-                result[r_start:r_end] += self.val[i] @ v_cluster[c_start:c_end]
-            else:
-                result[r_start:r_end] += self.val[i] @ v_cluster[c_start:c_end]
+            blk = _cast(self.val[i])
+            result[r_start:r_end] += blk @ v_cluster[c_start:c_end]
 
         # Low-rank blocks
         for i in range(len(self.row2)):
@@ -483,26 +521,34 @@ class HMatrix(object):
             r_end = tree.cind[self.row2[i], 1] + 1
             c_start = tree.cind[self.col2[i], 0]
             c_end = tree.cind[self.col2[i], 1] + 1
-
-            # lhs @ (rhs.T @ v)
-            if v.ndim == 1:
-                tmp = self.rhs[i].T @ v_cluster[c_start:c_end]
-                result[r_start:r_end] += self.lhs[i] @ tmp
-            else:
-                tmp = self.rhs[i].T @ v_cluster[c_start:c_end]
-                result[r_start:r_end] += self.lhs[i] @ tmp
+            lhs_blk = _cast(self.lhs[i])
+            rhs_blk = _cast(self.rhs[i])
+            tmp = rhs_blk.T @ v_cluster[c_start:c_end]
+            result[r_start:r_end] += lhs_blk @ tmp
 
         # Convert back to particle ordering
-        return tree.cluster2part(result)
+        result = result[tree.ind[:, 1]]
+
+        # Match output backend to input backend.  If the input was numpy
+        # but blocks lived on GPU, pull the result down so callers get a
+        # plain ndarray (the v1.6.4 BEMRetIter call sites assume numpy).
+        if on_gpu and not v_is_cupy:
+            result = xp.asnumpy(result)
+        elif (not on_gpu) and v_is_cupy:
+            import cupy as _cp_local
+            result = _cp_local.asarray(result)
+
+        return result
 
     def __matmul__(self, other: Any) -> Any:
 
+        if isinstance(other, HMatrix):
+            return self._mtimes_hmat(other)
         if isinstance(other, np.ndarray):
             return self.mtimes_vec(other)
-        elif isinstance(other, HMatrix):
-            return self._mtimes_hmat(other)
-        else:
-            raise TypeError('[error] Unsupported type for H-matrix multiplication')
+        if hasattr(other, 'shape') and hasattr(other, 'dtype'):
+            return self.mtimes_vec(other)
+        raise TypeError('[error] Unsupported type for H-matrix multiplication')
 
     def __rmul__(self, scalar: float) -> 'HMatrix':
 

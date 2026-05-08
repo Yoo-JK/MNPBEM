@@ -832,10 +832,20 @@ class BEMRetIter(BEMIter):
                 return eps_val * x
             return eps_val.reshape(-1, *([1] * (x.ndim - 1))) * x
 
+        def _ensure_numpy(arr: Any) -> np.ndarray:
+            # v1.6.4 defensive wrapper for HMatrix matvec output.  After
+            # the v1.6.4 HMatrix fix the matvec result mirrors the input
+            # backend, so for the host-side ``_afun`` call sites this is
+            # a no-op.  Kept as a guard so downstream numpy slice
+            # assignment (``combined_g[...]``) never gets a cupy ndarray.
+            if hasattr(arr, 'get') and not isinstance(arr, np.ndarray):
+                return arr.get()
+            return np.asarray(arr)
+
         # Multiplications with Green functions.
         # Phi / a equations (no eps) use plain G·vec.
-        G1_vec1 = self._G1 @ vec1
-        G2_vec2 = self._G2 @ vec2
+        G1_vec1 = _ensure_numpy(self._G1 @ vec1)
+        G2_vec2 = _ensure_numpy(self._G2 @ vec2)
 
         # Pack into combined vector for unpack (column-major flatten)
         combined_g = np.empty(G1_vec1.size + G2_vec2.size, dtype = complex)
@@ -853,8 +863,8 @@ class BEMRetIter(BEMIter):
 
         if eps1_scalar and eps2_scalar:
             # Cheap path: scalar eps commutes with G/H, so M(eps·v) = eps·(M·v).
-            H1_vec1 = self._H1 @ vec1
-            H2_vec2 = self._H2 @ vec2
+            H1_vec1 = _ensure_numpy(self._H1 @ vec1)
+            H2_vec2 = _ensure_numpy(self._H2 @ vec2)
             combined_h = np.empty(H1_vec1.size + H2_vec2.size, dtype = complex)
             combined_h[:H1_vec1.size] = H1_vec1.ravel(order = 'F')
             combined_h[H1_vec1.size:] = H2_vec2.ravel(order = 'F')
@@ -869,10 +879,10 @@ class BEMRetIter(BEMIter):
             # when applied to the iter unknown σ1 (see commentary above).
             eps1_vec1 = _eps_apply(eps1, vec1)
             eps2_vec2 = _eps_apply(eps2, vec2)
-            G1_eps_vec1 = self._G1 @ eps1_vec1
-            G2_eps_vec2 = self._G2 @ eps2_vec2
-            H1_eps_vec1 = self._H1 @ eps1_vec1
-            H2_eps_vec2 = self._H2 @ eps2_vec2
+            G1_eps_vec1 = _ensure_numpy(self._G1 @ eps1_vec1)
+            G2_eps_vec2 = _ensure_numpy(self._G2 @ eps2_vec2)
+            H1_eps_vec1 = _ensure_numpy(self._H1 @ eps1_vec1)
+            H2_eps_vec2 = _ensure_numpy(self._H2 @ eps2_vec2)
 
             combined_geps = np.empty(G1_eps_vec1.size + G2_eps_vec2.size,
                     dtype = complex)
@@ -887,8 +897,8 @@ class BEMRetIter(BEMIter):
             L_Hsig1, _L_Hh1, L_Hsig2, _L_Hh2 = self._unpack(combined_heps)
 
             # Hh1 / Hh2 (no eps) still needed for the alpha equation.
-            H1_vec1 = self._H1 @ vec1
-            H2_vec2 = self._H2 @ vec2
+            H1_vec1 = _ensure_numpy(self._H1 @ vec1)
+            H2_vec2 = _ensure_numpy(self._H2 @ vec2)
             combined_h = np.empty(H1_vec1.size + H2_vec2.size, dtype = complex)
             combined_h[:H1_vec1.size] = H1_vec1.ravel(order = 'F')
             combined_h[H1_vec1.size:] = H2_vec2.ravel(order = 'F')
