@@ -42,9 +42,10 @@ def test_sub_mat_cupy_numpy_mix():
     A_gpu = cp.ones((3, 3), dtype = complex)
     B_cpu = np.ones((3, 3), dtype = complex) * 0.25
     out = obj._sub_mat(A_gpu, B_cpu)
-    assert isinstance(out, cp.ndarray)
-    expected = cp.ones((3, 3), dtype = complex) * 0.75
-    assert cp.allclose(out, expected)
+    # _to_host_safe brings result to host so downstream lu_factor_dispatch works.
+    assert isinstance(out, np.ndarray)
+    expected = np.ones((3, 3), dtype = complex) * 0.75
+    assert np.allclose(out, expected)
 
 
 def test_mul_eps_cupy_numpy_mix():
@@ -54,6 +55,7 @@ def test_mul_eps_cupy_numpy_mix():
     eps_cpu = np.diag(np.full(3, 2.0 + 0j))
     M_gpu = cp.ones((3, 3), dtype = complex) * 0.5
     out = obj._mul_eps(eps_cpu, M_gpu)
-    assert isinstance(out, cp.ndarray)
-    expected = cp.ones((3, 3), dtype = complex)
-    assert cp.allclose(out, expected)
+    # _to_host_safe brings result to host so downstream lu_factor_dispatch works.
+    assert isinstance(out, np.ndarray)
+    expected = np.ones((3, 3), dtype = complex)
+    assert np.allclose(out, expected)
