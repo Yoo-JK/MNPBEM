@@ -652,15 +652,24 @@ class CompGreenRetLayer(object):
         n_p1 = self.p1.n
         n_p2 = self.p2.n
 
+        # v1.6.5 fix: when MNPBEM_GPU_LAYER is active, gr_comp values may be
+        # cupy ndarrays while g_direct is a host numpy array (or vice versa
+        # when both share the GPU path).  Materialise both sides on the
+        # host before the in-place add to avoid cupy/numpy mix in the
+        # downstream BEMRetLayer.init code path which assumes host arrays.
+        from ..utils.gpu import to_host as _to_host_arr
+
+        g_direct_host = _to_host_arr(g_direct) if not isinstance(g_direct, np.ndarray) else g_direct
+
         for name in gr_comp:
             if name in ('ss', 'hh', 'p'):
-                g_base = g_direct.copy()
+                g_base = g_direct_host.copy()
             else:
-                g_base = g_direct * 0
+                g_base = g_direct_host * 0
 
             gr_val = gr_comp[name]
 
-            if g_direct.ndim == 2:
+            if g_direct_host.ndim == 2:
                 # gr_val expected shape: (len(ind1), len(ind2)) MATLAB-style,
                 # or (n_p1, n_p2) full-Python-style.  Restrict to sub-block
                 # if needed.
@@ -671,6 +680,7 @@ class CompGreenRetLayer(object):
                         gr_block = gr_val
                 else:
                     gr_block = gr_val
+                gr_block = _to_host_arr(gr_block)
                 g_base[np.ix_(ind1, ind2)] = g_base[np.ix_(ind1, ind2)] + gr_block
             else:
                 # 3D: shape (n_p1, 3, n_p2) full or (len(ind1), 3, len(ind2)) sub
@@ -681,6 +691,7 @@ class CompGreenRetLayer(object):
                         gr_block = gr_val
                 else:
                     gr_block = gr_val
+                gr_block = _to_host_arr(gr_block)
                 g_base[np.ix_(ind1, range(3), ind2)] = (
                     g_base[np.ix_(ind1, range(3), ind2)] + gr_block)
 

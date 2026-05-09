@@ -12,6 +12,47 @@ from ..greenfun import CompGreenRetLayer, CompStruct
 
 
 # ---------------------------------------------------------------------------
+# Backend alignment helper for cupy/numpy mix safety (v1.6.5 fix)
+# ---------------------------------------------------------------------------
+
+def _is_cupy_array(x: Any) -> bool:
+    """Return True if x is a cupy ndarray."""
+    if not hasattr(x, '__class__'):
+        return False
+    return 'cupy' in type(x).__module__ and hasattr(x, 'shape')
+
+
+def _backend_align(A: Any, B: Any) -> Tuple[Any, Any]:
+    """Return (A, B) on the same backend (cupy or numpy).
+
+    If one is cupy ndarray and the other is numpy ndarray, promote the
+    numpy one to cupy to keep GPU residency. Scalars and non-array values
+    are returned untouched.
+    """
+    a_is_cp = _is_cupy_array(A)
+    b_is_cp = _is_cupy_array(B)
+    if a_is_cp and not b_is_cp and isinstance(B, np.ndarray):
+        import cupy as cp
+        return A, cp.asarray(B)
+    if b_is_cp and not a_is_cp and isinstance(A, np.ndarray):
+        import cupy as cp
+        return cp.asarray(A), B
+    return A, B
+
+
+def _to_host_safe(x: Any) -> Any:
+    """Materialise x on the host as numpy array.
+
+    Cupy ndarrays are converted via cp.asnumpy.  Non-array types
+    (scalars, dicts, etc.) are returned unchanged.
+    """
+    if _is_cupy_array(x):
+        import cupy as cp
+        return cp.asnumpy(x)
+    return x
+
+
+# ---------------------------------------------------------------------------
 # Helper functions matching MATLAB inner/outer/matmul for bemretlayer
 # ---------------------------------------------------------------------------
 
@@ -316,10 +357,12 @@ class BEMRetLayer(object):
             A: Any,
             B: Any) -> Any:
         if isinstance(B, (int, float)) and B == 0:
-            return A
+            return _to_host_safe(A)
         if isinstance(A, (int, float)) and A == 0:
-            return -B
-        return A - B
+            return _to_host_safe(-B if not _is_cupy_array(B) else -B)
+        A, B = _backend_align(A, B)
+        result = A - B
+        return _to_host_safe(result)
 
     def _mul_eps(self,
             eps: Any,
@@ -327,8 +370,10 @@ class BEMRetLayer(object):
         if isinstance(M, (int, float)) and M == 0:
             return 0
         if np.isscalar(eps):
-            return eps * M
-        return eps @ M
+            return _to_host_safe(eps * M)
+        eps, M = _backend_align(eps, M)
+        result = eps @ M
+        return _to_host_safe(result)
 
     def _build_outer_mixed(self,
             G_struct: Any,
