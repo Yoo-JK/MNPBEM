@@ -4,7 +4,47 @@ from typing import Optional, List, Tuple, Any, Union
 from ..greenfun import CompStruct
 from ..greenfun.compgreen_stat_mirror import CompGreenStatMirror
 from ..geometry.comparticle_mirror import CompStructMirror
-from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, to_host, is_cupy_array
+
+
+def _mirror_stat_eval_host(g: Any, key: str) -> List:
+    """Mirror-symmetry-contracted quasistatic Green block list as host arrays.
+
+    Same audit fix as ``bem_ret_mirror._mirror_eval_host`` for the
+    quasistatic Green function: the underlying base attribute (G, F, H1...)
+    may be a cupy ndarray under MNPBEM_GPU=1 and the upstream mirror
+    contraction skips silently for non-numpy inputs.  Bring it to host
+    here so BEMStatMirror always receives populated numpy blocks.
+    """
+    tab = g.p.symtable
+    n_sym = tab.shape[0]
+    out: List = [0.0] * n_sym
+
+    mat = getattr(g.g, key)
+    if isinstance(mat, (int, float)) and mat == 0:
+        return out
+    if is_cupy_array(mat):
+        mat = to_host(mat)
+    if not isinstance(mat, np.ndarray):
+        return out
+
+    if mat.ndim == 2:
+        n = mat.shape[0]
+        n_blocks = mat.shape[1] // n
+        sub_mats = [mat[:, b * n:(b + 1) * n] for b in range(n_blocks)]
+        for i_sym in range(n_sym):
+            out[i_sym] = np.zeros_like(sub_mats[0])
+            for j_block in range(tab.shape[1]):
+                out[i_sym] = out[i_sym] + tab[i_sym, j_block] * sub_mats[j_block]
+    elif mat.ndim == 3:
+        n = mat.shape[0]
+        n_blocks = mat.shape[2] // n
+        sub_mats = [mat[:, :, b * n:(b + 1) * n] for b in range(n_blocks)]
+        for i_sym in range(n_sym):
+            out[i_sym] = np.zeros_like(sub_mats[0])
+            for j_block in range(tab.shape[1]):
+                out[i_sym] = out[i_sym] + tab[i_sym, j_block] * sub_mats[j_block]
+    return out
 
 
 class BEMStatMirror(object):
@@ -37,8 +77,10 @@ class BEMStatMirror(object):
         # Green function
         self.g = CompGreenStatMirror(p, p, **options)
 
-        # surface derivative of Green function (list, one per symmetry value)
-        self.F = self.g.F
+        # surface derivative of Green function (list, one per symmetry value).
+        # Use the host-promoting wrapper so MNPBEM_GPU=1 (cupy assembly) does
+        # not produce a zero list -- see _mirror_stat_eval_host.
+        self.F = _mirror_stat_eval_host(self.g, 'F')
 
         # resolvent matrices
         self.mat_lu = None  # type: Optional[List]

@@ -310,12 +310,16 @@ class PlaneWaveStatLayer(object):
 
         k0 = 2 * np.pi / sig.enei
 
-        # Dipole moment of surface charge distribution
+        # Dipole moment of surface charge distribution.
+        # A5 fix: materialize cupy sig on host so numpy matmul does not raise.
+        _sig_raw = sig.sig
+        sig_arr = _sig_raw.get() if (hasattr(_sig_raw, 'get')
+            and not isinstance(_sig_raw, np.ndarray)) else np.asarray(_sig_raw)
         area_pos = sig.p.area[:, np.newaxis] * sig.p.pos  # (nfaces, 3)
-        if sig.sig.ndim == 1:
-            dip = (area_pos.T @ sig.sig).reshape(1, 3)  # (1, 3)
+        if sig_arr.ndim == 1:
+            dip = (area_pos.T @ sig_arr).reshape(1, 3)  # (1, 3)
         else:
-            dip = (area_pos.T @ sig.sig).T  # (npol, 3)
+            dip = (area_pos.T @ sig_arr).T  # (npol, 3)
 
         # Decompose electric fields into TE and TM
         te_pol, tm_pol, _ = self.decompose()
@@ -382,12 +386,16 @@ class PlaneWaveStatLayer(object):
         # MATLAB: planewavestatlayer/scattering.m
         # Uses SpectrumStatLayer.scattering for Fresnel-aware far-field integration
 
-        # Dipole moment
+        # Dipole moment.
+        # A5 fix: materialize cupy sig on host so numpy matmul does not raise.
+        _sig_raw = sig.sig
+        sig_arr = _sig_raw.get() if (hasattr(_sig_raw, 'get')
+            and not isinstance(_sig_raw, np.ndarray)) else np.asarray(_sig_raw)
         area_pos = sig.p.area[:, np.newaxis] * sig.p.pos
-        if sig.sig.ndim == 1:
-            dip = (area_pos.T @ sig.sig).reshape(1, 3)  # (1, 3)
+        if sig_arr.ndim == 1:
+            dip = (area_pos.T @ sig_arr).reshape(1, 3)  # (1, 3)
         else:
-            dip = (area_pos.T @ sig.sig).T  # (npol, 3)
+            dip = (area_pos.T @ sig_arr).T  # (npol, 3)
 
         # Get refractive indices
         nb = msqrt(np.array([

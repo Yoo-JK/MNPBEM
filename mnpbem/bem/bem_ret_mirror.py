@@ -4,7 +4,52 @@ from typing import Optional, List, Tuple, Any, Dict, Union
 from ..greenfun import CompStruct
 from ..greenfun.compgreen_ret_mirror import CompGreenRetMirror
 from ..geometry.comparticle_mirror import CompStructMirror
-from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, to_host, is_cupy_array
+
+
+def _mirror_eval_host(g: Any,
+        i: int,
+        j: int,
+        key: str,
+        enei: float) -> List:
+    """Mirror-symmetry-contracted Green block list as host (numpy) arrays.
+
+    Wraps ``CompGreenRetMirror.eval`` so the result is always a list of
+    numpy arrays (or scalar zeros) even when ``MNPBEM_GPU=1`` causes the
+    underlying base eval to return cupy ndarrays.  The upstream mirror
+    ``eval`` skips the contraction silently when ``isinstance(mat, np.ndarray)``
+    is False for a cupy ndarray, producing a zero list that hides the GPU
+    code path.  v1.7 A4 audit fix: route the contraction through the host.
+    """
+    tab = g.p.symtable
+    n_sym = tab.shape[0]
+    out: List = [0.0] * n_sym
+
+    mat = g.g.eval(i, j, key, enei)
+    if isinstance(mat, (int, float)) and mat == 0:
+        return out
+    if is_cupy_array(mat):
+        mat = to_host(mat)
+    if not isinstance(mat, np.ndarray):
+        return out
+
+    if mat.ndim == 2:
+        n = mat.shape[0]
+        n_blocks = mat.shape[1] // n
+        sub_mats = [mat[:, b * n:(b + 1) * n] for b in range(n_blocks)]
+        for i_sym in range(n_sym):
+            out[i_sym] = np.zeros_like(sub_mats[0])
+            for j_block in range(tab.shape[1]):
+                out[i_sym] = out[i_sym] + tab[i_sym, j_block] * sub_mats[j_block]
+    elif mat.ndim == 3:
+        n = mat.shape[0]
+        n_blocks = mat.shape[2] // n
+        sub_mats = [mat[:, :, b * n:(b + 1) * n] for b in range(n_blocks)]
+        for i_sym in range(n_sym):
+            out[i_sym] = np.zeros_like(sub_mats[0])
+            for j_block in range(tab.shape[1]):
+                out[i_sym] = out[i_sym] + tab[i_sym, j_block] * sub_mats[j_block]
+    return out
 
 
 class BEMRetMirror(object):
@@ -80,16 +125,18 @@ class BEMRetMirror(object):
             self._eps1 = np.diag(eps1_vals)
             self._eps2 = np.diag(eps2_vals)
 
-        # Green functions and surface derivatives for each symmetry value
-        G1_list = self.g.eval(0, 0, 'G', enei)
-        G1_cross = self.g.eval(1, 0, 'G', enei)
-        G2_list = self.g.eval(1, 1, 'G', enei)
-        G2_cross = self.g.eval(0, 1, 'G', enei)
+        # Green functions and surface derivatives for each symmetry value.
+        # Use the host-promoting wrapper so MNPBEM_GPU=1 (cupy assembly) does
+        # not silently produce a zero list -- see _mirror_eval_host.
+        G1_list = _mirror_eval_host(self.g, 0, 0, 'G', enei)
+        G1_cross = _mirror_eval_host(self.g, 1, 0, 'G', enei)
+        G2_list = _mirror_eval_host(self.g, 1, 1, 'G', enei)
+        G2_cross = _mirror_eval_host(self.g, 0, 1, 'G', enei)
 
-        H1_list = self.g.eval(0, 0, 'H1', enei)
-        H1_cross = self.g.eval(1, 0, 'H1', enei)
-        H2_list = self.g.eval(1, 1, 'H2', enei)
-        H2_cross = self.g.eval(0, 1, 'H2', enei)
+        H1_list = _mirror_eval_host(self.g, 0, 0, 'H1', enei)
+        H1_cross = _mirror_eval_host(self.g, 1, 0, 'H1', enei)
+        H2_list = _mirror_eval_host(self.g, 1, 1, 'H2', enei)
+        H2_cross = _mirror_eval_host(self.g, 0, 1, 'H2', enei)
 
         n_sym = len(G1_list)
 

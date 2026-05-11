@@ -5,7 +5,8 @@ from typing import Optional, List, Tuple, Any, Union
 from ..greenfun import CompStruct
 from ..greenfun.compgreen_stat_mirror import CompGreenStatMirror
 from ..geometry.comparticle_mirror import CompStructMirror
-from ..utils.gpu import matmul_dispatch, solve_dispatch
+from ..utils.gpu import matmul_dispatch, solve_dispatch, to_host, is_cupy_array
+from .bem_stat_mirror import _mirror_stat_eval_host
 
 
 class BEMStatEigMirror(object):
@@ -52,8 +53,22 @@ class BEMStatEigMirror(object):
         # Green function
         self.g = CompGreenStatMirror(p, p, **options)
 
-        # surface derivative of Green function (list, one per symmetry value)
-        F_list = self.g.F
+        # surface derivative of Green function (list, one per symmetry value).
+        # Host-promoting wrapper to keep MNPBEM_GPU=1 from producing zero lists.
+        F_list = _mirror_stat_eval_host(self.g, 'F')
+
+        # Mirror half-particle face index ranges.  The mirror solver lives on
+        # the contracted half mesh (size = nfaces_half); ``p.np`` and
+        # ``p.index_func`` are inherited from the *full* particle and therefore
+        # return indices > nfaces_half, which is out of range for the
+        # eigenvector slicing below.  Build the half-particle ranges directly
+        # from ``self.p.p`` (mirror half particle list).
+        half_indices = []
+        offset = 0
+        for part in p.p:
+            half_indices.append(np.arange(offset, offset + part.nfaces, dtype = int))
+            offset += part.nfaces
+        n_half_particles = len(half_indices)
 
         # eigenmode expansion
         for i in range(len(F_list)):
@@ -71,10 +86,10 @@ class BEMStatEigMirror(object):
             overlap = ul_i @ ur_i  # (nev, nev)
             ul_i = np.linalg.solve(overlap, ul_i)
 
-            # unit matrices
-            unit_i = np.zeros((self.nev ** 2, p.np), dtype = complex)
-            for ip in range(p.np):
-                ind = p.index_func(ip + 1)
+            # unit matrices (one column per half-particle)
+            unit_i = np.zeros((self.nev ** 2, n_half_particles), dtype = complex)
+            for ip in range(n_half_particles):
+                ind = half_indices[ip]
                 chunk = ul_i[:, ind] @ ur_i[ind, :]  # (nev, nev)
                 unit_i[:, ip] = chunk.ravel()
 
