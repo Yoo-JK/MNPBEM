@@ -340,6 +340,17 @@ class BEMRetIter(BEMIter):
         self._H1 = H11 - H21 if not (isinstance(H21, (int, float)) and H21 == 0) else H11
         self._H2 = H22 - H12 if not (isinstance(H12, (int, float)) and H12 == 0) else H22
 
+        # v1.7 A2 fix: when MNPBEM_GPU=1 + dense path, CompGreenRet returns
+        # cupy ndarrays for G/H. The GMRES iterates (``_afun``) get host
+        # numpy vectors from scipy.sparse.linalg.gmres, so cupy @ numpy
+        # mixes backends and raises TypeError. HMatrix objects already
+        # handle the mix inside ``mtimes_vec`` so we only normalise plain
+        # ndarrays here. Leaves HMatrix / refun paths bit-identical.
+        for _attr in ('_G1', '_G2', '_H1', '_H2'):
+            _val = getattr(self, _attr)
+            if is_cupy_array(_val):
+                setattr(self, _attr, to_host(_val))
+
         # Optional user-supplied refinement (coverlayer.refine for nonlocal
         # cover-layer effects). Applied to dense G/H pairs. If ACA H-matrix
         # acceleration is in use the matrices are densified for refun and

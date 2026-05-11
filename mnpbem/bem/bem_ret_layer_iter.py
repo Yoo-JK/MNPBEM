@@ -7,9 +7,32 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
-from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch
+from ..utils.gpu import (
+    lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch,
+    to_host, is_cupy_array,
+)
 from ..utils.matlab_compat import msqrt
 from .bem_iter import BEMIter
+
+
+def _coerce_host(val: Any) -> Any:
+    # v1.7 A2 fix: when MNPBEM_GPU=1 the underlying CompGreenRet.eval
+    # returns cupy ndarrays for inner-inner / inner-outer Green blocks
+    # (the substrate-modified outer pair already goes through
+    # _LayerGreen._assembly which v1.6.5 normalised to host).  The dense
+    # iter path mixes cupy G/H with host vectors from scipy GMRES, so we
+    # promote every dense ndarray down to host before saving.  Nested
+    # dict / _LayerGreen structures keep their key/attribute layout.
+    if is_cupy_array(val):
+        return to_host(val)
+    if isinstance(val, dict):
+        return {k: _coerce_host(v) for k, v in val.items()}
+    if hasattr(val, 'ss'):
+        for attr in ('ss', 'hh', 'p', 'sh', 'hs'):
+            if hasattr(val, attr):
+                setattr(val, attr, _coerce_host(getattr(val, attr)))
+        return val
+    return val
 
 
 class BEMRetLayerIter(BEMIter):
@@ -96,21 +119,25 @@ class BEMRetLayerIter(BEMIter):
 
         # Green functions for inner surfaces
         # MATLAB: G1 = g{1,1}.G(enei) - g{2,1}.G(enei)
-        G11 = self.g.eval(0, 0, 'G', enei)
-        G21 = self.g.eval(1, 0, 'G', enei)
+        # v1.7 A2 fix: coerce every eval() output to host numpy when GPU
+        # path returns cupy ndarrays.  The dense iter ``_afun`` /
+        # ``_mfun`` mix these arrays with host GMRES vectors so we
+        # cannot leave any cupy operands in self._G* / self._H*.
+        G11 = _coerce_host(self.g.eval(0, 0, 'G', enei))
+        G21 = _coerce_host(self.g.eval(1, 0, 'G', enei))
         G1 = G11 - G21 if not (isinstance(G21, (int, float)) and G21 == 0) else G11
 
-        H11 = self.g.eval(0, 0, 'H1', enei)
-        H21 = self.g.eval(1, 0, 'H1', enei)
+        H11 = _coerce_host(self.g.eval(0, 0, 'H1', enei))
+        H21 = _coerce_host(self.g.eval(1, 0, 'H1', enei))
         H1 = H11 - H21 if not (isinstance(H21, (int, float)) and H21 == 0) else H11
 
         # Green functions for outer surfaces (with layer structure)
         # MATLAB: G2 = g{2,2}.G(enei); g2 = g{1,2}.G(enei)
-        G22_full = self.g.eval(1, 1, 'G', enei)
-        g2 = self.g.eval(0, 1, 'G', enei)
+        G22_full = _coerce_host(self.g.eval(1, 1, 'G', enei))
+        g2 = _coerce_host(self.g.eval(0, 1, 'G', enei))
 
-        H22_full = self.g.eval(1, 1, 'H2', enei)
-        h2 = self.g.eval(0, 1, 'H2', enei)
+        H22_full = _coerce_host(self.g.eval(1, 1, 'H2', enei))
+        h2 = _coerce_host(self.g.eval(0, 1, 'H2', enei))
 
         # For layer structure, G2 is a dict-like with ss, hh, p, sh, hs components
         # MATLAB: G2.ss = G2.ss - g2; G2.hh = G2.hh - g2; G2.p = G2.p - g2
