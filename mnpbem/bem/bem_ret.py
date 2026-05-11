@@ -559,10 +559,23 @@ class BEMRet(object):
         # ACA wrappers proxy the underlying CompGreenRet via .g
         _gobj = self.g.g if hasattr(self.g, 'g') and hasattr(self.g.g, 'con') else self.g
         native = _bem_native_gpu()
+        # v1.7 A1 fix: the prior code set ``L1_is_scalar=True`` whenever
+        # ``con[0][1]==0`` OR ``scalar_eps``.  The former is also true
+        # for a disjoint-particle dimer with NON-uniform eps, in which
+        # case ``self.L1 = self.eps1`` is a host numpy DIAG matrix
+        # (n,n), not a true scalar; downstream ``Sigma1_dev * self.L1``
+        # then mixes cupy and numpy and raises TypeError.  The fix
+        # restricts the scalar Sigma path to genuine Python scalars and
+        # uploads diag L1/L2 to device when native mode is active so
+        # all subsequent @-products stay on the GPU backend.
         if np.all(_gobj.con[0][1] == 0) or scalar_eps:
-            self.L1 = self.eps1  # host scalar
-            self.L2 = self.eps2
-            L1_is_scalar = True
+            L1_true_scalar = scalar_eps and np.isscalar(self.eps1)
+            if native and not L1_true_scalar:
+                self.L1 = cp.asarray(self.eps1)
+                self.L2 = cp.asarray(self.eps2)
+            else:
+                self.L1 = self.eps1  # host scalar OR host numpy diag
+                self.L2 = self.eps2
             # Avoid computing the full G1i / G2i inverses when L is scalar:
             # Sigma1 = H1 @ G1^-1 can be obtained directly via lu_solve on
             # the right (solve G1^T x^T = H1^T).  This trims two N^3 GEMMs
@@ -590,7 +603,7 @@ class BEMRet(object):
                 self.L2 = cp.asnumpy(L2_dev_full)
                 del L1_dev_full, L2_dev_full
             _mempool.free_all_blocks()
-            L1_is_scalar = False
+            L1_true_scalar = False
 
         # Sigma matrices: Sigma_i = H_i @ G_i^-1.
         # Use right-hand-side lu_solve when possible to skip the full
@@ -630,12 +643,15 @@ class BEMRet(object):
         nvec_outer_dev = nvec_dev @ nvec_dev.T
         del nvec_dev
 
-        if L1_is_scalar:
+        if L1_true_scalar:
             Sigma_dev = (Sigma1_dev * self.L1) - (Sigma2_dev * self.L2)
             L_scalar = self.L1 - self.L2
             Sigma_dev = Sigma_dev + (self.k ** 2) * L_scalar * (
                 Deltai_dev * nvec_outer_dev) * L_scalar
         else:
+            # self.L1 / self.L2 may be host numpy diag (con==0 non-uniform
+            # eps when native=False) or device cupy (other paths).  Calling
+            # ``cp.asarray`` is a no-op on cupy and an upload on numpy.
             L1_dev = cp.asarray(self.L1)
             L2_dev = cp.asarray(self.L2)
             L_dev = L1_dev - L2_dev
@@ -926,7 +942,15 @@ class BEMRet(object):
         nfaces = self.p.nfaces
 
         # Phase 3: GPU_NATIVE — keep tensors on device end-to-end.
+        # v1.7 A1 fix: ``_bem_native_gpu()`` only reads the env var; it
+        # cannot detect the case where ``_init_gpu_assemble`` raised and
+        # fell back to the CPU path (leaving Sigma1/L1 on host).  Cross-
+        # check the actual residency of the cached state before promoting
+        # the solve to device — otherwise a numpy L1 mixed with cupy phi
+        # produces a TypeError mid-solve.
         native = _bem_native_gpu()
+        if native and (not _CUPY_OK_A2 or not is_cupy_array(self.Sigma1)):
+            native = False
         if native:
             cp = _cp_a2
             xp = cp

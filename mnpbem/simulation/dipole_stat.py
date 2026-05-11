@@ -328,9 +328,16 @@ class DipoleStat(object):
         g = CompGreenStat(self.pt, sig.p, **self.varargin)
 
         # MATLAB: decayrate.m line 25
-        # Induced electric field
+        # Induced electric field.
+        # A5 fix: materialize cupy sig.sig on host before invoking the Green
+        # function so numpy matmul does not raise on a cupy operand.
+        _sig_raw = sig.sig
+        if hasattr(_sig_raw, 'get') and not isinstance(_sig_raw, np.ndarray):
+            sig.sig = _sig_raw.get()
         field_struct = g.field(sig)
-        e = field_struct.e
+        _e_raw = field_struct.e
+        e = (_e_raw.get() if (hasattr(_e_raw, 'get')
+            and not isinstance(_e_raw, np.ndarray)) else np.asarray(_e_raw))
 
         # MATLAB: decayrate.m line 27
         # Wigner-Weisskopf decay rate in free space
@@ -350,7 +357,10 @@ class DipoleStat(object):
             e = e.reshape(npt, 3, npt, ndip)
         elif e.ndim == 3 and e.shape[2] == ndip and npt == 1:
             e = e.reshape(npt, 3, npt, ndip)
-        sig_arr = sig.sig
+        # A5 fix: materialize cupy sig on host so numpy matmul does not raise.
+        _sig_raw2 = sig.sig
+        sig_arr = (_sig_raw2.get() if (hasattr(_sig_raw2, 'get')
+            and not isinstance(_sig_raw2, np.ndarray)) else np.asarray(_sig_raw2))
         # Reshape sig to (nfaces, npt*ndip) for matrix multiply
         if sig_arr.ndim == 1:
             sig_flat = sig_arr.reshape(-1, 1)
