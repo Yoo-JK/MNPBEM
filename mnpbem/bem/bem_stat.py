@@ -453,7 +453,17 @@ class BEMStat(object):
         >>> bem = bem.clear()
         """
         # MATLAB: obj.mat = []
+        # v1.7 A3 fix: also reset enei so the cache gate in _init_matrices
+        # does not skip rebuild when the user re-solves at the same
+        # wavelength after clear().  Stale enei + mat_lu=None previously
+        # crashed __truediv__ with a NoneType unpack error.  Schur
+        # auxiliaries are likewise dropped so a subsequent solve does not
+        # accidentally reuse the recover callable bound to a freed factor.
         self.mat_lu = None
+        self.enei = None
+        self._schur_active = False
+        self._schur_reduce_rhs = None
+        self._schur_recover = None
         return self
 
     def __call__(self, enei):

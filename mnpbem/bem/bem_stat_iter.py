@@ -351,7 +351,16 @@ class BEMStatIter(BEMIter):
     def clear(self) -> 'BEMStatIter':
 
         # MATLAB: bemstatiter/clear.m
+        # v1.7 A3 fix: also reset the cache gate (enei) and the wavelength-
+        # dependent auxiliaries (_lambda, Schur state, _hlu_object).
+        # Otherwise a follow-up solve at the same wavelength hits the
+        # cache, finds _mat_lu=None, and crashes inside _mfun.
         self._mat_lu = None
+        self.enei = None
+        self._lambda = None
+        self._schur_active = False
+        self._schur_op = None
+        self._hlu_object = None
         return self
 
     def __call__(self,

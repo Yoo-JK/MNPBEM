@@ -318,6 +318,23 @@ class BEMStatEig(object):
         """
         return self._init_matrices(enei)
 
+    def clear(self):
+        """Clear auxiliary resolvent matrix.
+
+        v1.7 A3: added for API parity with BEMStat / BEMStatLayer /
+        BEMStatIter so calling code can drop the cached dense ``mat``
+        and force a rebuild at the next solve.  Also resets ``enei``
+        so the cache gate does not skip the rebuild.
+
+        Returns
+        -------
+        self : BEMStatEig
+            Returns self for chaining.
+        """
+        self.mat = None
+        self.enei = None
+        return self
+
     def __repr__(self):
         """String representation."""
         status = 'enei={}'.format(self.enei) if self.enei is not None else 'not initialized'

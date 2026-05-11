@@ -26,6 +26,8 @@ class BEMStatLayer(object):
 
         self.enei = None
         self.mat_lu = None
+        self._A_lu = None
+        self._rhs_scale = None
 
         # Green function with layer
         # MATLAB: obj.g = compgreenstatlayer(p, p, layer, varargin{:})
@@ -124,7 +126,13 @@ class BEMStatLayer(object):
 
     def clear(self) -> 'BEMStatLayer':
 
+        # v1.7 A3 fix: drop the real LU factor / rhs scale held in
+        # _A_lu and _rhs_scale.  Previous versions only reset the
+        # unused mat_lu attribute, leaving GPU LU memory pinned until
+        # the next wavelength rebuild.
         self.mat_lu = None
+        self._A_lu = None
+        self._rhs_scale = None
         self.enei = None
         return self
 
