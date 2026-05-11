@@ -15,6 +15,8 @@ into a fresh CompStruct and confirm that:
   3. the values match the CPU-only baseline within float precision.
 """
 
+import os
+
 import numpy as np
 import pytest
 
@@ -28,6 +30,16 @@ except Exception:
 
 
 cupy_required = pytest.mark.skipif(not _HAS_CUPY, reason = 'cupy not installed')
+
+
+@pytest.fixture(autouse = True)
+def _isolate_gpu_env(monkeypatch):
+    """Other A1/A3/A4 GPU test suites flip MNPBEM_GPU=1; ensure this file
+    always builds the BEM solver on CPU so the sig surface charges are
+    NumPy arrays before injection."""
+    monkeypatch.delenv('MNPBEM_GPU', raising = False)
+    monkeypatch.delenv('MNPBEM_GPU_NATIVE', raising = False)
+    yield
 
 
 # -- common fixture: tiny sphere + BEM -------------------------------------
