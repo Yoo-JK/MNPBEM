@@ -334,3 +334,48 @@ def test_bem_ret_multipol_gpu_matches_cpu():
 
     rel = np.abs(np.asarray(ext_c) - np.asarray(ext_g)) / np.maximum(np.abs(ext_c), 1e-12)
     assert rel.max() < _TOL, '[error] multipol: rel diff = {}'.format(rel)
+
+
+# ---------------------------------------------------------------------------
+# Edge case (v1.7 A1 regression): disjoint-particle dimer with NON-uniform
+# eps + zero off-diagonal connectivity.  Pre-fix: L1_is_scalar flag was
+# True even though self.L1 was a (n,n) host numpy diag matrix; the
+# Sigma_dev * self.L1 product then raised cupy 'unsupported type'.
+# ---------------------------------------------------------------------------
+
+
+def _build_disjoint_dimer_nonuniform_eps():
+    eps_b = EpsConst(1.0)
+    eps_au = EpsConst(-5 + 0.1j)
+    eps_ag = EpsConst(-3 + 0.5j)
+    p1 = trisphere(60, 4.0)
+    p1.shift([-10.0, 0.0, 0.0])
+    p2 = trisphere(60, 4.0)
+    p2.shift([+10.0, 0.0, 0.0])
+    return ComParticle([eps_b, eps_au, eps_ag],
+            [p1, p2], [[2, 1], [3, 1]], [1, 2])
+
+
+def test_bem_ret_disjoint_dimer_nonuniform_eps_gpu_matches_cpu():
+    p = _build_disjoint_dimer_nonuniform_eps()
+    cpu, gpu = _cpu_vs_gpu_planewave(p, [500.0, 550.0, 600.0])
+    rel = np.abs(cpu - gpu) / np.maximum(np.abs(cpu), 1e-12)
+    assert rel.max() < _TOL, \
+            '[error] disjoint dimer non-uniform eps: rel diff = {}'.format(rel)
+
+
+def test_bem_ret_disjoint_dimer_nonuniform_eps_native_gpu_uploads_L1():
+    # White-box: in native mode L1 must end up on device when eps is
+    # non-uniform (the v1.7 A1 fix path).  Without the fix L1 stayed
+    # host numpy and the next solve() raised TypeError.
+    p = _build_disjoint_dimer_nonuniform_eps()
+    _set_gpu_env(True)
+    _reload_gpu_module()
+    bem = BEMRet(p)
+    bem.init(550.0)
+    # eps1 must be non-scalar diag matrix
+    assert not np.isscalar(bem.eps1)
+    # L1 should be on device (cupy) since native mode is active
+    from mnpbem.utils.gpu import is_cupy_array
+    assert is_cupy_array(bem.L1), \
+            '[error] L1 not on device: type={}'.format(type(bem.L1))
