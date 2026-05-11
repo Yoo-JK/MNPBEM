@@ -219,8 +219,15 @@ class DipoleStatLayer(object):
         from ..greenfun import CompGreenStatLayer
         g = CompGreenStatLayer(self.pt, sig.p, self.layer, **self.varargin)
 
+        # A5 fix: materialize cupy sig members on host before invoking Green
+        # function so numpy matmul does not raise on a cupy operand.
+        _sig_raw = sig.sig
+        if hasattr(_sig_raw, 'get') and not isinstance(_sig_raw, np.ndarray):
+            sig.sig = _sig_raw.get()
         field_struct = g.field(sig)
-        e = field_struct.e
+        _e_raw = field_struct.e
+        e = (_e_raw.get() if (hasattr(_e_raw, 'get')
+            and not isinstance(_e_raw, np.ndarray)) else np.asarray(_e_raw))
 
         gamma = 4 / 3 * (2 * np.pi / sig.enei) ** 3
 
@@ -229,7 +236,10 @@ class DipoleStatLayer(object):
 
         area_pos = sig.p.pos * sig.p.area[:, np.newaxis]
 
-        indip = area_pos.T @ sig.sig
+        _sig_raw2 = sig.sig
+        sig_arr = (_sig_raw2.get() if (hasattr(_sig_raw2, 'get')
+            and not isinstance(_sig_raw2, np.ndarray)) else np.asarray(_sig_raw2))
+        indip = area_pos.T @ sig_arr
         # indip shape: (3, npol) where npol = npt * ndip
         indip = indip.reshape(3, npt, ndip)
         tot = np.zeros((npt, ndip))
