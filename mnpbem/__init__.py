@@ -13,7 +13,7 @@ Main modules:
 - misc: Math, distance, plotting, and other utilities
 """
 
-__version__ = "1.6.4"
+__version__ = "1.6.6"
 
 # Materials: dielectric functions
 from .materials import EpsConst, EpsTable, EpsDrude, EpsFun, epsfun, EpsNonlocal, make_nonlocal_pair

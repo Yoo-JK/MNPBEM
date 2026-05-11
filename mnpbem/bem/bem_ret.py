@@ -490,21 +490,35 @@ class BEMRet(object):
                 return x
             return cp.asarray(_to_host(x))
 
+        # v1.6.6: release each Gij/Hij intermediate as soon as G1/G2/H1/H2
+        # combinations are formed.  On 12672-face Au@Ag dimers the 8
+        # intermediates alone consume ~20 GB; without the deletes the
+        # subsequent LU factor / Deltai/Sigma kernels OOM on a 49 GB A6000.
+        # Only a single ``free_all_blocks`` is needed (Python ref-count drop
+        # already returns blocks to the cupy pool; the explicit free pushes
+        # them back to the device so the LU factor below sees max headroom).
+        _mempool = cp.get_default_memory_pool()
+
         G11 = _to_dev(self.g.eval(0, 0, 'G', enei))
         G21 = _to_dev(self.g.eval(1, 0, 'G', enei))
+        G1 = G11 - G21 if G21 is not None else G11
+        del G11, G21
+
         G22 = _to_dev(self.g.eval(1, 1, 'G', enei))
         G12 = _to_dev(self.g.eval(0, 1, 'G', enei))
-
-        G1 = G11 - G21 if G21 is not None else G11
         G2 = G22 - G12 if G12 is not None else G22
+        del G22, G12
 
         H11 = _to_dev(self.g.eval(0, 0, 'H1', enei))
         H21 = _to_dev(self.g.eval(1, 0, 'H1', enei))
+        H1_mat = H11 - H21 if H21 is not None else H11
+        del H11, H21
+
         H22 = _to_dev(self.g.eval(1, 1, 'H2', enei))
         H12 = _to_dev(self.g.eval(0, 1, 'H2', enei))
-
-        H1_mat = H11 - H21 if H21 is not None else H11
         H2_mat = H22 - H12 if H12 is not None else H22
+        del H22, H12
+        _mempool.free_all_blocks()
 
         # Optional user-supplied refun (coverlayer.refine).  refun is a host
         # numpy callable; round-trip through host and re-upload — the
@@ -534,6 +548,9 @@ class BEMRet(object):
         lu2, piv2 = _cp_lu_factor(G2c, overwrite_a=True)
         self.G1_lu = ('gpu', lu1, piv1)
         self.G2_lu = ('gpu', lu2, piv2)
+        # G1c/G2c are now consumed by the LU factor (overwrite_a); drop the
+        # Python references so the pool can immediately recycle the buffer.
+        del G1c, G2c
 
         n = G1_dev.shape[0]
         I_dev = cp.eye(n)
@@ -552,6 +569,10 @@ class BEMRet(object):
             # per wavelength.
             G1i_dev = None
             G2i_dev = None
+            # G1/G2 dense matrices are no longer needed (only their LU
+            # factors are used downstream); release ~5 GB on 12672-face dimer.
+            del G1, G2, G1_dev, G2_dev
+            _mempool.free_all_blocks()
         else:
             G1i_dev = _cp_lu_solve((lu1, piv1), I_dev)
             G2i_dev = _cp_lu_solve((lu2, piv2), I_dev)
@@ -559,6 +580,7 @@ class BEMRet(object):
             eps2_dev = cp.asarray(self.eps2)
             L1_dev_full = G1_dev @ eps1_dev @ G1i_dev
             L2_dev_full = G2_dev @ eps2_dev @ G2i_dev
+            del eps1_dev, eps2_dev, G1, G2, G1_dev, G2_dev
             if native:
                 # Phase 3: keep L1/L2 on device.
                 self.L1 = L1_dev_full
@@ -566,6 +588,8 @@ class BEMRet(object):
             else:
                 self.L1 = cp.asnumpy(L1_dev_full)
                 self.L2 = cp.asnumpy(L2_dev_full)
+                del L1_dev_full, L2_dev_full
+            _mempool.free_all_blocks()
             L1_is_scalar = False
 
         # Sigma matrices: Sigma_i = H_i @ G_i^-1.
@@ -574,10 +598,16 @@ class BEMRet(object):
         if G1i_dev is not None:
             Sigma1_dev = H1_mat @ G1i_dev
             Sigma2_dev = H2_mat @ G2i_dev
+            # G1i/G2i (each ~2.5 GB) drop here; downstream uses only LU and
+            # the Sigma products.
+            del G1i_dev, G2i_dev
         else:
             # Sigma1 @ G1 = H1  =>  G1^T @ Sigma1^T = H1^T
             Sigma1_dev = _cp_lu_solve((lu1, piv1), H1_mat.T, trans=1).T
             Sigma2_dev = _cp_lu_solve((lu2, piv2), H2_mat.T, trans=1).T
+        # H1_mat/H2_mat are no longer needed after Sigma1/Sigma2 are formed.
+        del H1_mat, H2_mat
+        _mempool.free_all_blocks()
         # Phase 3: keep Sigma1 on device when GPU_NATIVE is enabled so the
         # downstream solve() can do Sigma1 @ a entirely on the GPU.
         if native:
@@ -588,13 +618,17 @@ class BEMRet(object):
         # Delta = Sigma1 - Sigma2  (still on device)
         Delta_dev = Sigma1_dev - Sigma2_dev
         Dc = Delta_dev.copy()
+        del Delta_dev
         lu_d, piv_d = _cp_lu_factor(Dc, overwrite_a=True)
         self.Delta_lu = ('gpu', lu_d, piv_d)
+        del Dc
         Deltai_dev = _cp_lu_solve((lu_d, piv_d), I_dev)
+        del I_dev
 
         # nvec*nvec^T on device.
         nvec_dev = cp.asarray(self.nvec)
         nvec_outer_dev = nvec_dev @ nvec_dev.T
+        del nvec_dev
 
         if L1_is_scalar:
             Sigma_dev = (Sigma1_dev * self.L1) - (Sigma2_dev * self.L2)
@@ -609,11 +643,22 @@ class BEMRet(object):
                 Sigma1_dev @ L1_dev - Sigma2_dev @ L2_dev +
                 (self.k ** 2) * ((L_dev @ Deltai_dev) * nvec_outer_dev) @ L_dev
             )
+            del L1_dev, L2_dev, L_dev
+        # Sigma2_dev / Deltai_dev / nvec_outer_dev not needed beyond this
+        # point.  Sigma1_dev stays only when ``native=True`` (assigned to
+        # self.Sigma1 above).
+        if not native:
+            del Sigma1_dev
+        del Sigma2_dev, Deltai_dev, nvec_outer_dev
+        _mempool.free_all_blocks()
 
         # Final Sigma LU factor on device.
         Sc = Sigma_dev.copy()
+        del Sigma_dev
         lu_s, piv_s = _cp_lu_factor(Sc, overwrite_a=True)
         self.Sigma_lu = ('gpu', lu_s, piv_s)
+        del Sc
+        _mempool.free_all_blocks()
         return self
 
     def _excitation(self, exc):
