@@ -542,8 +542,17 @@ class DipoleRet(object):
         g = CompGreenRet(self.pt, sig.p, **self.varargin)
 
         # MATLAB: decayrate.m line 25
+        # A5 fix: materialize cupy sig members on host before invoking Green
+        # function so numpy matmul does not raise on a cupy operand.
+        for _name in ('sig1', 'sig2', 'h1', 'h2'):
+            if hasattr(sig, _name):
+                _val = getattr(sig, _name)
+                if hasattr(_val, 'get') and not isinstance(_val, np.ndarray):
+                    setattr(sig, _name, _val.get())
         field_struct = g.field(sig)
-        e = field_struct.e
+        _e_raw = field_struct.e
+        e = (_e_raw.get() if (hasattr(_e_raw, 'get')
+            and not isinstance(_e_raw, np.ndarray)) else np.asarray(_e_raw))
 
         # MATLAB: decayrate.m lines 27-29
         k0 = 2 * np.pi / sig.enei
