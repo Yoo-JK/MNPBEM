@@ -243,17 +243,21 @@ class PlaneWaveStat(object):
             expanded = sig.expand()
             return sum(self.absorption(s) for s in expanded)
 
-        # Induced dipole moment
+        # Induced dipole moment.
+        # A5 fix: materialize cupy sig on host so numpy matmul does not raise.
+        _sig_raw = sig.sig
+        sig_arr = _sig_raw.get() if (hasattr(_sig_raw, 'get')
+            and not isinstance(_sig_raw, np.ndarray)) else np.asarray(_sig_raw)
         # area: (nfaces,), pos: (nfaces, 3), sig: (nfaces,) or (nfaces, npol)
         area_pos = sig.p.area[:, np.newaxis] * sig.p.pos  # (nfaces, 3)
 
-        if sig.sig.ndim == 1:
+        if sig_arr.ndim == 1:
             # Single polarization
-            dip = area_pos.T @ sig.sig  # (3, nfaces) @ (nfaces,) = (3,)
+            dip = area_pos.T @ sig_arr  # (3, nfaces) @ (nfaces,) = (3,)
             dip = dip.reshape(3, 1)
         else:
             # Multiple polarizations
-            dip = area_pos.T @ sig.sig  # (3, nfaces) @ (nfaces, npol) = (3, npol)
+            dip = area_pos.T @ sig_arr  # (3, nfaces) @ (nfaces, npol) = (3, npol)
 
         # MATLAB: absorption.m lines 15-17
         # Dielectric function and wavenumber
@@ -293,14 +297,18 @@ class PlaneWaveStat(object):
             expanded = sig.expand()
             return sum(self.scattering(s) for s in expanded)
 
-        # Induced dipole moment
+        # Induced dipole moment.
+        # A5 fix: materialize cupy sig on host so numpy matmul does not raise.
+        _sig_raw = sig.sig
+        sig_arr = _sig_raw.get() if (hasattr(_sig_raw, 'get')
+            and not isinstance(_sig_raw, np.ndarray)) else np.asarray(_sig_raw)
         area_pos = sig.p.area[:, np.newaxis] * sig.p.pos  # (nfaces, 3)
 
-        if sig.sig.ndim == 1:
-            dip = area_pos.T @ sig.sig  # (3,)
+        if sig_arr.ndim == 1:
+            dip = area_pos.T @ sig_arr  # (3,)
             dip = dip.reshape(3, 1)
         else:
-            dip = area_pos.T @ sig.sig  # (3, npol)
+            dip = area_pos.T @ sig_arr  # (3, npol)
 
         # MATLAB: scattering.m lines 14-15
         eps_func = sig.p.eps[self.medium - 1]
