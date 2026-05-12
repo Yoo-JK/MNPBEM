@@ -457,6 +457,26 @@ class BEMRet(object):
         from cupyx.scipy.linalg import lu_factor as _cp_lu_factor
         from cupyx.scipy.linalg import lu_solve as _cp_lu_solve
 
+        # v1.7.1: per-wavelength fragmentation cleanup.  When the same
+        # BEMRet instance is reused across a wavelength loop (the dominant
+        # case for sweep runs), the cached GPU residents from the previous
+        # wavelength stay alive until Python rebinds them mid-routine.  On
+        # 12672-face Au@Ag dimers this leaves ~13 GB of stale LU/Sigma
+        # buffers on the device just as the new wavelength's 8 G/H
+        # intermediates (~20 GB) get uploaded — the resulting fragmentation
+        # would push cupy's pool past the 49 GB cap around wl 20-25 and
+        # trigger an OOM fallback to CPU.  Releasing the prior state up
+        # front (and forcing the pool to compact) keeps the high-water
+        # mark stable across the whole loop.
+        _mempool_pre = cp.get_default_memory_pool()
+        _pinned_pre = cp.get_default_pinned_memory_pool()
+        for _attr in ('G1_lu', 'G2_lu', 'Delta_lu', 'Sigma_lu',
+                      'Sigma1', 'L1', 'L2', 'nvec', 'eps1', 'eps2'):
+            if hasattr(self, _attr):
+                setattr(self, _attr, None)
+        _mempool_pre.free_all_blocks()
+        _pinned_pre.free_all_blocks()
+
         self.enei = enei
         self.nvec = self.p.nvec
         self.k = 2 * np.pi / enei
