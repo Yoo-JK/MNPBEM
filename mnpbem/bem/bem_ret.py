@@ -468,12 +468,37 @@ class BEMRet(object):
         # trigger an OOM fallback to CPU.  Releasing the prior state up
         # front (and forcing the pool to compact) keeps the high-water
         # mark stable across the whole loop.
+        #
+        # v1.7.2: v1.7.1 held the high-water mark stable for ~10 wl on
+        # 12672-face Au@Ag dimers, but the pool kept accumulating small
+        # CUDA-async free residuals (each ``del`` returns blocks to the
+        # pool only AFTER device sync, so a ``free_all_blocks`` call that
+        # races ahead of the CUDA stream returns nothing).  By wl ~11-13
+        # the device was 41 GB in use trying to add 2.6 GB → OOM.  The
+        # strengthened cleanup: (1) ``deviceSynchronize`` BEFORE every
+        # explicit ``free_all_blocks`` so the CUDA stream has finished
+        # the prior ops and the blocks are truly idle.  (2) ``gc.collect``
+        # to drop any lingering Python-level refs (tracebacks, numba
+        # scratch) that hold cupy buffers.  No ``set_limit`` cap — the
+        # legitimate wl-1 peak on 12672-face dimers is ~41 GB; capping
+        # the pool below that just shifts the OOM forward to wl 1.
         _mempool_pre = cp.get_default_memory_pool()
         _pinned_pre = cp.get_default_pinned_memory_pool()
         for _attr in ('G1_lu', 'G2_lu', 'Delta_lu', 'Sigma_lu',
                       'Sigma1', 'L1', 'L2', 'nvec', 'eps1', 'eps2'):
             if hasattr(self, _attr):
                 setattr(self, _attr, None)
+        try:
+            _pool_limit_gb = float(
+                os.environ.get('MNPBEM_GPU_POOL_LIMIT_GB', '0')
+            )
+        except (TypeError, ValueError):
+            _pool_limit_gb = 0.0
+        if _pool_limit_gb > 0:
+            _mempool_pre.set_limit(size=int(_pool_limit_gb * (1024 ** 3)))
+        import gc as _gc
+        _gc.collect()
+        cp.cuda.runtime.deviceSynchronize()
         _mempool_pre.free_all_blocks()
         _pinned_pre.free_all_blocks()
 
@@ -538,6 +563,7 @@ class BEMRet(object):
         H12 = _to_dev(self.g.eval(0, 1, 'H2', enei))
         H2_mat = H22 - H12 if H12 is not None else H22
         del H22, H12
+        cp.cuda.runtime.deviceSynchronize()
         _mempool.free_all_blocks()
 
         # Optional user-supplied refun (coverlayer.refine).  refun is a host
@@ -605,6 +631,7 @@ class BEMRet(object):
             # G1/G2 dense matrices are no longer needed (only their LU
             # factors are used downstream); release ~5 GB on 12672-face dimer.
             del G1, G2, G1_dev, G2_dev
+            cp.cuda.runtime.deviceSynchronize()
             _mempool.free_all_blocks()
         else:
             G1i_dev = _cp_lu_solve((lu1, piv1), I_dev)
@@ -622,6 +649,7 @@ class BEMRet(object):
                 self.L1 = cp.asnumpy(L1_dev_full)
                 self.L2 = cp.asnumpy(L2_dev_full)
                 del L1_dev_full, L2_dev_full
+            cp.cuda.runtime.deviceSynchronize()
             _mempool.free_all_blocks()
             L1_true_scalar = False
 
@@ -640,6 +668,7 @@ class BEMRet(object):
             Sigma2_dev = _cp_lu_solve((lu2, piv2), H2_mat.T, trans=1).T
         # H1_mat/H2_mat are no longer needed after Sigma1/Sigma2 are formed.
         del H1_mat, H2_mat
+        cp.cuda.runtime.deviceSynchronize()
         _mempool.free_all_blocks()
         # Phase 3: keep Sigma1 on device when GPU_NATIVE is enabled so the
         # downstream solve() can do Sigma1 @ a entirely on the GPU.
@@ -686,6 +715,7 @@ class BEMRet(object):
         if not native:
             del Sigma1_dev
         del Sigma2_dev, Deltai_dev, nvec_outer_dev
+        cp.cuda.runtime.deviceSynchronize()
         _mempool.free_all_blocks()
 
         # Final Sigma LU factor on device.
@@ -694,7 +724,17 @@ class BEMRet(object):
         lu_s, piv_s = _cp_lu_factor(Sc, overwrite_a=True)
         self.Sigma_lu = ('gpu', lu_s, piv_s)
         del Sc
+        # v1.7.2: the local lu/piv handles for G1/G2/Delta now alias the
+        # device buffers stored in self.{G1,G2,Delta,Sigma}_lu, but the
+        # Python frame still keeps them alive until function return.
+        # Drop them explicitly so free_all_blocks below can compact the
+        # pool down to the genuinely live set (4 LU factors + Sigma1 +
+        # L1/L2 + eps + nvec) before the next wavelength enters
+        # _init_gpu_assemble and re-runs the upfront cleanup.
+        del lu1, piv1, lu2, piv2, lu_d, piv_d, lu_s, piv_s
+        cp.cuda.runtime.deviceSynchronize()
         _mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
         return self
 
     def _excitation(self, exc):
