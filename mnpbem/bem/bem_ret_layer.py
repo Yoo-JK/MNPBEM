@@ -11,6 +11,26 @@ from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch, 
 from ..greenfun import CompGreenRetLayer, CompStruct
 
 
+# v1.7.2 memory-pool parity: when cupy is importable and MNPBEM_GPU=1 the
+# matrix-assembly routines below dispatch GEMM/LU through cupy via the
+# *_dispatch helpers in mnpbem.utils.gpu.  Without an explicit pool
+# free_all_blocks() between wavelengths, cupy's caching allocator keeps
+# every Sigma/Gamma/m_full residue alive across the sweep — on 12672-face
+# Au@Ag dimers this fragments past the 49 GB cap around wl 20-25.  Mirror
+# the BEMRet._init_gpu_assemble v1.7.2 pattern: deviceSynchronize then
+# free_all_blocks at every reasonable boundary (start-of-wl, after each
+# large GEMM/LU group, and at function exit).  Implemented inline at
+# each call site (not via a helper) so static grep can audit coverage
+# the same way it does for ``bem_ret.py`` — see the MNPBEM_GPU_POOL_LIMIT_GB
+# documentation and the BEMRet v1.7.2 commentary for the rationale.
+try:
+    import cupy as _cp_v172  # type: ignore
+    _CUPY_OK_V172 = True
+except Exception:
+    _cp_v172 = None  # type: ignore
+    _CUPY_OK_V172 = False
+
+
 # ---------------------------------------------------------------------------
 # Backend alignment helper for cupy/numpy mix safety (v1.6.5 fix)
 # ---------------------------------------------------------------------------
@@ -166,6 +186,40 @@ class BEMRetLayer(object):
         if self.enei is not None and np.isclose(self.enei, enei):
             return self
 
+        # v1.7.2 MATLAB-parity: free cupy pools before allocating the new
+        # wavelength's BEM matrices.  The previous wavelength's cached
+        # LU/Sigma residues (potentially ~10-20 GB on large-substrate dimers
+        # when *_dispatch routes through cupy) would otherwise stay pinned
+        # until Python rebinds the attribute mid-routine, causing a steady
+        # pool growth and eventual OOM 20+ wavelengths into a sweep.  Also
+        # drop the cached LU/Sigma references up front so free_all_blocks
+        # actually returns the device buffers.
+        for _attr in ('_G1_lu', '_G2p_lu', '_Gamma_lu', 'm_lu',
+                      'G1i', 'G2pi', 'G2', 'G2e',
+                      'L1', 'L2p', 'Sigma1', 'Sigma1e', 'Gamma',
+                      'm_full'):
+            if hasattr(self, _attr):
+                setattr(self, _attr, None)
+        if _CUPY_OK_V172:
+            try:
+                _mempool_pre = _cp_v172.get_default_memory_pool()
+                _pinned_pre = _cp_v172.get_default_pinned_memory_pool()
+                try:
+                    _pool_limit_gb = float(
+                        os.environ.get('MNPBEM_GPU_POOL_LIMIT_GB', '0')
+                    )
+                except (TypeError, ValueError):
+                    _pool_limit_gb = 0.0
+                if _pool_limit_gb > 0:
+                    _mempool_pre.set_limit(size=int(_pool_limit_gb * (1024 ** 3)))
+                import gc as _gc
+                _gc.collect()
+                _cp_v172.cuda.runtime.deviceSynchronize()
+                _mempool_pre.free_all_blocks()
+                _pinned_pre.free_all_blocks()
+            except Exception:
+                pass
+
         self.enei = enei
 
         # Outer surface normals
@@ -225,6 +279,16 @@ class BEMRetLayer(object):
         G1e = self._sub_mat(self._mul_eps(eps1, G11), self._mul_eps(eps2, G21))
         H1 = self._sub_mat(H11, H21)
         H1e = self._sub_mat(self._mul_eps(eps1, H11), self._mul_eps(eps2, H21))
+        # v1.7.2: release inner-surface Green intermediates as soon as the
+        # combined G1/G1e/H1/H1e are formed.  Mirrors BEMRet's per-stage
+        # del + free_all_blocks pattern.
+        del G11, G21, H11, H21
+        if _CUPY_OK_V172:
+            try:
+                _cp_v172.cuda.runtime.deviceSynchronize()
+                _cp_v172.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         # ---- Green functions for outer surfaces (structured dict) ----
         # MATLAB: G22 = obj.g{2,2}.G(enei) -> structured {ss,hh,p,sh,hs}
@@ -241,6 +305,18 @@ class BEMRetLayer(object):
         # Build G2e structured dict: G2e.ss = eps2*G22.ss - eps1*G12, etc.
         G2e = self._build_outer_mixed_eps(G22, G12, eps2, eps1)
         H2e = self._build_outer_mixed_eps(H22, H12, eps2, eps1)
+        # v1.7.2: release outer-surface Green intermediates after the
+        # structured G2/G2e/H2/H2e dicts have been built.  G22 is a dict
+        # of N^2 substrate-table evaluations (~5 buffers for an outer
+        # block); freeing it now keeps the pool from carrying double the
+        # peak through the LU factorizations below.
+        del G22, G12, H22, H12
+        if _CUPY_OK_V172:
+            try:
+                _cp_v172.cuda.runtime.deviceSynchronize()
+                _cp_v172.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         n = G1.shape[0]
 
@@ -296,6 +372,14 @@ class BEMRetLayer(object):
 
             self._G2p_lu = lu_factor_dispatch(G2['p'])
             G2pi = lu_solve_dispatch(self._G2p_lu, np.eye(G2['p'].shape[0]))
+            # v1.7.2: free pools after the two G LU factorizations + their
+            # inverses (each LU is ~N^2 complex; the eye-product N^2 too).
+            if _CUPY_OK_V172:
+                try:
+                    _cp_v172.cuda.runtime.deviceSynchronize()
+                    _cp_v172.get_default_memory_pool().free_all_blocks()
+                except Exception:
+                    pass
 
             # Sigma matrices [Eq.(21)]
             Sigma1 = matmul_dispatch(H1, G1i)
@@ -305,15 +389,33 @@ class BEMRetLayer(object):
             # Auxiliary dielectric function matrices
             L1 = matmul_dispatch(G1e, G1i)
             L2p = matmul_dispatch(G2e['p'], G2pi)
+            # v1.7.2: G1e/H1/H1e and the H/H1/G part of H2 are no longer
+            # needed after Sigma/L are formed.  Drop the local refs so the
+            # cupy pool can recycle them before the m_full GEMMs below.
+            del H1, H1e, G1e
+            if _CUPY_OK_V172:
+                try:
+                    _cp_v172.cuda.runtime.deviceSynchronize()
+                    _cp_v172.get_default_memory_pool().free_all_blocks()
+                except Exception:
+                    pass
 
             # Gamma matrix
             self._Gamma_lu = lu_factor_dispatch(Sigma1 - Sigma2p)
             Gamma = lu_solve_dispatch(self._Gamma_lu, np.eye(Sigma1.shape[0]))
+            del Sigma2p
+            if _CUPY_OK_V172:
+                try:
+                    _cp_v172.cuda.runtime.deviceSynchronize()
+                    _cp_v172.get_default_memory_pool().free_all_blocks()
+                except Exception:
+                    pass
 
             # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
             # Element-wise multiply with outer product of parallel normals
             npar_outer = npar @ npar.T  # (n, n)
             Gammapar = 1j * k * matmul_dispatch(L1 - L2p, Gamma) * npar_outer
+            del npar_outer
 
             # ---- Set up 2x2 block response matrix (MATLAB initmat.m lines 72-77) ----
             # m{1,1} = Sigma1e*G2.ss - H2e.ss - ik*(Gammapar*(L1*G2.ss - G2e.ss)
@@ -330,6 +432,10 @@ class BEMRetLayer(object):
                 - 1j * k * diff_ss * nperp[:, np.newaxis])
             m22 = (matmul_dispatch(Sigma1, G2['hh']) - H2['hh']
                 - 1j * k * diff_sh * nperp[:, np.newaxis])
+            # v1.7.2: diff_* and Gammapar are consumed by the m11..m22
+            # forms; drop them so the m_full assemble below sees max
+            # headroom.  H2/H2e remain only via their already-formed terms.
+            del diff_ss, diff_sh, diff_hh, Gammapar, H2, H2e
 
             # Assemble 2x2 block matrix (2n x 2n) and LU factorize
             m_full = np.empty((2 * n, 2 * n), dtype = complex)
@@ -337,8 +443,26 @@ class BEMRetLayer(object):
             m_full[:n, n:] = m12
             m_full[n:, :n] = m21
             m_full[n:, n:] = m22
+            del m11, m12, m21, m22
+            if _CUPY_OK_V172:
+                try:
+                    _cp_v172.cuda.runtime.deviceSynchronize()
+                    _cp_v172.get_default_memory_pool().free_all_blocks()
+                except Exception:
+                    pass
+
             self.m_full = None
             self.m_lu = lu_factor_dispatch(m_full)
+            # v1.7.2: the dense m_full (2n x 2n) is now captured by the LU
+            # factor; drop the local handle so its 4*N^2 complex buffer
+            # returns to the pool before we exit init().
+            del m_full
+            if _CUPY_OK_V172:
+                try:
+                    _cp_v172.cuda.runtime.deviceSynchronize()
+                    _cp_v172.get_default_memory_pool().free_all_blocks()
+                except Exception:
+                    pass
 
         # Store all needed matrices
         self.G1i = G1i
@@ -350,6 +474,18 @@ class BEMRetLayer(object):
         self.Sigma1 = Sigma1
         self.Sigma1e = Sigma1e
         self.Gamma = Gamma
+
+        # v1.7.2 final cleanup at wavelength-end: ensure every transient
+        # LU/Sigma/Gamma allocation has been compacted out of the cupy
+        # pool before the BEM solver returns to the caller.  Mirrors
+        # BEMRet._init_gpu_assemble's closing free_all_blocks pair.
+        if _CUPY_OK_V172:
+            try:
+                _cp_v172.cuda.runtime.deviceSynchronize()
+                _cp_v172.get_default_memory_pool().free_all_blocks()
+                _cp_v172.get_default_pinned_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         return self
 
@@ -637,6 +773,18 @@ class BEMRetLayer(object):
             h1 = to_host(h1)
         if is_cupy_array(h2):
             h2 = to_host(h2)
+
+        # v1.7.2: free any cupy LU-solve scratch buffers allocated during
+        # the per-polarization _solve_single calls (each polarization
+        # allocates a 2n RHS + GEMM scratch).  Without this the solve-side
+        # pool can balloon by N^2 per wavelength on multi-polarization
+        # sweeps even when init() is cached.
+        if _CUPY_OK_V172:
+            try:
+                _cp_v172.cuda.runtime.deviceSynchronize()
+                _cp_v172.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         sig = CompStruct(self.p, enei, sig1 = sig1, sig2 = sig2,
             h1 = h1, h2 = h2)

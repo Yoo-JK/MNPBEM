@@ -11,6 +11,49 @@ from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
 from ..utils.matlab_compat import msqrt
 from .bem_iter import BEMIter
 
+# v1.7.2 GPU memory-pool cleanup: mirror BEMRet's wavelength-end immediate free
+# pattern so cupy returns blocks to the driver at every wavelength rather than
+# accumulating across the sweep (MATLAB-parity).  When cupy is not importable
+# the helper becomes a no-op so the CPU path stays untouched.
+try:
+    import cupy as _cp_stat  # type: ignore
+    _CUPY_OK_STAT = True
+except Exception:
+    _cp_stat = None  # type: ignore
+    _CUPY_OK_STAT = False
+
+
+def _gpu_pool_cleanup_stat(apply_limit: bool = False) -> None:
+    """Synchronise CUDA stream then drain cupy default + pinned memory pools.
+
+    Mirrors the v1.7.2 BEMRet cleanup (bem_ret.py:485-503, 734-737): the
+    deviceSynchronize() before free_all_blocks() is load-bearing — without
+    it, blocks that are still in flight on the CUDA stream are NOT actually
+    idle yet and the pool refuses to return them to the driver, so the
+    high-water mark keeps creeping up across wavelengths.
+
+    Honours MNPBEM_GPU_POOL_LIMIT_GB (legitimate peaks past this cap will
+    OOM; default 0 = uncapped).
+    """
+    if not _CUPY_OK_STAT:
+        return
+    try:
+        mempool = _cp_stat.get_default_memory_pool()
+        pinned = _cp_stat.get_default_pinned_memory_pool()
+        if apply_limit:
+            try:
+                pool_limit_gb = float(os.environ.get(
+                        'MNPBEM_GPU_POOL_LIMIT_GB', '0'))
+            except (TypeError, ValueError):
+                pool_limit_gb = 0.0
+            if pool_limit_gb > 0:
+                mempool.set_limit(size = int(pool_limit_gb * (1024 ** 3)))
+        _cp_stat.cuda.runtime.deviceSynchronize()
+        mempool.free_all_blocks()
+        pinned.free_all_blocks()
+    except Exception:
+        pass
+
 
 class BEMStatIter(BEMIter):
 
@@ -117,6 +160,27 @@ class BEMStatIter(BEMIter):
         if self.enei is not None and self.enei == enei:
             return self
 
+        # v1.7.2 wavelength-entry GPU cleanup: drain any stale residents from
+        # the previous wavelength BEFORE we re-factor (-Lambda - F) so the
+        # new dense LU sees the maximum amount of free device memory.
+        # MATLAB-parity (MATLAB releases its workspace at the end of every
+        # wavelength loop iteration; cupy needs an explicit drain).
+        #
+        # Pattern mirrors bem_ret.py:485-503: deviceSynchronize() then both
+        # default + pinned pool free_all_blocks().  The full cleanup (sync +
+        # both pools + optional limit) is the helper; the per-step inline
+        # drains below are cheaper single-pool free_all_blocks() calls used
+        # after individual GEMM / LU stages where the prior op has already
+        # had its result captured.
+        if self._mat_lu is not None:
+            self._mat_lu = None
+        _gpu_pool_cleanup_stat(apply_limit = True)
+        # Belt-and-braces inline drain in case the helper short-circuited
+        # (cupy not importable on this build).  Guarded so CPU path is
+        # untouched.
+        if _CUPY_OK_STAT:
+            _cp_stat.get_default_memory_pool().free_all_blocks()
+
         self.enei = enei
 
         # Dielectric functions
@@ -136,6 +200,12 @@ class BEMStatIter(BEMIter):
             else:
                 F_dense = F
             n = F_dense.shape[0]
+            # v1.7.2: densification of F (when F is an HMatrix) can leave
+            # the per-block GPU staging buffers in the pool.  Drain so the
+            # subsequent Lambda allocation does not push the pool past the
+            # 49 GB cap on a 49 GB A6000.
+            if _CUPY_OK_STAT:
+                _cp_stat.get_default_memory_pool().free_all_blocks()
 
             # Build diagonal Lambda matrix from lambda values
             # MATLAB: spdiag(obj.lambda) handles both scalar and array
@@ -154,6 +224,17 @@ class BEMStatIter(BEMIter):
 
             else:
                 raise ValueError('[error] preconditioner not known: <{}>'.format(self.precond))
+
+            # v1.7.2: ``F_dense`` / ``Lambda`` / their sum are transient
+            # buffers consumed by ``lu_factor_dispatch`` (overwrite_a paths)
+            # but the Python frame still references them.  Drop the names
+            # explicitly so cupy can reclaim before the next wavelength's
+            # LU runs.
+            del F_dense, Lambda
+            if _CUPY_OK_STAT:
+                _cp_stat.cuda.runtime.deviceSynchronize()
+                _cp_stat.get_default_memory_pool().free_all_blocks()
+            _gpu_pool_cleanup_stat()
 
         # Schur (v1.5.0): detect cover-layer partition and prepare the
         # SchurIterOperator that wraps _afun. Done lazily here so that
@@ -225,6 +306,15 @@ class BEMStatIter(BEMIter):
         b = exc.phip.ravel().astype(complex)
         siz = exc.phip.shape
 
+        # v1.7.2: drain the cupy pool right before GMRES enters its Krylov
+        # build-up.  The init pipeline above leaves up to 2 N^2 * 16 B of
+        # transient asarray buffers in the pool; releasing them now keeps
+        # peak usage during the iter loop bounded to LU + Krylov subspace.
+        if _CUPY_OK_STAT:
+            _cp_stat.cuda.runtime.deviceSynchronize()
+            _cp_stat.get_default_memory_pool().free_all_blocks()
+        _gpu_pool_cleanup_stat()
+
         if self._schur_active:
             # Schur path: GMRES is run on the reduced (core-only) operator.
             # The preconditioner is bypassed because _mfun was built for the
@@ -235,6 +325,14 @@ class BEMStatIter(BEMIter):
             b_eff = op.reduce_rhs(b)
             x_core, _ = self._iter_solve(None, b_eff, op._matvec, None)
             x = op.recover_full(x_core, b)
+            # v1.7.2: drop the Schur-reduced Krylov subspace handle and
+            # the matvec closure references before the next wavelength
+            # entry drains the pool.
+            del x_core
+            if _CUPY_OK_STAT:
+                _cp_stat.cuda.runtime.deviceSynchronize()
+                _cp_stat.get_default_memory_pool().free_all_blocks()
+            _gpu_pool_cleanup_stat()
         else:
             # Function for matrix multiplication
             fa = self._afun
@@ -249,9 +347,27 @@ class BEMStatIter(BEMIter):
 
             # Iterative solution
             x, self_updated = self._iter_solve(None, b, fa, fm)
+            # v1.7.2: GMRES holds up to ``restart`` Krylov vectors of length
+            # n in its scipy internal buffer; ``fa`` / ``fm`` close over
+            # ``self.F`` and ``self._mat_lu`` which may be cupy resident.
+            # Once x is computed the matvec closures are dead refs;
+            # drop them so the pool can compact before the next solve.
+            del fa, fm
+            if _CUPY_OK_STAT:
+                _cp_stat.cuda.runtime.deviceSynchronize()
+                _cp_stat.get_default_memory_pool().free_all_blocks()
+            _gpu_pool_cleanup_stat()
 
         # Save everything in single structure
         sig = CompStruct(self.p, exc.enei, sig = x.reshape(siz))
+
+        # v1.7.2 solve-exit cleanup: free any residual transient buffers
+        # (RHS reshape staging, matvec scratch) before returning so the
+        # caller's wavelength loop sees a fully drained pool when it
+        # advances to the next enei.
+        if _CUPY_OK_STAT:
+            _cp_stat.get_default_memory_pool().free_all_blocks()
+        _gpu_pool_cleanup_stat()
 
         return sig, self
 
@@ -274,6 +390,11 @@ class BEMStatIter(BEMIter):
             cached_enei = self.enei
             self.enei = None
             self._init_matrices(cached_enei)
+            # v1.7.2: the densify-and-LU pipeline above can spike GPU
+            # usage by ~3 N^2 transient; drain so GMRES sees max headroom.
+            if _CUPY_OK_STAT:
+                _cp_stat.cuda.runtime.deviceSynchronize()
+                _cp_stat.get_default_memory_pool().free_all_blocks()
 
         self._hlu_object = (n_vec, self.enei)
         return self._mfun
@@ -316,6 +437,10 @@ class BEMStatIter(BEMIter):
             e = -nvec * H_sig[:, np.newaxis]
         else:
             e = -nvec[:, :, np.newaxis] * H_sig[:, np.newaxis, :]
+        # v1.7.2: drain after the field-side matvec to keep the pool from
+        # accumulating across repeated field() calls in a wavelength loop.
+        if _CUPY_OK_STAT:
+            _cp_stat.get_default_memory_pool().free_all_blocks()
 
         # Tangential directions via interpolation
         G_sig = self._g.G @ sig.sig.reshape(n, -1)
@@ -338,6 +463,11 @@ class BEMStatIter(BEMIter):
                    tvec2[:, :, np.newaxis] * phi2[:, np.newaxis, :]
 
         e = e - phip
+        # v1.7.2: drain residual transient buffers from the interp/deriv
+        # pipeline before returning so a follow-up potential()/field() at
+        # a different wavelength does not see leftover blocks.
+        if _CUPY_OK_STAT:
+            _cp_stat.get_default_memory_pool().free_all_blocks()
 
         return CompStruct(self.p, sig.enei, e = e)
 
@@ -346,7 +476,13 @@ class BEMStatIter(BEMIter):
             inout: int = 2) -> CompStruct:
 
         # MATLAB: bemstatiter/potential.m
-        return self._g.potential(sig, inout)
+        pot = self._g.potential(sig, inout)
+        # v1.7.2: drain after the Green-function potential evaluation so
+        # repeated potential() calls in a wavelength loop don't leak
+        # transient asarray buffers into the cupy pool.
+        if _CUPY_OK_STAT:
+            _cp_stat.get_default_memory_pool().free_all_blocks()
+        return pot
 
     def clear(self) -> 'BEMStatIter':
 
@@ -361,12 +497,28 @@ class BEMStatIter(BEMIter):
         self._schur_active = False
         self._schur_op = None
         self._hlu_object = None
+        # v1.7.2: explicit clear() means the user wants the device drained.
+        # Without this the LU buffer just released above stays in the cupy
+        # pool until the next solve triggers a free_all_blocks.
+        if _CUPY_OK_STAT:
+            _cp_stat.cuda.runtime.deviceSynchronize()
+            _cp_stat.get_default_memory_pool().free_all_blocks()
+            _cp_stat.get_default_pinned_memory_pool().free_all_blocks()
+        _gpu_pool_cleanup_stat()
         return self
 
     def __call__(self,
             enei: float) -> 'BEMStatIter':
 
-        return self._init_matrices(enei)
+        # v1.7.2: explicit __call__(enei) is a user-driven wavelength step.
+        # ``_init_matrices`` already drains on cache miss; we make the
+        # drain unconditional here so consecutive __call__(enei) /
+        # __call__(enei') sequences keep the pool tight even when only
+        # the H-matrix evaluator side allocates transient buffers.
+        out = self._init_matrices(enei)
+        if _CUPY_OK_STAT:
+            _cp_stat.get_default_memory_pool().free_all_blocks()
+        return out
 
     def __repr__(self) -> str:
         n = self.p.n if hasattr(self.p, 'n') else self.p.nfaces if hasattr(self.p, 'nfaces') else '?'
