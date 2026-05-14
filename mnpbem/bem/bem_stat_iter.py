@@ -7,7 +7,7 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator
 
 from ..greenfun import CompStruct
-from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch
+from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, to_host, is_cupy_array
 from ..utils.matlab_compat import msqrt
 from .bem_iter import BEMIter
 
@@ -358,8 +358,14 @@ class BEMStatIter(BEMIter):
                 _cp_stat.get_default_memory_pool().free_all_blocks()
             _gpu_pool_cleanup_stat()
 
+        # Host-materialize cupy result so the returned sig is always
+        # CPU-resident (mirrors BEMStat.solve defensive guard).
+        sig_arr = x.reshape(siz)
+        if is_cupy_array(sig_arr):
+            sig_arr = to_host(sig_arr)
+
         # Save everything in single structure
-        sig = CompStruct(self.p, exc.enei, sig = x.reshape(siz))
+        sig = CompStruct(self.p, exc.enei, sig = sig_arr)
 
         # v1.7.2 solve-exit cleanup: free any residual transient buffers
         # (RHS reshape staging, matvec scratch) before returning so the

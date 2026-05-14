@@ -1072,6 +1072,18 @@ class BEMRetLayerIter(BEMIter):
             h1 = h1.reshape(siz2)
             h2 = h2.reshape(siz2)
 
+        # Host-materialize cupy results so the returned sig is always
+        # CPU-resident. Mirrors BEMRetLayer.solve's defensive guard and
+        # lets downstream code treat sig fields as numpy uniformly.
+        if is_cupy_array(sig1):
+            sig1 = to_host(sig1)
+        if is_cupy_array(sig2):
+            sig2 = to_host(sig2)
+        if is_cupy_array(h1):
+            h1 = to_host(h1)
+        if is_cupy_array(h2):
+            h2 = to_host(h2)
+
         sig = CompStruct(self.p, exc.enei,
             sig1 = sig1, sig2 = sig2, h1 = h1, h2 = h2)
 
