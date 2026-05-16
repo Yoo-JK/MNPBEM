@@ -9,6 +9,7 @@ from scipy.linalg import lu_factor, lu_solve
 from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch, to_host, is_cupy_array
 
 from ..greenfun import CompGreenRetLayer, CompStruct
+from .bem_ret import _vram_share_lu_kwargs
 
 
 # v1.7.2 memory-pool parity: when cupy is importable and MNPBEM_GPU=1 the
@@ -367,10 +368,10 @@ class BEMRetLayer(object):
         else:
             # ---- Auxiliary matrices (MATLAB initmat.m lines 51-68) ----
             # Inverse of G1 and of parallel component G2.p
-            self._G1_lu = lu_factor_dispatch(G1)
+            self._G1_lu = lu_factor_dispatch(G1, **_vram_share_lu_kwargs())
             G1i = lu_solve_dispatch(self._G1_lu, np.eye(G1.shape[0]))
 
-            self._G2p_lu = lu_factor_dispatch(G2['p'])
+            self._G2p_lu = lu_factor_dispatch(G2['p'], **_vram_share_lu_kwargs())
             G2pi = lu_solve_dispatch(self._G2p_lu, np.eye(G2['p'].shape[0]))
             # v1.7.2: free pools after the two G LU factorizations + their
             # inverses (each LU is ~N^2 complex; the eye-product N^2 too).
@@ -401,7 +402,7 @@ class BEMRetLayer(object):
                     pass
 
             # Gamma matrix
-            self._Gamma_lu = lu_factor_dispatch(Sigma1 - Sigma2p)
+            self._Gamma_lu = lu_factor_dispatch(Sigma1 - Sigma2p, **_vram_share_lu_kwargs())
             Gamma = lu_solve_dispatch(self._Gamma_lu, np.eye(Sigma1.shape[0]))
             del Sigma2p
             if _CUPY_OK_V172:
@@ -432,10 +433,30 @@ class BEMRetLayer(object):
                 - 1j * k * diff_ss * nperp[:, np.newaxis])
             m22 = (matmul_dispatch(Sigma1, G2['hh']) - H2['hh']
                 - 1j * k * diff_sh * nperp[:, np.newaxis])
+            # v1.7.3 (VRAM-share path): matmul_dispatch may return cupy
+            # arrays under MNPBEM_GPU=1.  Materialise the m11..m22 blocks
+            # on the host before assembling m_full so the 4*N^2 buffer
+            # lives in pinned host memory (the cuSolverMg LU input is
+            # uploaded internally per-tile).  This also lets the per-block
+            # device buffers be released before the LU factor below.
+            if is_cupy_array(m11):
+                m11 = to_host(m11)
+            if is_cupy_array(m12):
+                m12 = to_host(m12)
+            if is_cupy_array(m21):
+                m21 = to_host(m21)
+            if is_cupy_array(m22):
+                m22 = to_host(m22)
             # v1.7.2: diff_* and Gammapar are consumed by the m11..m22
             # forms; drop them so the m_full assemble below sees max
             # headroom.  H2/H2e remain only via their already-formed terms.
             del diff_ss, diff_sh, diff_hh, Gammapar, H2, H2e
+            if _CUPY_OK_V172:
+                try:
+                    _cp_v172.cuda.runtime.deviceSynchronize()
+                    _cp_v172.get_default_memory_pool().free_all_blocks()
+                except Exception:
+                    pass
 
             # Assemble 2x2 block matrix (2n x 2n) and LU factorize
             m_full = np.empty((2 * n, 2 * n), dtype = complex)
@@ -452,7 +473,7 @@ class BEMRetLayer(object):
                     pass
 
             self.m_full = None
-            self.m_lu = lu_factor_dispatch(m_full)
+            self.m_lu = lu_factor_dispatch(m_full, **_vram_share_lu_kwargs())
             # v1.7.2: the dense m_full (2n x 2n) is now captured by the LU
             # factor; drop the local handle so its 4*N^2 complex buffer
             # returns to the pool before we exit init().
@@ -464,7 +485,36 @@ class BEMRetLayer(object):
                 except Exception:
                     pass
 
-        # Store all needed matrices
+        # Store all needed matrices.  v1.7.3 (VRAM-share path): when the
+        # m_full LU factor is owned by cuSolverMg (multi-GPU), keeping
+        # G1i/G2pi/L1/L2p/Sigma1/Sigma1e/Gamma on device merely doubles
+        # the auxiliary-matrix footprint without benefit — solve()/
+        # _solve_single uses matmul_dispatch which uploads on demand.
+        # Materialise on host so the device pool can be compacted before
+        # the per-wavelength solve loop.
+        if is_cupy_array(G1i):
+            G1i = to_host(G1i)
+        if is_cupy_array(G2pi):
+            G2pi = to_host(G2pi)
+        if is_cupy_array(L1):
+            L1 = to_host(L1)
+        if is_cupy_array(L2p):
+            L2p = to_host(L2p)
+        if is_cupy_array(Sigma1):
+            Sigma1 = to_host(Sigma1)
+        if is_cupy_array(Sigma1e):
+            Sigma1e = to_host(Sigma1e)
+        if is_cupy_array(Gamma):
+            Gamma = to_host(Gamma)
+        if isinstance(G2, dict):
+            for _k in list(G2.keys()):
+                if is_cupy_array(G2[_k]):
+                    G2[_k] = to_host(G2[_k])
+        if isinstance(G2e, dict):
+            for _k in list(G2e.keys()):
+                if is_cupy_array(G2e[_k]):
+                    G2e[_k] = to_host(G2e[_k])
+
         self.G1i = G1i
         self.G2pi = G2pi
         self.G2 = G2

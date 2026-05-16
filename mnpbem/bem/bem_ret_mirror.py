@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import Optional, List, Tuple, Any, Dict, Union
 
@@ -5,6 +6,26 @@ from ..greenfun import CompStruct
 from ..greenfun.compgreen_ret_mirror import CompGreenRetMirror
 from ..geometry.comparticle_mirror import CompStructMirror
 from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, to_host, is_cupy_array
+from .bem_ret import _vram_share_lu_kwargs
+
+# v1.7.3: cupy pool clean-up helpers mirroring bem_ret_layer.py
+try:
+    import cupy as _cp_v173  # type: ignore
+    _CUPY_OK_V173 = True
+except Exception:
+    _cp_v173 = None  # type: ignore
+    _CUPY_OK_V173 = False
+
+
+def _free_cupy_pool() -> None:
+    """deviceSynchronize + free_all_blocks (no-op when cupy unavailable)."""
+    if not _CUPY_OK_V173:
+        return
+    try:
+        _cp_v173.cuda.runtime.deviceSynchronize()
+        _cp_v173.get_default_memory_pool().free_all_blocks()
+    except Exception:
+        pass
 
 
 def _mirror_eval_host(g: Any,
@@ -110,6 +131,35 @@ class BEMRetMirror(object):
         if self.enei is not None and np.isclose(self.enei, enei):
             return self
 
+        # v1.7.3 MATLAB-parity: drop previous wavelength's cached LU /
+        # Sigma residues + free cupy pool before allocating the new
+        # wavelength's BEM matrices.  Mirrors the BEMRet/BEMRetLayer
+        # per-wavelength fragmentation cleanup so the symmetry loop's
+        # repeated N^2 inverses do not balloon the pool across a sweep.
+        for _attr in ('_G1_lu', '_G2_lu', '_L1', '_L2',
+                      '_Sigma1', '_Sigma2', '_Delta_lu', '_Sigma_lu'):
+            if hasattr(self, _attr):
+                setattr(self, _attr, None)
+        if _CUPY_OK_V173:
+            try:
+                _mempool_pre = _cp_v173.get_default_memory_pool()
+                _pinned_pre = _cp_v173.get_default_pinned_memory_pool()
+                try:
+                    _pool_limit_gb = float(
+                        os.environ.get('MNPBEM_GPU_POOL_LIMIT_GB', '0')
+                    )
+                except (TypeError, ValueError):
+                    _pool_limit_gb = 0.0
+                if _pool_limit_gb > 0:
+                    _mempool_pre.set_limit(size=int(_pool_limit_gb * (1024 ** 3)))
+                import gc as _gc
+                _gc.collect()
+                _cp_v173.cuda.runtime.deviceSynchronize()
+                _mempool_pre.free_all_blocks()
+                _pinned_pre.free_all_blocks()
+            except Exception:
+                pass
+
         self.enei = enei
         self._nvec = self.p.nvec
         self.k = 2 * np.pi / enei
@@ -157,8 +207,8 @@ class BEMRetMirror(object):
         # MATLAB: if all(obj.g.con{1,2} == 0)
 
         for i in range(n_sym):
-            g1_lu = lu_factor_dispatch(G1[i])
-            g2_lu = lu_factor_dispatch(G2[i])
+            g1_lu = lu_factor_dispatch(G1[i], **_vram_share_lu_kwargs())
+            g2_lu = lu_factor_dispatch(G2[i], **_vram_share_lu_kwargs())
             g1i = lu_solve_dispatch(g1_lu, np.eye(G1[i].shape[0]))
             g2i = lu_solve_dispatch(g2_lu, np.eye(G2[i].shape[0]))
             self._G1_lu.append(g1_lu)
@@ -173,13 +223,38 @@ class BEMRetMirror(object):
 
             sigma1 = H1[i] @ g1i
             sigma2 = H2[i] @ g2i
+            # v1.7.3: per-symmetry intermediates (g1i, g2i are full N^2
+            # complex inverses) consume ~16 GB for 12672-face dimers and
+            # are no longer needed after Sigma is formed.  Drop them so
+            # the device pool can recycle before the next symmetry's
+            # LU factor + inverse round.
+            if is_cupy_array(sigma1):
+                sigma1 = to_host(sigma1)
+            if is_cupy_array(sigma2):
+                sigma2 = to_host(sigma2)
             self._Sigma1.append(sigma1)
             self._Sigma2.append(sigma2)
-            self._Delta_lu.append(lu_factor_dispatch(sigma1 - sigma2))
+            self._Delta_lu.append(lu_factor_dispatch(sigma1 - sigma2, **_vram_share_lu_kwargs()))
+            del g1i, g2i, sigma1, sigma2
+            _free_cupy_pool()
 
         # Sigma_lu cache: indexed by (x, y, z) symmetry indices
         n_tab = self.p.symtable.shape[0]
         self._Sigma_lu = {}
+
+        # v1.7.3: final cleanup at wavelength-end — ensure every transient
+        # G/H/g1i/g2i buffer has been compacted out of the cupy pool
+        # before returning to the caller (mirrors BEMRetLayer pattern).
+        del G1_list, G1_cross, G2_list, G2_cross
+        del H1_list, H1_cross, H2_list, H2_cross
+        del G1, G2, H1, H2
+        if _CUPY_OK_V173:
+            try:
+                _cp_v173.cuda.runtime.deviceSynchronize()
+                _cp_v173.get_default_memory_pool().free_all_blocks()
+                _cp_v173.get_default_pinned_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
         return self
 
@@ -230,8 +305,10 @@ class BEMRetMirror(object):
                 term = k ** 2 * ((L[dim] @ Deltai_idx) * outer_ii(dim))
                 Sigma = Sigma + term @ (self._L1[z] - self._L2[z])
 
-        sigma_lu = lu_factor_dispatch(Sigma)
+        sigma_lu = lu_factor_dispatch(Sigma, **_vram_share_lu_kwargs())
         self._Sigma_lu[key] = sigma_lu
+        del Sigma
+        _free_cupy_pool()
         return sigma_lu
 
     def _excitation(self, exc: Any) -> Tuple:
@@ -369,6 +446,9 @@ class BEMRetMirror(object):
                              h1 = h1_val, h2 = h2_val)
             val.symval = exc_i.symval
             sig.val.append(val)
+
+        # v1.7.3: free per-polarization LU scratch (cupy 2n RHS + GEMMs).
+        _free_cupy_pool()
 
         return sig, self
 

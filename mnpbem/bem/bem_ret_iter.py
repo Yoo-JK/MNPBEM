@@ -63,6 +63,28 @@ def _gpu_pool_cleanup_iter(apply_limit: bool = False) -> None:
         pass
 
 
+def _vram_share_lu_kwargs() -> dict:
+    """Read MNPBEM_VRAM_SHARE_* env vars and return kwargs for lu_factor_dispatch.
+
+    Mirrors ``bem_ret.py``'s helper of the same name (line 43-54).  Returns
+    an empty dict when VRAM-share is disabled (``MNPBEM_VRAM_SHARE!=1`` or
+    ``MNPBEM_VRAM_SHARE_GPUS<=1``) so the dispatch call is bit-identical to
+    the single-GPU path.  When VRAM-share is enabled the returned kwargs
+    route ``lu_factor_dispatch`` through ``factor_multi_gpu`` (cuSolverMg by
+    default) and the matrix is partitioned across ``n_gpus`` devices.
+    Required for the 15072-face Au@Ag dimer sweep where the dense LU
+    (~3.6 GB complex128) plus the cached G/H/precond state exceeds the
+    49 GB single-A6000 cap.
+    """
+    if os.environ.get('MNPBEM_VRAM_SHARE', '0') != '1':
+        return {}
+    n_gpus = int(os.environ.get('MNPBEM_VRAM_SHARE_GPUS', '1'))
+    if n_gpus <= 1:
+        return {}
+    backend = os.environ.get('MNPBEM_VRAM_SHARE_BACKEND', 'cusolvermg')
+    return {'n_gpus': n_gpus, 'backend': backend}
+
+
 class _GpuPrecondOOM(Exception):
     pass
 
@@ -153,9 +175,36 @@ def _build_precond_gpu_serial(
         eps1_vec = np.diag(eps1_diag) if eps1_diag.ndim == 2 else eps1_diag
         eps2_vec = np.diag(eps2_diag) if eps2_diag.ndim == 2 else eps2_diag
 
+    # v1.7.3 (Phase 2 VRAM-share): when MNPBEM_VRAM_SHARE=1 +
+    # MNPBEM_VRAM_SHARE_GPUS>=2 is set, route the four precond LU factors
+    # through ``lu_factor_dispatch`` so cuSolverMg partitions each N x N
+    # complex128 factor across the worker's GPUs.  Without this the
+    # 15072-face Au@Ag dimer (~3.6 GB / factor + cached G/H/precond
+    # state) overshoots the 49 GB single-A6000 cap.  When the env var is
+    # off, the legacy single-GPU ``cupyx.scipy.linalg.lu_factor`` path
+    # below is taken (bit-identical to v1.6.3 behaviour).
+    _vram_kwargs = _vram_share_lu_kwargs()
+
     def _gpu_lu(A_host):
-        # Factor A on GPU and return ('gpu', lu, piv).  A_host is left
-        # untouched (we copy on the device).
+        # Factor A on GPU and return ('gpu'|'mgpu', lu, piv).  A_host is
+        # left untouched.  VRAM-share path returns ``('mgpu', handle, None)``
+        # which ``lu_solve_dispatch`` already handles transparently
+        # (gpu.py:200-209).
+        if _vram_kwargs:
+            try:
+                return lu_factor_dispatch(A_host, **_vram_kwargs)
+            except _cp_local.cuda.memory.OutOfMemoryError as exc:
+                pool.free_all_blocks()
+                raise _GpuPrecondOOM('gpu_lu (mgpu): {}'.format(exc))
+            except Exception as exc:
+                # cuSolverMg / driver failures fall through to single-GPU
+                # path so the precond still builds.
+                pool.free_all_blocks()
+                # Surface as _GpuPrecondOOM to let the caller fall back to
+                # the host scipy LU path.  Bare ``Exception`` is intentional:
+                # NotImplementedError, RuntimeError, libcusolverMg-load
+                # failures, ValueError on shape mismatch all funnel here.
+                raise _GpuPrecondOOM('gpu_lu (mgpu): {}'.format(exc))
         try:
             A_dev = _cp_local.asarray(A_host)
             lu_dev, piv_dev = _cp_lu_factor(A_dev, overwrite_a = True)

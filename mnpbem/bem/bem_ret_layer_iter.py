@@ -29,6 +29,29 @@ except Exception:
     _CUPY_OK_LAYER = False
 
 
+def _vram_share_lu_kwargs() -> dict:
+    """Read MNPBEM_VRAM_SHARE_* env vars and return kwargs for lu_factor_dispatch.
+
+    Mirrors ``bem_ret.py``'s helper of the same name (line 43-54).  Returns
+    an empty dict when VRAM-share is disabled (``MNPBEM_VRAM_SHARE!=1`` or
+    ``MNPBEM_VRAM_SHARE_GPUS<=1``) so the dispatch call is bit-identical to
+    the single-GPU path.  When VRAM-share is enabled the returned kwargs
+    route each of the four precond LU factors (G1_lu, G2p_lu, Gamma_lu,
+    m11_lu, schur_lu) through cuSolverMg so the dense LU is partitioned
+    across the worker's GPUs.  Required for the 15072-face Au@Ag dimer +
+    substrate sweep where the layered preconditioner state alone
+    (4 N x N complex128 LU factors + the block-2x2 Schur) exceeds the
+    49 GB single-A6000 cap.
+    """
+    if os.environ.get('MNPBEM_VRAM_SHARE', '0') != '1':
+        return {}
+    n_gpus = int(os.environ.get('MNPBEM_VRAM_SHARE_GPUS', '1'))
+    if n_gpus <= 1:
+        return {}
+    backend = os.environ.get('MNPBEM_VRAM_SHARE_BACKEND', 'cusolvermg')
+    return {'n_gpus': n_gpus, 'backend': backend}
+
+
 def _gpu_pool_cleanup_layer(apply_limit: bool = False) -> None:
     """Synchronise CUDA stream then drain cupy default + pinned memory pools.
 
@@ -372,10 +395,15 @@ class BEMRetLayerIter(BEMIter):
         H2_p = H2.p if hasattr(H2, 'p') else (H2['p'] if isinstance(H2, dict) else H2)
 
         # LU factorizations of G1 and parallel component
-        G1_lu = lu_factor_dispatch(G1)
+        # v1.7.3 (Phase 2 VRAM-share): forward MNPBEM_VRAM_SHARE_* env vars
+        # so each precond LU is partitioned across the worker's GPUs via
+        # cuSolverMg when MNPBEM_VRAM_SHARE=1 + MNPBEM_VRAM_SHARE_GPUS>=2.
+        # Bit-identical to the single-GPU path when the env vars are off.
+        _vram_kwargs = _vram_share_lu_kwargs()
+        G1_lu = lu_factor_dispatch(G1, **_vram_kwargs)
         if _CUPY_OK_LAYER:
             _cp_layer.get_default_memory_pool().free_all_blocks()
-        G2p_lu = lu_factor_dispatch(G2_p)
+        G2p_lu = lu_factor_dispatch(G2_p, **_vram_kwargs)
         if _CUPY_OK_LAYER:
             _cp_layer.get_default_memory_pool().free_all_blocks()
         G1i = lu_solve_dispatch(G1_lu, np.eye(G1.shape[0]))
@@ -401,7 +429,7 @@ class BEMRetLayerIter(BEMIter):
         nperp_diag = np.diag(nvec[:, 3 - 1])  # nvec(:,3)
 
         # Gamma matrix
-        Gamma_lu = lu_factor_dispatch(Sigma1 - Sigma2p)
+        Gamma_lu = lu_factor_dispatch(Sigma1 - Sigma2p, **_vram_kwargs)
         if _CUPY_OK_LAYER:
             _cp_layer.get_default_memory_pool().free_all_blocks()
         Gamma = lu_solve_dispatch(Gamma_lu, np.eye(Sigma1.shape[0]))
@@ -446,7 +474,7 @@ class BEMRetLayerIter(BEMIter):
 
         # LU decomposition as block inverse
         # L11 * U11 = M11
-        m11_lu = lu_factor_dispatch(m11)
+        m11_lu = lu_factor_dispatch(m11, **_vram_kwargs)
         if _CUPY_OK_LAYER:
             _cp_layer.get_default_memory_pool().free_all_blocks()
         im11 = lu_solve_dispatch(m11_lu, np.eye(m11.shape[0]))
@@ -458,7 +486,7 @@ class BEMRetLayerIter(BEMIter):
             _cp_layer.get_default_memory_pool().free_all_blocks()
         # L22 * U22 = M22 - L21 * U12
         schur = m22 - matmul_dispatch(im21, m12)
-        schur_lu = lu_factor_dispatch(schur)
+        schur_lu = lu_factor_dispatch(schur, **_vram_kwargs)
         if _CUPY_OK_LAYER:
             _cp_layer.get_default_memory_pool().free_all_blocks()
         im22 = lu_solve_dispatch(schur_lu, np.eye(schur.shape[0]))

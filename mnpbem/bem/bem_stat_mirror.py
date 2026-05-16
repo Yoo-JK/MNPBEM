@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import Optional, List, Tuple, Any, Union
 
@@ -5,6 +6,53 @@ from ..greenfun import CompStruct
 from ..greenfun.compgreen_stat_mirror import CompGreenStatMirror
 from ..geometry.comparticle_mirror import CompStructMirror
 from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, to_host, is_cupy_array
+
+
+# v1.7.3 Phase 2: BEMStatMirror dense LU loop now honours the same
+# MNPBEM_VRAM_SHARE_* env vars + cupy pool drain pattern as BEMStat /
+# BEMStatLayer.  Mirror solvers tend to allocate ``n_sym`` LU factors per
+# wavelength (one per symmetry block), so per-block drains keep the pool
+# from accumulating across the loop.
+try:
+    import cupy as _cp_mirror  # type: ignore
+    _CUPY_OK_MIRROR = True
+except Exception:
+    _cp_mirror = None  # type: ignore
+    _CUPY_OK_MIRROR = False
+
+
+def _vram_share_lu_kwargs() -> dict:
+    """Read MNPBEM_VRAM_SHARE_* env vars and return kwargs for
+    lu_factor_dispatch.  Mirrors the helper in ``bem_ret.py``."""
+    if os.environ.get('MNPBEM_VRAM_SHARE', '0') != '1':
+        return {}
+    n_gpus = int(os.environ.get('MNPBEM_VRAM_SHARE_GPUS', '1'))
+    if n_gpus <= 1:
+        return {}
+    backend = os.environ.get('MNPBEM_VRAM_SHARE_BACKEND', 'cusolvermg')
+    return {'n_gpus': n_gpus, 'backend': backend}
+
+
+def _gpu_pool_cleanup_mirror(apply_limit: bool = False) -> None:
+    """Synchronise CUDA stream then drain cupy default + pinned pools."""
+    if not _CUPY_OK_MIRROR:
+        return
+    try:
+        mempool = _cp_mirror.get_default_memory_pool()
+        pinned = _cp_mirror.get_default_pinned_memory_pool()
+        if apply_limit:
+            try:
+                pool_limit_gb = float(os.environ.get(
+                        'MNPBEM_GPU_POOL_LIMIT_GB', '0'))
+            except (TypeError, ValueError):
+                pool_limit_gb = 0.0
+            if pool_limit_gb > 0:
+                mempool.set_limit(size = int(pool_limit_gb * (1024 ** 3)))
+        _cp_mirror.cuda.runtime.deviceSynchronize()
+        mempool.free_all_blocks()
+        pinned.free_all_blocks()
+    except Exception:
+        pass
 
 
 def _mirror_stat_eval_host(g: Any, key: str) -> List:
@@ -82,6 +130,13 @@ class BEMStatMirror(object):
         # not produce a zero list -- see _mirror_stat_eval_host.
         self.F = _mirror_stat_eval_host(self.g, 'F')
 
+        # v1.7.3 Phase 2: drain the cupy pool after the contracted F-block
+        # extraction.  Each block went through a host round-trip (asnumpy)
+        # so the cupy view of the underlying full F (potentially N^2) can
+        # be released here.
+        if _CUPY_OK_MIRROR:
+            _gpu_pool_cleanup_mirror()
+
         # resolvent matrices
         self.mat_lu = None  # type: Optional[List]
 
@@ -96,6 +151,12 @@ class BEMStatMirror(object):
         if self.enei is not None and np.isclose(self.enei, enei):
             return self
 
+        # v1.7.3 Phase 2: free any previous wavelength's LU list before
+        # allocating new device-resident factors.  Mirrors the v1.7.2 BEMStat
+        # pattern (cupy holds onto old LU buffers until the rebind below).
+        self.mat_lu = None
+        _gpu_pool_cleanup_mirror(apply_limit = True)
+
         # inside and outside dielectric function
         eps1 = self.p.eps1(enei)
         eps2 = self.p.eps2(enei)
@@ -103,12 +164,25 @@ class BEMStatMirror(object):
         # Lambda [Garcia de Abajo, Eq. (23)]
         lambda_diag = 2 * np.pi * (eps1 + eps2) / (eps1 - eps2)
 
+        # VRAM-share kwargs for multi-GPU dispatch on large meshes.
+        _lu_opts = _vram_share_lu_kwargs()
+
         self.mat_lu = []
         for i in range(len(self.F)):
             # BEM resolvent matrix
-            self.mat_lu.append(lu_factor_dispatch(-(np.diag(lambda_diag) + self.F[i])))
+            M_full = -(np.diag(lambda_diag) + self.F[i])
+            self.mat_lu.append(lu_factor_dispatch(M_full, **_lu_opts))
+            # v1.7.3 Phase 2: drop the per-block M_full handle so its N^2
+            # buffer can return to the pool before the next iteration's
+            # GEMM/LU runs.  Important when n_sym >= 2 on large meshes.
+            del M_full
+            if _CUPY_OK_MIRROR:
+                _gpu_pool_cleanup_mirror()
 
         self.enei = enei
+        # v1.7.3 Phase 2: final pool drain so the next wavelength entry sees
+        # a clean device.
+        _gpu_pool_cleanup_mirror()
         return self
 
     def solve(self, exc: CompStructMirror) -> Tuple[CompStructMirror, 'BEMStatMirror']:
@@ -144,6 +218,12 @@ class BEMStatMirror(object):
             val = CompStruct(self.p, exc.enei, sig = sig_val)
             val.symval = exc.val[i].symval
             sig.val.append(val)
+
+        # v1.7.3 Phase 2: post-solve pool drain (per-symmetry LU back-
+        # substitute leaves O(N) scratch in the pool; release before next
+        # wavelength's __truediv__ enters).
+        if _CUPY_OK_MIRROR:
+            _gpu_pool_cleanup_mirror()
 
         return sig, self
 
@@ -191,6 +271,19 @@ class BEMStatMirror(object):
         MATLAB: @bemstatmirror/field.m
         """
         return self.g.field(sig, inout)
+
+    def clear(self) -> 'BEMStatMirror':
+        """Clear cached LU factors and force rebuild on next solve.
+
+        v1.7.3 Phase 2: API parity with BEMStat / BEMStatLayer / BEMStatIter.
+        Drops the per-symmetry LU list and resets the cache gate so a
+        subsequent solve() at the same wavelength does not skip rebuild.
+        """
+        self.mat_lu = None
+        self.enei = None
+        if _CUPY_OK_MIRROR:
+            _gpu_pool_cleanup_mirror()
+        return self
 
     def __call__(self, enei: float) -> 'BEMStatMirror':
         return self._init_matrices(enei)

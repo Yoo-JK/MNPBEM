@@ -407,7 +407,30 @@ class MultiGPULU(object):
     # ------------------------------------------------------------------
 
     def factor(self,
-            A: np.ndarray) -> 'MultiGPULU':
+            A: Any) -> 'MultiGPULU':
+
+        # Accept cupy arrays transparently — bring them to host first so
+        # the block-cyclic scatter (np.asfortranarray) works. Without
+        # this, callers that hold A on GPU (e.g. BEMRet's native-GPU path
+        # where G1/G2 are cupy) trip the implicit-conversion guard.
+        was_cupy = hasattr(A, 'get') and not isinstance(A, np.ndarray)
+        if was_cupy:
+            try:
+                A = A.get()
+            except Exception:
+                A = np.asarray(A)
+
+        # Caller-side cleanup hint: free unused cupy memory before we
+        # allocate distributed per-GPU buffers. The caller's cupy
+        # default-device array (e.g. BEMRet's G1/G2) still occupies
+        # memory pool slots even after we've copied to host; freeing
+        # *unused* blocks makes room for the cuSolverMg per-GPU alloc.
+        try:
+            import cupy as _cp
+            _cp.get_default_memory_pool().free_all_blocks()
+            _cp.get_default_pinned_memory_pool().free_all_blocks()
+        except Exception:
+            pass
 
         assert A.ndim == 2 and A.shape[0] == A.shape[1], \
             '[error] cuSolverMg LU requires square matrix'
@@ -486,10 +509,18 @@ class MultiGPULU(object):
         return self
 
     def solve(self,
-            B: np.ndarray,
+            B: Any,
             trans: str = 'N') -> np.ndarray:
 
         assert self.handle is not None, '[error] solve() called before factor()'
+
+        # Accept cupy arrays — bring to host. Mirrors factor() handling.
+        if hasattr(B, 'get') and not isinstance(B, np.ndarray):
+            try:
+                B = B.get()
+            except Exception:
+                B = np.asarray(B)
+
         if B.ndim == 1:
             B = B.reshape(-1, 1)
             squeeze = True
@@ -693,3 +724,176 @@ def solve_multi_gpu(A: np.ndarray,
 def warn_fallback(reason: str) -> None:
     msg = '[info] VRAM-share multi-GPU LU unavailable ({}). Falling back.'.format(reason)
     warnings.warn(msg, RuntimeWarning, stacklevel=2)
+
+
+# ---------------------------------------------------------------------------
+# Multi-GPU column-split matmul (cuSolverMg gemm fallback)
+# ---------------------------------------------------------------------------
+#
+# Why not cusolverMgGemm?
+# -----------------------
+# ``libcusolverMg.so`` exposes ``cusolverMg{S,D,C,Z}gemm`` and
+# ``cusolverMgGemm`` symbols, but the public header
+# (``cusolverMg.h``) does NOT declare them — only Syevd/Getrf/Getrs/Potrf
+# /Potrs/Potri are part of the documented API. The undocumented gemm
+# symbols are an internal helper used by the LU pivoting code path
+# and their ABI is not guaranteed to be stable across CUDA versions.
+# Binding them via ctypes would require reverse-engineering the
+# argument list, which we deliberately avoid.
+#
+# Instead we implement a column-split matmul on top of cupy:
+#
+#   C = A @ B,  A: (M, K),  B: (K, N) -> C: (M, N)
+#
+# - GPU g receives the FULL A and the column slice ``B[:, n_g0:n_g1]``.
+# - Each GPU runs ``C_g = A @ B_g`` independently via cupy/cuBLAS.
+# - The host concatenates the C_g slices into the final C.
+#
+# This works for square (N, N) x (N, N) BEM matmuls AND for tall/skinny
+# RHS arrays. Activated by the same env vars as the LU multi-GPU path
+# (``MNPBEM_VRAM_SHARE_GPUS>=2``).
+# ---------------------------------------------------------------------------
+
+
+def _col_split_ranges(N: int, n_gpus: int) -> List[Tuple[int, int]]:
+    # Evenly split <N> columns across <n_gpus>; remainder goes to first
+    # partitions. Returns a list of (start, stop) half-open ranges.
+    base = N // n_gpus
+    rem = N - base * n_gpus
+    ranges: List[Tuple[int, int]] = []
+    cursor = 0
+    for g in range(n_gpus):
+        sz = base + (1 if g < rem else 0)
+        ranges.append((cursor, cursor + sz))
+        cursor += sz
+    return ranges
+
+
+def matmul_multi_gpu(A: Any,
+        B: Any,
+        n_gpus: Optional[int] = None,
+        device_ids: Optional[List[int]] = None) -> np.ndarray:
+    """Compute ``C = A @ B`` distributed across <n_gpus> GPUs.
+
+    Column-split strategy: A is broadcast to every device; B is sliced
+    along its column axis and each device computes its own slice of C.
+    The host concatenates the results.
+
+    Parameters
+    ----------
+    A : ndarray or cupy ndarray, shape (M, K)
+    B : ndarray or cupy ndarray, shape (K, N)
+    n_gpus : int, optional
+        Number of GPUs to use. Defaults to ``_detect_n_gpus()``.
+    device_ids : list of int, optional
+        CUDA device ids; defaults to ``list(range(n_gpus))``.
+
+    Returns
+    -------
+    C : np.ndarray on host, shape (M, N), dtype matches ``A @ B``.
+    """
+
+    try:
+        import cupy as cp  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            '[error] matmul_multi_gpu requires cupy ({})'.format(repr(exc)))
+
+    if n_gpus is None:
+        n_gpus = _detect_n_gpus()
+    if n_gpus < 2:
+        raise ValueError(
+            '[error] matmul_multi_gpu requires <n_gpus>>=2, got {}'.format(n_gpus))
+    if device_ids is None:
+        device_ids = list(range(n_gpus))
+    assert len(device_ids) == n_gpus, \
+        '[error] <device_ids> length must equal <n_gpus>'
+
+    # Bring inputs to host if they're cupy arrays bound to a single device;
+    # we'll re-stage to each participating device explicitly.
+    def _to_host(x: Any) -> np.ndarray:
+        if hasattr(x, 'get') and not isinstance(x, np.ndarray):
+            try:
+                return x.get()
+            except Exception:
+                return np.asarray(x)
+        return np.asarray(x)
+
+    A_h = _to_host(A)
+    B_h = _to_host(B)
+
+    if A_h.ndim != 2 or B_h.ndim != 2:
+        raise ValueError(
+            '[error] matmul_multi_gpu expects 2-D inputs, got {} and {}'.format(
+                A_h.shape, B_h.shape))
+    if A_h.shape[1] != B_h.shape[0]:
+        raise ValueError(
+            '[error] dim mismatch: A is {} and B is {}'.format(A_h.shape, B_h.shape))
+
+    M, K = A_h.shape
+    _, N = B_h.shape
+
+    # Promote dtypes via numpy result_type so the output type matches
+    # what a single-shot cupy/numpy matmul would produce.
+    out_dtype = np.result_type(A_h.dtype, B_h.dtype)
+    if A_h.dtype != out_dtype:
+        A_h = A_h.astype(out_dtype, copy=False)
+    if B_h.dtype != out_dtype:
+        B_h = B_h.astype(out_dtype, copy=False)
+
+    col_ranges = _col_split_ranges(N, n_gpus)
+
+    # Drop dead branches: if any partition has zero columns (N < n_gpus),
+    # fall back to single-GPU on device_ids[0].
+    if any(stop - start == 0 for start, stop in col_ranges):
+        with cp.cuda.Device(device_ids[0]):
+            A_g = cp.asarray(A_h)
+            B_g = cp.asarray(B_h)
+            return cp.asnumpy(A_g @ B_g)
+
+    # Stage A on every participating device, B slice on the assigned
+    # device. Stream the kernel launches concurrently so the GPUs work
+    # in parallel; the synchronize loop later joins them.
+    parts: List[np.ndarray] = [None] * n_gpus  # type: ignore[assignment]
+    streams: List[Any] = [None] * n_gpus  # type: ignore[assignment]
+    C_g_keep: List[Any] = [None] * n_gpus  # type: ignore[assignment]
+
+    try:
+        # Launch phase
+        for g, dev in enumerate(device_ids):
+            start, stop = col_ranges[g]
+            with cp.cuda.Device(dev):
+                s = cp.cuda.Stream(non_blocking=False)
+                streams[g] = s
+                with s:
+                    A_g = cp.asarray(A_h)
+                    B_g = cp.asarray(B_h[:, start:stop])
+                    C_g = A_g @ B_g
+                    C_g_keep[g] = C_g
+                    # Free A_g / B_g eagerly — only C_g must survive
+                    # until the host copy in the next phase. cupy
+                    # reference semantics handle this automatically
+                    # once A_g/B_g go out of scope below.
+                    del A_g, B_g
+
+        # Join phase: synchronize each stream, copy result to host.
+        for g, dev in enumerate(device_ids):
+            with cp.cuda.Device(dev):
+                streams[g].synchronize()
+                parts[g] = cp.asnumpy(C_g_keep[g])
+                C_g_keep[g] = None
+    finally:
+        # Best-effort cleanup of per-device memory pools so the
+        # partition buffers don't leak across calls.
+        for dev in device_ids:
+            try:
+                with cp.cuda.Device(dev):
+                    cp.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
+
+    # Concatenate column slices on host.
+    C = np.empty((M, N), dtype=out_dtype)
+    for g, (start, stop) in enumerate(col_ranges):
+        C[:, start:stop] = parts[g]
+    return C

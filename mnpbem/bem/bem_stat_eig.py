@@ -11,12 +11,50 @@ Reference:
     Hohenester et al., PRL 103, 106801 (2009)
 """
 
+import os
 import numpy as np
 from typing import Optional, Tuple, Any
 
 from ..greenfun import CompGreenStat, CompStruct
-from ..utils.gpu import matmul_dispatch, solve_dispatch
+from ..utils.gpu import matmul_dispatch, solve_dispatch, to_host, is_cupy_array
 from .plasmonmode import plasmonmode
+
+
+# v1.7.3 Phase 2: BEMStatEig's quasistatic eigenmode pipeline is dominated
+# by scipy.sparse.linalg.eigs (CPU only — no cuSolverMg eigh equivalent),
+# but the surrounding GEMMs / dense solves (ur @ inv(resolvent) @ ul) still
+# go through matmul_dispatch / solve_dispatch and pick up MNPBEM_VRAM_SHARE_*
+# automatically.  The remaining wins are pool drains after plasmonmode()
+# and the per-wavelength resolvent solve, to keep the cupy pool from
+# accumulating across long sweeps.
+try:
+    import cupy as _cp_eig  # type: ignore
+    _CUPY_OK_EIG = True
+except Exception:
+    _cp_eig = None  # type: ignore
+    _CUPY_OK_EIG = False
+
+
+def _gpu_pool_cleanup_eig(apply_limit: bool = False) -> None:
+    """Synchronise CUDA stream then drain cupy default + pinned pools."""
+    if not _CUPY_OK_EIG:
+        return
+    try:
+        mempool = _cp_eig.get_default_memory_pool()
+        pinned = _cp_eig.get_default_pinned_memory_pool()
+        if apply_limit:
+            try:
+                pool_limit_gb = float(os.environ.get(
+                        'MNPBEM_GPU_POOL_LIMIT_GB', '0'))
+            except (TypeError, ValueError):
+                pool_limit_gb = 0.0
+            if pool_limit_gb > 0:
+                mempool.set_limit(size = int(pool_limit_gb * (1024 ** 3)))
+        _cp_eig.cuda.runtime.deviceSynchronize()
+        mempool.free_all_blocks()
+        pinned.free_all_blocks()
+    except Exception:
+        pass
 
 
 class BEMStatEig(object):
@@ -131,9 +169,22 @@ class BEMStatEig(object):
 
         # surface derivative of Green function
         F = self.g.F  # (n, n)
+        # v1.7.3 Phase 2: F may live on cupy when MNPBEM_GPU=1.  Bring it to
+        # host so subsequent host-only ops (np.diag, eigs) work.  Also release
+        # the GPU view so its N^2 buffer returns to the pool before
+        # plasmonmode() runs its own dense eigensolve.
+        if is_cupy_array(F):
+            F = to_host(F)
+        if _CUPY_OK_EIG:
+            _gpu_pool_cleanup_eig()
 
         # eigenmode expansion using plasmonmode
         ene, ur, ul = plasmonmode(p, nev = nev, **options)
+        # v1.7.3 Phase 2: plasmonmode internally builds (and discards) a dense
+        # F + may route through cupy for the eigendecomposition staging.
+        # Drain the pool so the constructor leaves the device in a clean state.
+        if _CUPY_OK_EIG:
+            _gpu_pool_cleanup_eig()
 
         # actual number of eigenmodes (may be less than requested)
         self.nev = len(ene)
@@ -171,6 +222,12 @@ class BEMStatEig(object):
         if self.enei is not None and np.isclose(self.enei, enei):
             return self
 
+        # v1.7.3 Phase 2: drop the previous wavelength's resolvent ``mat``
+        # before the new GEMM allocates its N×nev intermediate, so the cupy
+        # pool can recycle the prior N×N buffer.  Pattern mirrors BEMStat.
+        self.mat = None
+        _gpu_pool_cleanup_eig(apply_limit = True)
+
         # dielectric functions per boundary pair
         eps_vals = [eps_func(enei)[0] for eps_func in self.p.eps]
 
@@ -191,10 +248,16 @@ class BEMStatEig(object):
         # mat = -ur @ inv(resolvent) @ ul
         # resolvent is (nev, nev) — small, so solve is CPU-bound; the leading
         # ur @ (...) GEMM dominates at large mesh and benefits from GPU.
+        # solve_dispatch + matmul_dispatch already honour MNPBEM_VRAM_SHARE_*
+        # via their env-var auto-wiring; no explicit kwargs needed here.
         inv_ul = solve_dispatch(resolvent, self.ul)
         self.mat = -matmul_dispatch(self.ur, inv_ul)
+        # v1.7.3 Phase 2: drop the inv_ul intermediate (~ nev × N) so cupy
+        # reclaims its buffer before the next wavelength enters.
+        del inv_ul
 
         self.enei = enei
+        _gpu_pool_cleanup_eig()
         return self
 
     def solve(self, exc):
@@ -333,6 +396,11 @@ class BEMStatEig(object):
         """
         self.mat = None
         self.enei = None
+        # v1.7.3 Phase 2: explicit clear() drains the cupy pool so the device
+        # buffer of the released ``mat`` returns immediately, not on next
+        # rebuild.  Mirrors BEMStat.clear pattern.
+        if _CUPY_OK_EIG:
+            _gpu_pool_cleanup_eig()
         return self
 
     def __repr__(self):

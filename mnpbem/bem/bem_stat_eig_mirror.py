@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from scipy.sparse.linalg import eigs
 from typing import Optional, List, Tuple, Any, Union
@@ -7,6 +8,42 @@ from ..greenfun.compgreen_stat_mirror import CompGreenStatMirror
 from ..geometry.comparticle_mirror import CompStructMirror
 from ..utils.gpu import matmul_dispatch, solve_dispatch, to_host, is_cupy_array
 from .bem_stat_mirror import _mirror_stat_eval_host
+
+
+# v1.7.3 Phase 2: BEMStatEigMirror's eigs loop is CPU-only (scipy.sparse
+# eigs has no GPU eigh equivalent for non-Hermitian operators), but the
+# per-symmetry resolvent solve + ur @ inv(...) GEMM pipeline still picks
+# up MNPBEM_VRAM_SHARE_* via solve_dispatch / matmul_dispatch's env-var
+# auto-wiring.  Pool drains after the eigs loop and per-symmetry block
+# keep the cupy pool from accumulating across wavelength sweeps.
+try:
+    import cupy as _cp_eigmir  # type: ignore
+    _CUPY_OK_EIGMIR = True
+except Exception:
+    _cp_eigmir = None  # type: ignore
+    _CUPY_OK_EIGMIR = False
+
+
+def _gpu_pool_cleanup_eigmir(apply_limit: bool = False) -> None:
+    """Synchronise CUDA stream then drain cupy default + pinned pools."""
+    if not _CUPY_OK_EIGMIR:
+        return
+    try:
+        mempool = _cp_eigmir.get_default_memory_pool()
+        pinned = _cp_eigmir.get_default_pinned_memory_pool()
+        if apply_limit:
+            try:
+                pool_limit_gb = float(os.environ.get(
+                        'MNPBEM_GPU_POOL_LIMIT_GB', '0'))
+            except (TypeError, ValueError):
+                pool_limit_gb = 0.0
+            if pool_limit_gb > 0:
+                mempool.set_limit(size = int(pool_limit_gb * (1024 ** 3)))
+        _cp_eigmir.cuda.runtime.deviceSynchronize()
+        mempool.free_all_blocks()
+        pinned.free_all_blocks()
+    except Exception:
+        pass
 
 
 class BEMStatEigMirror(object):
@@ -97,6 +134,16 @@ class BEMStatEigMirror(object):
             self.ul.append(ul_i)
             self.ene.append(ene_i)
             self.unit.append(unit_i)
+            # v1.7.3 Phase 2: per-symmetry pool drain — each eigs block can
+            # leave Arnoldi scratch in the pool when sparse eigs routes
+            # through cupy.  Drain inside the loop so n_sym blocks don't
+            # accumulate.
+            if _CUPY_OK_EIGMIR:
+                _gpu_pool_cleanup_eigmir()
+
+        # v1.7.3 Phase 2: final eigs-loop pool drain.
+        if _CUPY_OK_EIGMIR:
+            _gpu_pool_cleanup_eigmir()
 
         if enei is not None:
             self._init_matrices(enei)
@@ -108,6 +155,12 @@ class BEMStatEigMirror(object):
         """
         if self.enei is not None and np.isclose(self.enei, enei):
             return self
+
+        # v1.7.3 Phase 2: drop the previous wavelength's resolvent matrices
+        # before new device allocations.  Pattern mirrors BEMStatMirror /
+        # BEMStat (v1.7.2).
+        self.mat = None
+        _gpu_pool_cleanup_eigmir(apply_limit = True)
 
         # dielectric functions
         eps_vals = [eps_func(enei)[0] for eps_func in self.p.eps]
@@ -129,10 +182,18 @@ class BEMStatEigMirror(object):
             resolvent = unit_lambda_mat + self.ene[i]
             # resolvent is (nev, nev) — small; the ur @ (...) GEMM dominates
             # for large mesh and benefits from GPU dispatch.
+            # solve_dispatch + matmul_dispatch already honour
+            # MNPBEM_VRAM_SHARE_* via their env-var auto-wiring.
             inv_ul = solve_dispatch(resolvent, self.ul[i])
             self.mat.append(-matmul_dispatch(self.ur[i], inv_ul))
+            # v1.7.3 Phase 2: drop per-block scratch so the next symmetry
+            # iteration sees a clean pool.
+            del inv_ul, resolvent, unit_lambda, unit_lambda_mat
+            if _CUPY_OK_EIGMIR:
+                _gpu_pool_cleanup_eigmir()
 
         self.enei = enei
+        _gpu_pool_cleanup_eigmir()
         return self
 
     def solve(self, exc: CompStructMirror) -> Tuple[CompStructMirror, 'BEMStatEigMirror']:
@@ -214,6 +275,20 @@ class BEMStatEigMirror(object):
 
     def __call__(self, enei: float) -> 'BEMStatEigMirror':
         return self._init_matrices(enei)
+
+    def clear(self) -> 'BEMStatEigMirror':
+        """Clear cached resolvent matrices and force rebuild on next solve.
+
+        v1.7.3 Phase 2: API parity with BEMStat / BEMStatLayer / BEMStatMirror
+        / BEMStatIter.  Drops the per-symmetry ``mat`` list and resets the
+        cache gate so a subsequent solve() at the same wavelength does not
+        skip rebuild.
+        """
+        self.mat = None
+        self.enei = None
+        if _CUPY_OK_EIGMIR:
+            _gpu_pool_cleanup_eigmir()
+        return self
 
     def __repr__(self) -> str:
         status = 'enei={}'.format(self.enei) if self.enei is not None else 'not initialized'

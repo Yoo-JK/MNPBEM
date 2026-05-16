@@ -321,12 +321,46 @@ def eigh_dispatch(A: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, np.ndarray]
     return _scipy_eigh(A, **kwargs)
 
 
-def matmul_dispatch(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+def matmul_dispatch(A: np.ndarray, B: np.ndarray, **kwargs: Any) -> np.ndarray:
     """Dense matrix product on GPU when beneficial, else CPU.
 
     Used by field-application code paths where a single big dense GEMM
     dominates and the inputs are still on the host.
+
+    Multi-GPU VRAM-share path
+    -------------------------
+    Pass ``n_gpus=N`` (with ``N>=2``) to distribute ``C = A @ B`` across
+    multiple GPUs via a column-split strategy (cupy + per-device
+    streams). ``cusolverMgGemm`` exists in the library binary but its
+    public header does not declare it, so we deliberately use a
+    cupy-based fallback instead of binding an undocumented ABI. See
+    ``multi_gpu_lu.matmul_multi_gpu`` for the implementation notes.
+
+    Env-var auto-wiring
+    -------------------
+    When ``n_gpus`` is omitted, ``MNPBEM_VRAM_SHARE_GPUS`` (>=2) is read
+    automatically along with ``MNPBEM_VRAM_SHARE_DEVICE_IDS``. Explicit
+    kwargs win over env defaults. Backend is fixed to the column-split
+    cupy path regardless of ``MNPBEM_VRAM_SHARE_BACKEND`` because
+    cusolverMgGemm is not part of the public API.
     """
+    env_n, env_backend, env_devs = _vram_share_env_defaults()
+    n_gpus = int(kwargs.pop('n_gpus', env_n if env_n is not None else 1))
+    backend = kwargs.pop('backend', env_backend if env_backend is not None else 'cusolvermg')
+    device_ids = kwargs.pop('device_ids', env_devs)
+    if n_gpus >= 2:
+        try:
+            from .multi_gpu_lu import matmul_multi_gpu, warn_fallback
+            # Backend note: cusolverMgGemm is undocumented (header
+            # omits it); we honour the env var only as a label and
+            # always use the cupy column-split implementation.
+            if backend not in ('cusolvermg', 'cupy_split'):
+                warn_fallback(
+                    'matmul backend <{}> not supported; using cupy_split'.format(backend))
+            return matmul_multi_gpu(A, B, n_gpus=n_gpus, device_ids=device_ids)
+        except (RuntimeError, NotImplementedError, ValueError) as exc:
+            from .multi_gpu_lu import warn_fallback
+            warn_fallback(repr(exc))
     if _CUPY_OK and USE_GPU and A.shape[0] >= GPU_THRESHOLD:
         A_gpu = _cp.asarray(A)
         B_gpu = _cp.asarray(B)
