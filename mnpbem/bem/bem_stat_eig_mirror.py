@@ -6,16 +6,50 @@ from typing import Optional, List, Tuple, Any, Union
 from ..greenfun import CompStruct
 from ..greenfun.compgreen_stat_mirror import CompGreenStatMirror
 from ..geometry.comparticle_mirror import CompStructMirror
-from ..utils.gpu import matmul_dispatch, solve_dispatch, to_host, is_cupy_array
+from ..utils.gpu import (
+    matmul_dispatch, solve_dispatch, to_host, is_cupy_array,
+    eig_dispatch,
+)
 from .bem_stat_mirror import _mirror_stat_eval_host
 
 
+# v1.7.4: ``MNPBEM_GPU_EIG=1`` opt-in routes the per-symmetry eigen-
+# decomposition through ``eig_dispatch`` (single-GPU ``cupy.linalg.eig``
+# for n>=GPU_THRESHOLD).  When disabled (default), the path matches
+# v1.7.3 (scipy.sparse.linalg.eigs).  cuSolverMg has no non-Hermitian
+# multi-GPU eig, so the Hermitian-only Multi-GPU path does not apply.
+#
 # v1.7.3 Phase 2: BEMStatEigMirror's eigs loop is CPU-only (scipy.sparse
 # eigs has no GPU eigh equivalent for non-Hermitian operators), but the
 # per-symmetry resolvent solve + ur @ inv(...) GEMM pipeline still picks
 # up MNPBEM_VRAM_SHARE_* via solve_dispatch / matmul_dispatch's env-var
 # auto-wiring.  Pool drains after the eigs loop and per-symmetry block
 # keep the cupy pool from accumulating across wavelength sweeps.
+USE_GPU_EIG_MIR: bool = os.environ.get("MNPBEM_GPU_EIG", "0").strip() == "1"
+
+
+_GPU_EIG_AVAIL_MIR: Optional[bool] = None
+
+
+def _gpu_eig_available_cached_mir() -> bool:
+    """Return True iff cupy.linalg.eig (geev) is callable on this build.
+
+    Cached one-time probe; same pattern as bem_stat_eig._gpu_eig_available
+    but local to the mirror module so neither calls into the other.
+    """
+    global _GPU_EIG_AVAIL_MIR
+    if _GPU_EIG_AVAIL_MIR is not None:
+        return _GPU_EIG_AVAIL_MIR
+    if not _CUPY_OK_EIGMIR:
+        _GPU_EIG_AVAIL_MIR = False
+        return False
+    try:
+        tiny = _cp_eigmir.asarray(np.eye(4, dtype=np.complex128))
+        _cp_eigmir.linalg.eig(tiny)
+        _GPU_EIG_AVAIL_MIR = True
+    except Exception:
+        _GPU_EIG_AVAIL_MIR = False
+    return _GPU_EIG_AVAIL_MIR
 try:
     import cupy as _cp_eigmir  # type: ignore
     _CUPY_OK_EIGMIR = True
@@ -110,14 +144,55 @@ class BEMStatEigMirror(object):
         # eigenmode expansion
         for i in range(len(F_list)):
             F_i = F_list[i]
+            # Host promotion guard (mirror solver sometimes ships cupy F_i).
+            if is_cupy_array(F_i):
+                F_i = to_host(F_i)
 
-            # left and right eigenvectors
-            # eigs returns (eigenvalues, eigenvectors) where eigenvectors is (n, k)
-            _, ul_i = eigs(F_i.T, k = self.nev, which = 'SR', maxiter = 1000)
-            ul_i = ul_i.T  # (nev, n)
-            ene_i, ur_i = eigs(F_i, k = self.nev, which = 'SR', maxiter = 1000)
-            # ur_i is (n, nev), ene_i is (nev,)
-            ene_i = np.diag(ene_i)
+            # left and right eigenvectors.
+            # v1.7.4: with MNPBEM_GPU_EIG=1 AND a working cupy.linalg.eig
+            # (geev) in the current cupy build, the per-symmetry right
+            # eigenpair is computed on GPU and the left eigenpair is
+            # paired on host via scipy.linalg.eig(F.T).
+            #
+            # cupy 14 + CUDA 12.x do not yet ship geev — calling
+            # cupy.linalg.eig raises "geev is not available".  Detect
+            # this once and cache the result so each symmetry block
+            # falls back to the v1.7.3 scipy.sparse.linalg.eigs path
+            # without paying detection overhead per iteration.
+            n_i = F_i.shape[0]
+            use_gpu_eig_here = (
+                USE_GPU_EIG_MIR
+                and n_i >= 1500
+                and self.nev < n_i - 1
+                and _gpu_eig_available_cached_mir())
+            if use_gpu_eig_here:
+                # Right eigenpair via eig_dispatch (GPU full + slice).
+                _w_r, ur_i = eig_dispatch(F_i, k=int(self.nev),
+                        left=False, right=True, which='SR')
+                # Left eigenpair via host LAPACK on F.T (full spectrum).
+                from scipy.linalg import eig as _scipy_eig
+                ene_l_all, vl_all = _scipy_eig(F_i.T, left=False, right=True,
+                        check_finite=False)
+                ene_l_idx: List[int] = []
+                used = set()  # type: set
+                for w in _w_r:
+                    d = np.abs(ene_l_all - w)
+                    order = np.argsort(d)
+                    for j in order:
+                        ji = int(j)
+                        if ji not in used:
+                            ene_l_idx.append(ji)
+                            used.add(ji)
+                            break
+                ul_i = vl_all[:, np.asarray(ene_l_idx, dtype=int)].T
+                ene_i = np.diag(_w_r)
+            else:
+                # eigs returns (eigenvalues, eigenvectors) where eigenvectors is (n, k)
+                _, ul_i = eigs(F_i.T, k = self.nev, which = 'SR', maxiter = 1000)
+                ul_i = ul_i.T  # (nev, n)
+                ene_i, ur_i = eigs(F_i, k = self.nev, which = 'SR', maxiter = 1000)
+                # ur_i is (n, nev), ene_i is (nev,)
+                ene_i = np.diag(ene_i)
 
             # make eigenvectors orthogonal
             overlap = ul_i @ ur_i  # (nev, nev)

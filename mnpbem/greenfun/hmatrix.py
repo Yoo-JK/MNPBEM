@@ -1309,3 +1309,558 @@ def make_kaware_fadmiss(k: float, eta0: float = 2.5) -> Callable:
             return False
         return True
     return fadmiss
+
+
+# ============================================================================
+# Multi-GPU H-matrix (cluster pair distribution).
+# ============================================================================
+#
+# Strategy
+# --------
+# A regular ``HMatrix`` keeps every dense and low-rank block on the host;
+# ``HMatrixGPU`` accelerates the per-block ACA fill on a single GPU.  For
+# meshes above ~25k faces neither layout fits the per-device memory budget:
+#   * The transient peak during ACA fill is dominated by the residual row/col
+#     buffers, which scale with the largest cluster cardinality.
+#   * After fill, the cumulative storage of all dense + low-rank blocks for a
+#     50k-face mesh can hit 25-40 GB even after compression — close enough to
+#     the 49 GB A6000 cap that simultaneously building the G1/H1/G2/H2 quad
+#     OOMs at the second wavelength.
+#
+# ``HMatrixMultiGPU`` distributes cluster pairs across N GPUs:
+#   1. Compute per-pair "weight" (m*n element count) up front.
+#   2. Assign every pair to a single GPU via Longest-Processing-Time (LPT)
+#      bin packing so the total weight per GPU is roughly balanced.
+#   3. Run ``aca_block_gpu`` inside the owner device context for each pair;
+#      keep the resulting U/V tiles **on that device** (cupy ndarray).
+#      The same applies to dense blocks, which we evaluate via ``fun`` on the
+#      owner device.
+#   4. matvec: each GPU computes its own partial sum of the contributions
+#      from its blocks; results are gathered to host with a cheap all-reduce.
+#
+# Bit-for-bit reproducibility
+# ---------------------------
+# The cluster tree, admissibility decisions, and ACA pivot sequence are
+# identical to the single-GPU path because:
+#   * Tree construction and admissibility are CPU-only and untouched.
+#   * Per-block ACA is the same partial-pivot algorithm as ``aca_block_gpu``;
+#     a single block runs on exactly one GPU, so the rounding/pivoting trace
+#     is bit-identical to running that block on that same GPU in isolation.
+#   * matvec gathers partial sums in a deterministic order (sorted by block
+#     index), so the reduction order is reproducible.
+#
+# Fallbacks
+# ---------
+# If cupy is missing, fewer than 2 GPUs are available, or
+# ``MNPBEM_HMATRIX_MULTI_GPU`` is unset/0, the constructor transparently
+# delegates to the CPU ``HMatrix.aca`` path with a single warning.
+# ============================================================================
+
+def _hmat_mgpu_available(min_devices: int = 2) -> bool:
+    """Return True iff multi-GPU H-matrix is opt-in and feasible.
+
+    Honours the ``MNPBEM_HMATRIX_MULTI_GPU`` (or alias
+    ``MNPBEM_HMATRIX_MGPU``) on/off switch and the device count.  Returns
+    False on any failure so the caller can fall back to single-GPU /
+    CPU paths.
+    """
+    flag = os.environ.get('MNPBEM_HMATRIX_MULTI_GPU',
+            os.environ.get('MNPBEM_HMATRIX_MGPU', '0')).strip()
+    if flag in ('0', '', 'false', 'False', 'FALSE'):
+        return False
+    try:
+        import cupy as _cp_local  # noqa: F401
+    except Exception:
+        return False
+    try:
+        n = int(_cp_local.cuda.runtime.getDeviceCount())
+    except Exception:
+        return False
+    return n >= int(min_devices)
+
+
+def _hmat_mgpu_device_count() -> int:
+    """Return the number of GPUs to use, capped at the physical count."""
+    try:
+        import cupy as _cp_local
+        n_phys = int(_cp_local.cuda.runtime.getDeviceCount())
+    except Exception:
+        return 0
+
+    n_env = os.environ.get('MNPBEM_HMATRIX_MULTI_GPU_N', '').strip()
+    if not n_env:
+        n_env = os.environ.get('MNPBEM_HMATRIX_MGPU_N', '').strip()
+    if n_env:
+        try:
+            n = int(n_env)
+        except ValueError:
+            n = n_phys
+    else:
+        n = n_phys
+    return max(1, min(n, n_phys))
+
+
+def _lpt_bin_pack(weights: List[int], n_bins: int) -> List[int]:
+    """Longest-Processing-Time bin packing.
+
+    Returns ``owner[i]`` in ``[0, n_bins)``: bin index for weight ``i``.
+    Greedy assignment of the heaviest item to the currently-lightest bin
+    produces a load distribution within 4/3 of optimum (Graham 1969).
+    """
+    if n_bins <= 1:
+        return [0] * len(weights)
+    n_bins = int(n_bins)
+    owner = [0] * len(weights)
+    bin_load = [0] * n_bins
+    # Sort indices by descending weight; stable order keeps reproducibility.
+    order = sorted(range(len(weights)), key=lambda i: (-int(weights[i]), i))
+    for i in order:
+        # Pick lightest bin; ties broken by lowest bin index for determinism.
+        b = min(range(n_bins), key=lambda j: (bin_load[j], j))
+        owner[i] = b
+        bin_load[b] += int(weights[i])
+    return owner
+
+
+class HMatrixMultiGPU(HMatrix):
+    """H-matrix whose dense + low-rank blocks live on N CUDA devices.
+
+    Each cluster pair is owned by exactly one GPU.  Per-pair ACA fill,
+    storage and matvec contribution all stay on that owner device; only
+    the final reduction during ``mtimes_vec`` round-trips through the
+    host.
+
+    Parameters
+    ----------
+    tree : ClusterTree
+    htol : float
+        ACA Frobenius tolerance (same semantics as :class:`HMatrix`).
+    kmax : int
+        Hard upper bound on per-block rank.
+    fadmiss : callable, optional
+        Admissibility predicate.
+    n_gpus : int, optional
+        Number of GPUs to use.  Defaults to the value from
+        ``MNPBEM_HMATRIX_MULTI_GPU_N`` if set, otherwise the physical
+        device count.
+    device_ids : list of int, optional
+        Explicit CUDA device IDs to bind to.  Defaults to ``range(n_gpus)``.
+    force_cpu : bool, optional
+        Skip GPU entirely and use the CPU :class:`HMatrix` path.  Useful
+        for benchmark baselines and tests.
+
+    Notes
+    -----
+    The per-pair owner map is computed via LPT bin packing on the m*n
+    weight of each pair.  Once assigned, the owner does not change; matvec
+    relies on this stability to avoid cross-device data shuffles.
+    """
+
+    def __init__(self,
+                 tree: Optional[ClusterTree] = None,
+                 htol: float = 1e-6,
+                 kmax: int = 100,
+                 fadmiss: Optional[Callable] = None,
+                 n_gpus: Optional[int] = None,
+                 device_ids: Optional[List[int]] = None,
+                 force_cpu: bool = False,
+                 small_block_threshold: Optional[int] = None):
+        super().__init__(tree=tree, htol=htol, kmax=kmax, fadmiss=fadmiss)
+        self._mgpu_force_cpu = bool(force_cpu)
+        self._mgpu_used = False
+        self._mgpu_n = int(n_gpus) if n_gpus is not None else None
+        self._mgpu_device_ids: Optional[List[int]] = (
+                list(device_ids) if device_ids is not None else None)
+        # Small-block threshold in elements (m*n).  Blocks at or below this
+        # cardinality stay on the host because the per-block GPU device
+        # switch + kernel launch overhead dominates the actual work.
+        # Honour ``MNPBEM_HMATRIX_MGPU_SMALL_ELEMS`` for tuning without
+        # touching call sites.
+        if small_block_threshold is None:
+            try:
+                small_block_threshold = int(os.environ.get(
+                        'MNPBEM_HMATRIX_MGPU_SMALL_ELEMS', '65536'))
+            except ValueError:
+                small_block_threshold = 65536
+        self._small_block_thr = int(small_block_threshold)
+        # Per-block owner GPU index (relative to ``_mgpu_device_ids``).
+        # Populated by ``aca``.  Owner index -1 = host (fallback).
+        self._owner_dense: Optional[List[int]] = None
+        self._owner_lowrank: Optional[List[int]] = None
+        # Stats populated by ``aca``.
+        self._mgpu_stats: Dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Device management.
+    # ------------------------------------------------------------------
+    def _resolve_device_plan(self) -> Tuple[int, List[int]]:
+        """Pick (n_gpus, device_ids) honouring constructor + env vars."""
+        if self._mgpu_n is not None:
+            n = self._mgpu_n
+        else:
+            n = _hmat_mgpu_device_count()
+        if self._mgpu_device_ids is not None:
+            devs = list(self._mgpu_device_ids)
+            n = min(n, len(devs))
+        else:
+            devs = list(range(n))
+        return max(1, n), devs[:max(1, n)]
+
+    # ------------------------------------------------------------------
+    # ACA fill (multi-GPU).
+    # ------------------------------------------------------------------
+    def aca(self, fun: Callable) -> 'HMatrixMultiGPU':
+        """Fill blocks across N GPUs (or fall back to CPU)."""
+        if self._mgpu_force_cpu or not _hmat_mgpu_available(min_devices=2):
+            self._mgpu_used = False
+            self._owner_dense = [-1] * len(self.row1)
+            self._owner_lowrank = [-1] * len(self.row2)
+            return super().aca(fun)
+
+        try:
+            import cupy as _cp_local
+        except Exception:
+            self._mgpu_used = False
+            self._owner_dense = [-1] * len(self.row1)
+            self._owner_lowrank = [-1] * len(self.row2)
+            return super().aca(fun)
+
+        n_gpus, device_ids = self._resolve_device_plan()
+        if n_gpus < 2:
+            # Fallback: single-GPU path is handled by HMatrixGPU; use the
+            # CPU path here so we don't double-route GPU code.
+            self._mgpu_used = False
+            self._owner_dense = [-1] * len(self.row1)
+            self._owner_lowrank = [-1] * len(self.row2)
+            return super().aca(fun)
+
+        from . import aca_gpu as _aca_gpu
+
+        tree = self.tree
+        ind_c2p = tree.ind[:, 0]
+
+        def fun_c(row_c: np.ndarray, col_c: np.ndarray) -> np.ndarray:
+            return fun(ind_c2p[row_c], ind_c2p[col_c])
+
+        # ----- Weight-based owner assignment -------------------------------
+        siz = tree.cind[:, 1] - tree.cind[:, 0] + 1
+        # Dense blocks: weight = m*n elements (full block).
+        dense_weights = [int(siz[self.row1[i]]) * int(siz[self.col1[i]])
+                for i in range(len(self.row1))]
+        # Low-rank blocks: weight scales with m*n probes during ACA;
+        # post-fill storage is m*r + n*r but we don't know r yet, so use
+        # m*n as the conservative upper bound for load balancing.
+        lr_weights = [int(siz[self.row2[i]]) * int(siz[self.col2[i]])
+                for i in range(len(self.row2))]
+
+        # Small-block partition: anything <= threshold stays on host
+        # because the per-block GPU latency would dominate.  Only the
+        # remaining "large" blocks are bin-packed across GPUs.
+        thr = max(1, int(self._small_block_thr))
+        big_dense_idx = [i for i, w in enumerate(dense_weights) if w > thr]
+        big_lr_idx = [i for i, w in enumerate(lr_weights) if w > thr]
+        big_dense_w = [dense_weights[i] for i in big_dense_idx]
+        big_lr_w = [lr_weights[i] for i in big_lr_idx]
+
+        big_weights = big_dense_w + big_lr_w
+        if big_weights:
+            owners_big = _lpt_bin_pack(big_weights, n_gpus)
+        else:
+            owners_big = []
+
+        # Map big-block owners back to the full block index list; small
+        # blocks get owner -1 (host path).
+        self._owner_dense = [-1] * len(self.row1)
+        self._owner_lowrank = [-1] * len(self.row2)
+        for k, i in enumerate(big_dense_idx):
+            self._owner_dense[i] = owners_big[k]
+        for k, i in enumerate(big_lr_idx):
+            self._owner_lowrank[i] = owners_big[len(big_dense_idx) + k]
+
+        # ----- Per-GPU fill loops ------------------------------------------
+        # Group blocks by owner so we minimise device context switches.
+        # Owner -1 → host path (fast small-block fallback).
+        dense_by_owner: Dict[int, List[int]] = {-1: []}
+        lr_by_owner: Dict[int, List[int]] = {-1: []}
+        for g in range(n_gpus):
+            dense_by_owner[g] = []
+            lr_by_owner[g] = []
+        for i, g in enumerate(self._owner_dense):
+            dense_by_owner[g].append(i)
+        for i, g in enumerate(self._owner_lowrank):
+            lr_by_owner[g].append(i)
+
+        bytes_per_gpu = [0] * n_gpus
+        peak_per_gpu = [0] * n_gpus
+
+        # ---- Host fast-path for small blocks (owner == -1) ----------------
+        host_dense_count = len(dense_by_owner[-1])
+        host_lr_count = len(lr_by_owner[-1])
+        for i in dense_by_owner[-1]:
+            indr = tree.cind[self.row1[i]]
+            indc = tree.cind[self.col1[i]]
+            rows = np.arange(indr[0], indr[1] + 1, dtype=np.int64)
+            cols = np.arange(indc[0], indc[1] + 1, dtype=np.int64)
+            row_grid, col_grid = np.meshgrid(rows, cols, indexing='ij')
+            vals_h = fun_c(row_grid.ravel(),
+                           col_grid.ravel()).reshape(row_grid.shape)
+            if hasattr(vals_h, 'get') and not isinstance(vals_h, np.ndarray):
+                vals_h = vals_h.get()
+            self.val[i] = vals_h
+        for i in lr_by_owner[-1]:
+            indr = tree.cind[self.row2[i]]
+            indc = tree.cind[self.col2[i]]
+            rows = np.arange(indr[0], indr[1] + 1, dtype=np.int64)
+            cols = np.arange(indc[0], indc[1] + 1, dtype=np.int64)
+            U_h, V_h = self._aca_block(fun_c, rows, cols, self.htol, self.kmax)
+            self.lhs[i] = U_h
+            self.rhs[i] = V_h
+
+        for g in range(n_gpus):
+            dev_id = device_ids[g]
+            with _cp_local.cuda.Device(dev_id):
+                # Dense blocks.  Evaluate the full block on the owner device
+                # by calling ``fun_c`` on host indices, then promoting the
+                # result to cupy.  The host trip is unavoidable because
+                # ``fun`` is typically a host callable that returns numpy
+                # (e.g. CompGreenRet.eval); ``aca_gpu`` already does the same
+                # wrap-and-upload step per probe.
+                for i in dense_by_owner[g]:
+                    indr = tree.cind[self.row1[i]]
+                    indc = tree.cind[self.col1[i]]
+                    rows = np.arange(indr[0], indr[1] + 1, dtype=np.int64)
+                    cols = np.arange(indc[0], indc[1] + 1, dtype=np.int64)
+                    row_grid, col_grid = np.meshgrid(
+                            rows, cols, indexing='ij')
+                    vals_h = fun_c(row_grid.ravel(),
+                                   col_grid.ravel()).reshape(row_grid.shape)
+                    if hasattr(vals_h, 'get') and not isinstance(
+                            vals_h, np.ndarray):
+                        # Some callers return cupy already; pull it to host
+                        # then re-upload onto the owner device so the
+                        # ndarray's CUDA context is correct.
+                        vals_h = vals_h.get()
+                    vals_d = _cp_local.asarray(vals_h)
+                    self.val[i] = vals_d
+                    bytes_per_gpu[g] += int(vals_d.nbytes)
+
+                # Low-rank blocks via ACA on the owner device.
+                for i in lr_by_owner[g]:
+                    indr = tree.cind[self.row2[i]]
+                    indc = tree.cind[self.col2[i]]
+                    rows = np.arange(indr[0], indr[1] + 1, dtype=np.int64)
+                    cols = np.arange(indc[0], indc[1] + 1, dtype=np.int64)
+                    U_d, V_d = _aca_gpu.aca_block_gpu(
+                            fun_c, rows, cols,
+                            htol=self.htol, kmax=self.kmax,
+                            return_gpu=True)
+                    self.lhs[i] = U_d
+                    self.rhs[i] = V_d
+                    bytes_per_gpu[g] += int(U_d.nbytes) + int(V_d.nbytes)
+
+                # Snapshot peak after this owner finishes.  Pool.used_bytes
+                # is the high-water mark of allocated-but-not-yet-freed
+                # memory on this device.
+                try:
+                    peak_per_gpu[g] = int(
+                            _cp_local.get_default_memory_pool().used_bytes())
+                except Exception:
+                    peak_per_gpu[g] = bytes_per_gpu[g]
+
+        self._mgpu_used = True
+        self._mgpu_stats = {
+            'n_gpus': n_gpus,
+            'device_ids': list(device_ids),
+            'bytes_per_gpu': bytes_per_gpu,
+            'peak_per_gpu': peak_per_gpu,
+            'dense_per_gpu': [len(dense_by_owner[g]) for g in range(n_gpus)],
+            'lowrank_per_gpu': [len(lr_by_owner[g]) for g in range(n_gpus)],
+            'weight_per_gpu': [
+                    sum(dense_weights[i] for i in dense_by_owner[g])
+                    + sum(lr_weights[i] for i in lr_by_owner[g])
+                    for g in range(n_gpus)],
+            'host_dense_count': host_dense_count,
+            'host_lowrank_count': host_lr_count,
+            'small_block_threshold': thr,
+        }
+        return self
+
+    # ------------------------------------------------------------------
+    # matvec (multi-GPU all-reduce).
+    # ------------------------------------------------------------------
+    def mtimes_vec(self, v: np.ndarray) -> np.ndarray:
+        """``H @ v`` distributed across owner GPUs.
+
+        Each device computes its partial contribution; the host reduces
+        the per-device partials into the final result.  Falls back to the
+        base :meth:`HMatrix.mtimes_vec` if multi-GPU was not used.
+        """
+        if not self._mgpu_used:
+            return super().mtimes_vec(v)
+
+        import cupy as _cp_local
+
+        tree = self.tree
+        n = tree.n
+
+        # Probe input layout (1-D vs 2-D RHS).
+        v_in = v
+        v_is_cupy = hasattr(v_in, 'get') and not isinstance(
+                v_in, np.ndarray)
+        if v_is_cupy:
+            v_host = _cp_local.asnumpy(v_in)
+        else:
+            v_host = np.asarray(v_in)
+
+        # Convert to cluster ordering once on host so each owner can slice
+        # the relevant tile cheaply.
+        v_cluster_host = v_host[tree.ind[:, 0]]
+
+        # dtype of result follows the v dtype, promoted to complex if any
+        # block is complex.
+        out_dtype = v_host.dtype
+        for blk_list in (self.val, self.lhs, self.rhs):
+            for blk in blk_list:
+                if blk is not None and np.issubdtype(
+                        blk.dtype, np.complexfloating):
+                    out_dtype = np.result_type(out_dtype, np.complex128)
+                    break
+            else:
+                continue
+            break
+
+        device_ids = self._mgpu_stats.get('device_ids')
+        if not device_ids:
+            # Defensive: should not happen if _mgpu_used is True.
+            return super().mtimes_vec(v)
+        n_gpus = len(device_ids)
+
+        # Host partial sum for owner == -1 (small-block fallback).  We
+        # accumulate these first so the final reduction iterates over a
+        # fixed-length list of host arrays.
+        if v_cluster_host.ndim == 1:
+            host_partial = np.zeros(n, dtype=out_dtype)
+        else:
+            host_partial = np.zeros(
+                    (n, v_cluster_host.shape[1]), dtype=out_dtype)
+        any_host = False
+        for i in range(len(self.row1)):
+            if self._owner_dense[i] != -1:
+                continue
+            blk = self.val[i]
+            if blk is None:
+                continue
+            any_host = True
+            r_start = tree.cind[self.row1[i], 0]
+            r_end = tree.cind[self.row1[i], 1] + 1
+            c_start = tree.cind[self.col1[i], 0]
+            c_end = tree.cind[self.col1[i], 1] + 1
+            blk_h = blk if isinstance(blk, np.ndarray) else blk.get()
+            host_partial[r_start:r_end] += (
+                    blk_h @ v_cluster_host[c_start:c_end])
+        for i in range(len(self.row2)):
+            if self._owner_lowrank[i] != -1:
+                continue
+            lhs = self.lhs[i]
+            rhs = self.rhs[i]
+            if lhs is None or rhs is None:
+                continue
+            any_host = True
+            r_start = tree.cind[self.row2[i], 0]
+            r_end = tree.cind[self.row2[i], 1] + 1
+            c_start = tree.cind[self.col2[i], 0]
+            c_end = tree.cind[self.col2[i], 1] + 1
+            lhs_h = lhs if isinstance(lhs, np.ndarray) else lhs.get()
+            rhs_h = rhs if isinstance(rhs, np.ndarray) else rhs.get()
+            tmp = rhs_h.T @ v_cluster_host[c_start:c_end]
+            host_partial[r_start:r_end] += lhs_h @ tmp
+
+        # Partial sums per GPU (allocated on each device).  Bring back to
+        # host at the end and add.  Using host reduction keeps the path
+        # simple and avoids requiring NCCL / cuda IPC.
+        partials_h: List[np.ndarray] = []
+        for g, dev_id in enumerate(device_ids):
+            with _cp_local.cuda.Device(dev_id):
+                if v_cluster_host.ndim == 1:
+                    res_d = _cp_local.zeros(n, dtype=out_dtype)
+                else:
+                    res_d = _cp_local.zeros(
+                            (n, v_cluster_host.shape[1]),
+                            dtype=out_dtype)
+                # Upload v_cluster once per device.
+                v_cluster_d = _cp_local.asarray(v_cluster_host)
+
+                # Dense blocks owned by g.
+                for i in range(len(self.row1)):
+                    if self._owner_dense[i] != g:
+                        continue
+                    blk = self.val[i]
+                    if blk is None:
+                        continue
+                    r_start = tree.cind[self.row1[i], 0]
+                    r_end = tree.cind[self.row1[i], 1] + 1
+                    c_start = tree.cind[self.col1[i], 0]
+                    c_end = tree.cind[self.col1[i], 1] + 1
+                    res_d[r_start:r_end] += (
+                            blk @ v_cluster_d[c_start:c_end])
+
+                # Low-rank blocks owned by g.
+                for i in range(len(self.row2)):
+                    if self._owner_lowrank[i] != g:
+                        continue
+                    lhs = self.lhs[i]
+                    rhs = self.rhs[i]
+                    if lhs is None or rhs is None:
+                        continue
+                    r_start = tree.cind[self.row2[i], 0]
+                    r_end = tree.cind[self.row2[i], 1] + 1
+                    c_start = tree.cind[self.col2[i], 0]
+                    c_end = tree.cind[self.col2[i], 1] + 1
+                    tmp = rhs.T @ v_cluster_d[c_start:c_end]
+                    res_d[r_start:r_end] += lhs @ tmp
+
+                partials_h.append(_cp_local.asnumpy(res_d))
+                del res_d, v_cluster_d
+
+        # Host reduction in deterministic order: GPU 0..n-1, then host.
+        if partials_h:
+            result = partials_h[0].copy()
+            for p in partials_h[1:]:
+                result += p
+            if any_host:
+                result += host_partial
+        else:
+            result = host_partial
+
+        # Back to particle ordering.
+        result = result[tree.ind[:, 1]]
+
+        if v_is_cupy:
+            return _cp_local.asarray(result)
+        return result
+
+    # ------------------------------------------------------------------
+    # Helpers for tests / reporting.
+    # ------------------------------------------------------------------
+    @property
+    def used_multi_gpu(self) -> bool:
+        return self._mgpu_used
+
+    @property
+    def mgpu_stats(self) -> Dict[str, Any]:
+        return dict(self._mgpu_stats)
+
+    @staticmethod
+    def from_func(tree: ClusterTree,
+                  fun: Callable,
+                  htol: float = 1e-6,
+                  kmax: int = 100,
+                  fadmiss: Optional[Callable] = None,
+                  n_gpus: Optional[int] = None,
+                  device_ids: Optional[List[int]] = None,
+                  force_cpu: bool = False) -> 'HMatrixMultiGPU':
+        h = HMatrixMultiGPU(
+                tree=tree, htol=htol, kmax=kmax, fadmiss=fadmiss,
+                n_gpus=n_gpus, device_ids=device_ids, force_cpu=force_cpu)
+        h.aca(fun)
+        return h

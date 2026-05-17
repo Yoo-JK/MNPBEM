@@ -4,7 +4,7 @@ import numpy as np
 from typing import Optional, Tuple, Any, List, Dict
 
 from .clustertree import ClusterTree
-from .hmatrix import HMatrix, make_kaware_fadmiss
+from .hmatrix import HMatrix, HMatrixMultiGPU, make_kaware_fadmiss, _hmat_mgpu_available
 from .compgreen_ret import CompGreenRet
 
 
@@ -24,6 +24,9 @@ class ACACompGreenRet(object):
             cleaf: int = 32,
             fadmiss: Optional[Any] = None,
             eta: float = 2.5,
+            multi_gpu: Optional[bool] = None,
+            n_gpus: Optional[int] = None,
+            device_ids: Optional[List[int]] = None,
             **options: Any):
 
         # MATLAB: +aca/@compgreenret/compgreenret.m -> init.m
@@ -60,6 +63,18 @@ class ACACompGreenRet(object):
         self.kmax = kmax
         self.cleaf = cleaf
         self.options = options
+
+        # Multi-GPU H-matrix opt-in.  When True (or unset and the
+        # MNPBEM_HMATRIX_MULTI_GPU env switch is on), per-call ``eval``
+        # builds an ``HMatrixMultiGPU`` instead of a host-only ``HMatrix``.
+        # The cluster pair owner map is computed once per (i, j, key, enei)
+        # H-matrix; subsequent matvecs reuse it.
+        if multi_gpu is None:
+            multi_gpu = _hmat_mgpu_available(min_devices=2)
+        self._multi_gpu = bool(multi_gpu)
+        self._mgpu_n = n_gpus
+        self._mgpu_device_ids = (
+                list(device_ids) if device_ids is not None else None)
 
     def _build_ipart_arr(self, p: Any) -> Optional[np.ndarray]:
 
@@ -122,8 +137,18 @@ class ACACompGreenRet(object):
             k = 2.0 * np.pi / enei  # vacuum wavenumber (1/nm)
             fadmiss = make_kaware_fadmiss(k, eta0 = self.eta)
 
-        hmat = HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax,
-                fadmiss = fadmiss)
+        # Multi-GPU H-matrix dispatch.  When opt-in is active and >=2 GPUs
+        # are visible, distribute cluster pairs across devices.  Otherwise
+        # build the legacy host-only HMatrix (preserves bit-identical
+        # behaviour for tests / small meshes).
+        if self._multi_gpu and _hmat_mgpu_available(min_devices=2):
+            hmat = HMatrixMultiGPU(tree=self.tree, htol=self.htol,
+                    kmax=self.kmax, fadmiss=fadmiss,
+                    n_gpus=self._mgpu_n,
+                    device_ids=self._mgpu_device_ids)
+        else:
+            hmat = HMatrix(tree = self.tree, htol = self.htol, kmax = self.kmax,
+                    fadmiss = fadmiss)
 
         # Fill the H-matrix using ACA
         # MATLAB: hmat = fillval(hmat, fun) then ACA for low-rank blocks

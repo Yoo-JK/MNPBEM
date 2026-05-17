@@ -193,21 +193,61 @@ def _distributed_block_assemble(green: Any,
     ``sum_k sign_k · G(i_k, j_k, key_k)``.  Used for ``G1 = G11 - G21``
     and friends without ever materialising the individual ``G11 / G21``
     full matrices on a single device.
+
+    Robustness:
+    - ``eval_block`` may return scalar 0 for con==0 cross-particle blocks
+      (the standard MNPBEM convention).  ``_safe_eval`` promotes those
+      to a properly-shaped zero array on host so downstream ``out + blk``
+      arithmetic works regardless of the GPU backend.
+    - When mixing numpy and cupy arrays across blocks (single-particle
+      diagonal returns cupy; cross blocks may return numpy zeros),
+      ``_coerce_pair`` unifies the backend before subtract/add so the
+      DistributedMatrix scatter path always receives a single dtype.
     """
     from ..utils.distributed_matrix import DistributedMatrix
     import numpy as _np_local
 
+    try:
+        import cupy as _cp_local  # type: ignore
+        _cp_ok = True
+    except Exception:
+        _cp_local = None  # type: ignore
+        _cp_ok = False
+
+    def _safe_eval(i: int, j: int, key: str, c0: int, c1: int) -> Any:
+        blk = green.eval_block(i, j, key, enei, c0, c1)
+        if isinstance(blk, (int, float)) and blk == 0:
+            return _np_local.zeros((nrows, c1 - c0), dtype = _np_local.complex128)
+        return blk
+
+    def _is_cupy(x: Any) -> bool:
+        return _cp_ok and isinstance(x, _cp_local.ndarray)
+
+    def _coerce_pair(a: Any, b: Any) -> Tuple[Any, Any]:
+        # Promote both operands to the same backend.  Prefer cupy when
+        # at least one operand is on device; otherwise numpy.
+        if _is_cupy(a) or _is_cupy(b):
+            if not _is_cupy(a):
+                a = _cp_local.asarray(a, dtype = _np_local.complex128)
+            if not _is_cupy(b):
+                b = _cp_local.asarray(b, dtype = _np_local.complex128)
+        return a, b
+
     def _evalfn(gpu_idx: int, c0: int, c1: int) -> Any:
         out = None
         for (i, j, key, sign) in ncomb_list:
-            blk = green.eval_block(i, j, key, enei, c0, c1)
+            blk = _safe_eval(i, j, key, c0, c1)
             if out is None:
-                if isinstance(blk, _np_local.ndarray):
-                    out = sign * blk if sign != 1 else blk.copy()
+                # First contribution — copy so we don't mutate caller-owned
+                # buffers when a subsequent in-place op runs.
+                if sign == 1:
+                    out = blk.copy() if hasattr(blk, 'copy') else _np_local.asarray(blk).copy()
+                elif sign == -1:
+                    out = -blk
                 else:
-                    # cupy ndarray
-                    out = sign * blk if sign != 1 else blk.copy()
+                    out = sign * blk
             else:
+                out, blk = _coerce_pair(out, blk)
                 if sign == 1:
                     out = out + blk
                 elif sign == -1:

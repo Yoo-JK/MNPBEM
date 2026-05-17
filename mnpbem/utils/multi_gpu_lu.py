@@ -636,6 +636,65 @@ class MultiGPULU(object):
             X = X[:, 0]
         return X
 
+    def solve_chunked(self,
+            B: Any,
+            chunk_size: Optional[int] = None,
+            trans: str = 'N') -> np.ndarray:
+        """Column-chunked solve to dodge cuSolverMg multi-RHS precision regression.
+
+        cuSolverMg's ``getrs`` loses precision (rel err ~5e-3) and can hit
+        ``CUSOLVER_STATUS_EXECUTION_FAILED`` (status 6) when the RHS column
+        count nrhs approaches N. Below ~2048 columns the result is bit
+        identical to a CPU LAPACK solve. This helper splits ``B`` along
+        columns into ``chunk_size`` blocks and concatenates the per-chunk
+        solves on host.
+
+        Parameters
+        ----------
+        B : ndarray, shape ``(N,)`` or ``(N, nrhs)``
+            Right-hand side. cupy arrays are accepted (brought to host first).
+        chunk_size : int, optional
+            Column chunk width. Defaults to ``MNPBEM_VRAM_SHARE_SOLVE_CHUNK``
+            (env var) or 1024 when unset. Clamped to ``>=16``.
+        trans : ``'N'`` | ``'T'`` | ``'C'``
+            Forwarded to :meth:`solve` (currently only ``'N'`` is supported
+            by the underlying cuSolverMg ABI).
+
+        Returns
+        -------
+        X : np.ndarray, shape matches ``B`` (1-D for 1-D input).
+        """
+
+        if chunk_size is None:
+            try:
+                chunk_size = int(os.environ.get(
+                    'MNPBEM_VRAM_SHARE_SOLVE_CHUNK', '1024'))
+            except (TypeError, ValueError):
+                chunk_size = 1024
+        if chunk_size < 16:
+            chunk_size = 16
+
+        # cupy passthrough mirrors solve()
+        if hasattr(B, 'get') and not isinstance(B, np.ndarray):
+            try:
+                B = B.get()
+            except Exception:
+                B = np.asarray(B)
+
+        if B.ndim == 1 or B.shape[1] <= chunk_size:
+            return self.solve(B, trans=trans)
+
+        n_rows, n_cols = B.shape
+        # Preserve dtype semantics of solve() — it auto-promotes B to the
+        # factor dtype, so the output ends up in ``self.dtype``.
+        out_dtype = self.dtype if self.dtype is not None else B.dtype
+        out = np.empty((n_rows, n_cols), dtype=out_dtype)
+        for c0 in range(0, n_cols, chunk_size):
+            c1 = min(c0 + chunk_size, n_cols)
+            out[:, c0:c1] = self.solve(
+                np.ascontiguousarray(B[:, c0:c1]), trans=trans)
+        return out
+
     def close(self) -> None:
         lib = _libcusolverMg
         # Synchronize all devices before tearing down so any in-flight kernels
@@ -724,6 +783,22 @@ def solve_multi_gpu(A: np.ndarray,
 def warn_fallback(reason: str) -> None:
     msg = '[info] VRAM-share multi-GPU LU unavailable ({}). Falling back.'.format(reason)
     warnings.warn(msg, RuntimeWarning, stacklevel=2)
+
+
+def mg_solve_chunked(mg_handle: 'MultiGPULU',
+        B: Any,
+        chunk_size: Optional[int] = None,
+        trans: str = 'N') -> np.ndarray:
+    """Module-level wrapper around :meth:`MultiGPULU.solve_chunked`.
+
+    Provided so callers that hold a raw ``MultiGPULU`` handle (e.g. the
+    BEM solvers' pre-tag native build path) can opt into the chunked
+    solve without redefining the helper locally. The chunk width comes
+    from ``MNPBEM_VRAM_SHARE_SOLVE_CHUNK`` (default 1024) when
+    ``chunk_size`` is omitted.
+    """
+
+    return mg_handle.solve_chunked(B, chunk_size=chunk_size, trans=trans)
 
 
 # ---------------------------------------------------------------------------

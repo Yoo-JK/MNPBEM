@@ -196,6 +196,12 @@ def lu_solve_dispatch(piv_pkg: Tuple, b: np.ndarray, **kwargs: Any) -> np.ndarra
 
     Returns a NumPy array on the host irrespective of where the LU lives.
     Supports the multi-GPU ``'mgpu'`` tag (cuSolverMg distributed solve).
+
+    For the ``'mgpu'`` tag, multi-RHS solves (b.ndim == 2, ncol > chunk)
+    are automatically column-chunked to dodge the cuSolverMg precision
+    regression / EXECUTION_FAILED status seen when nrhs approaches N.
+    The chunk width is controlled by ``MNPBEM_VRAM_SHARE_SOLVE_CHUNK``
+    (default 1024). Pass ``chunk_size=...`` to override per-call.
     """
     tag = piv_pkg[0]
     if tag == "mgpu":
@@ -203,10 +209,17 @@ def lu_solve_dispatch(piv_pkg: Tuple, b: np.ndarray, **kwargs: Any) -> np.ndarra
         trans = kwargs.pop('trans', 'N')
         if isinstance(trans, int):
             trans = {0: 'N', 1: 'T', 2: 'C'}.get(trans, 'N')
+        chunk_size = kwargs.pop('chunk_size', None)
         b_host = b
         if _CUPY_OK and isinstance(b, _cp.ndarray):
             b_host = _cp.asnumpy(b)
-        return lu_handle.solve(np.ascontiguousarray(b_host), trans=trans)
+        # ``solve_chunked`` short-circuits to a single ``solve`` call
+        # when ``b.ndim == 1`` or ``ncol <= chunk_size``, so the chunked
+        # path is precision-safe AND zero-overhead for small RHS.
+        return lu_handle.solve_chunked(
+            np.ascontiguousarray(b_host),
+            chunk_size=chunk_size,
+            trans=trans)
     if tag == "gpu":
         b_gpu = _cp.asarray(b)
         x_gpu = _cp_lu_solve((piv_pkg[1], piv_pkg[2]), b_gpu)
@@ -305,20 +318,594 @@ def solve_dispatch(A: np.ndarray, b: np.ndarray, **kwargs: Any) -> np.ndarray:
     return _scipy_solve(A, b, **kwargs)
 
 
-def eigh_dispatch(A: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, np.ndarray]:
-    """Hermitian eigendecomposition on GPU when beneficial, else CPU.
+def eigh_dispatch(A: np.ndarray,
+        k: Optional[int] = None,
+        **kwargs: Any) -> Tuple[np.ndarray, np.ndarray]:
+    """Hermitian eigendecomposition dispatch.
 
-    Returns ``(w, v)`` as host NumPy arrays regardless of backend.  Routes
-    to ``cupy.linalg.eigh`` when GPU is enabled and the matrix is at least
-    ``GPU_THRESHOLD`` rows.
+    Returns ``(w, v)`` as host NumPy arrays regardless of backend.
+
+    Backend selection (v1.7.4 — eigh GPU acceleration)
+    ----------------------------------------------------
+    1. ``k`` is None or ``k >= n - 1`` → full spectrum
+       - Multi-GPU cuSolverMg eigh when ``MNPBEM_VRAM_SHARE_GPUS>=2`` AND
+         the matrix is real-symmetric / complex-hermitian (cusolverMgSyevd
+         requires that).
+       - Single-GPU cupy.linalg.eigh when MNPBEM_GPU=1 and n>=GPU_THRESHOLD.
+       - Else scipy.linalg.eigh.
+    2. ``k < n - 1`` (partial spectrum, smallest real eigenvalues)
+       - Full GPU eigh on cupy + select smallest k on host.
+       - Else scipy.sparse.linalg.eigsh ('SR') for memory savings on
+         very large matrices.
+
+    Notes
+    -----
+    cuSolverMg Syevd handles real-symmetric (float32/64) and complex-
+    Hermitian (complex64/128) input only; non-Hermitian general
+    eigenvalue problems must go through ``eig_dispatch``.
+
+    Parameters
+    ----------
+    A : ndarray, (n, n) Hermitian or symmetric
+    k : int, optional
+        If given and k < n - 1, return only the k smallest-real-part
+        eigenvalues / eigenvectors.  Otherwise full spectrum is returned.
+
+    Returns
+    -------
+    w : (k or n,) ndarray, ascending real-part order.
+    v : (n, k or n) ndarray, columns are eigenvectors.
     """
-    if _CUPY_OK and USE_GPU and A.shape[0] >= GPU_THRESHOLD:
+    n = A.shape[0]
+    # 1. partial-spectrum path
+    if k is not None and 0 < k < n - 1:
+        # Strategy: prefer full GPU eigh + slice for moderate n;
+        # scipy.sparse eigsh for very large CPU-only matrices.
+        if _CUPY_OK and USE_GPU and n >= GPU_THRESHOLD:
+            A_gpu = _cp.asarray(A)
+            w_gpu, v_gpu = _cp.linalg.eigh(A_gpu)
+            w = _cp.asnumpy(w_gpu)
+            v = _cp.asnumpy(v_gpu)
+            idx = np.argsort(w.real)[:k]
+            return w[idx], v[:, idx]
+        # CPU partial path
+        try:
+            from scipy.sparse.linalg import eigsh as _scipy_eigsh
+            w, v = _scipy_eigsh(A, k=k, which='SA', maxiter=1000)
+            idx = np.argsort(w.real)
+            return w[idx], v[:, idx]
+        except Exception:
+            # Fallback to full LAPACK
+            pass
+        from scipy.linalg import eigh as _scipy_eigh
+        kwargs.setdefault("check_finite", False)
+        w, v = _scipy_eigh(A, **kwargs)
+        idx = np.argsort(w.real)[:k]
+        return w[idx], v[:, idx]
+
+    # 2. full-spectrum path
+    # 2a. multi-GPU cuSolverMg path — opt-in via MNPBEM_GPU_EIGH_MGPU=1.
+    # The cusolverMgSyevd binding works on synthetic Hermitian matrices
+    # but NVIDIA's per-device workspace size requirement is touchy
+    # (segfault on some n / device combinations), so the default off
+    # keeps regressions zero.  Set MNPBEM_GPU_EIGH_MGPU=1 explicitly
+    # to opt into the distributed eigh path.
+    env_n, _, env_devs = _vram_share_env_defaults()
+    want_mgeig = (
+        os.environ.get('MNPBEM_GPU_EIGH_MGPU', '0').strip() == '1'
+        and env_n is not None and n >= GPU_THRESHOLD)
+    if want_mgeig:
+        try:
+            mgeig = MultiGPUEigh(n_gpus=env_n, device_ids=env_devs)
+            w, v = mgeig.eigh(A)
+            mgeig.close()
+            return w, v
+        except (RuntimeError, NotImplementedError, ValueError) as exc:
+            try:
+                from .multi_gpu_lu import warn_fallback as _wf
+                _wf('cusolverMgSyevd unavailable: ' + repr(exc))
+            except Exception:
+                pass
+
+    # 2b. single-GPU cupy path
+    if _CUPY_OK and USE_GPU and n >= GPU_THRESHOLD:
         A_gpu = _cp.asarray(A)
         w_gpu, v_gpu = _cp.linalg.eigh(A_gpu)
         return _cp.asnumpy(w_gpu), _cp.asnumpy(v_gpu)
+
+    # 2c. CPU fallback
     from scipy.linalg import eigh as _scipy_eigh
     kwargs.setdefault("check_finite", False)
     return _scipy_eigh(A, **kwargs)
+
+
+def eig_dispatch(A: np.ndarray,
+        k: Optional[int] = None,
+        left: bool = False,
+        right: bool = True,
+        which: str = 'SR',
+        **kwargs: Any) -> Tuple[np.ndarray, ...]:
+    """Non-Hermitian general eigendecomposition dispatch.
+
+    Returns one of:
+        (w, vr)            when left=False, right=True   (default)
+        (w, vl, vr)        when left=True,  right=True
+        (w, vl)            when left=True,  right=False
+        (w,)               when left=False, right=False
+
+    Backend selection (v1.7.4)
+    --------------------------
+    Non-Hermitian eig has NO cuSolverMg multi-GPU equivalent
+    (cusolverMgGeev does not exist in the public API).
+    Backends:
+      - cupy.linalg.eig  (single GPU, full spectrum) when MNPBEM_GPU=1
+        and n>=GPU_THRESHOLD.
+      - scipy.linalg.eig (LAPACK, full spectrum, supports left+right).
+      - scipy.sparse.linalg.eigs (Arnoldi, partial spectrum).
+
+    Partial-spectrum on GPU is emulated by full ``cupy.linalg.eig`` +
+    host sort + slice; this is much faster than scipy.sparse.eigs for
+    small/medium n on a single GPU, and keeps left/right eigenvectors
+    paired with the SAME eigenvalue ordering (matters for biorthogonal
+    expansions like plasmonmode).
+
+    Parameters
+    ----------
+    A : (n, n) ndarray
+    k : int, optional
+        If given and ``k < n - 1``, return only the k eigenvalues
+        selected by ``which``.  Otherwise full spectrum.
+    left, right : bool
+        Whether to return left / right eigenvectors.  ``cupy.linalg.eig``
+        returns right only; if ``left=True`` the multi-output path uses
+        scipy LAPACK on the GPU result by recomputing the left set on
+        host, OR falls through to CPU scipy.linalg.eig.
+    which : str
+        Selection criterion for partial spectrum.  'SR'=smallest real,
+        'LR'=largest real, 'SM'=smallest magnitude, etc.  Matches
+        scipy.sparse.eigs.
+
+    Returns
+    -------
+    See description above.  All arrays are host NumPy arrays.
+    """
+    n = A.shape[0]
+    want_partial = k is not None and 0 < k < n - 1
+
+    def _select(w: np.ndarray, k_: int) -> np.ndarray:
+        if which == 'SR':
+            return np.argsort(w.real)[:k_]
+        if which == 'LR':
+            return np.argsort(w.real)[::-1][:k_]
+        if which == 'SM':
+            return np.argsort(np.abs(w))[:k_]
+        if which == 'LM':
+            return np.argsort(np.abs(w))[::-1][:k_]
+        if which == 'SI':
+            return np.argsort(w.imag)[:k_]
+        if which == 'LI':
+            return np.argsort(w.imag)[::-1][:k_]
+        # default smallest real
+        return np.argsort(w.real)[:k_]
+
+    # GPU full-eig path (single device)
+    if _CUPY_OK and USE_GPU and n >= GPU_THRESHOLD and not left:
+        # cupy.linalg.eig: right eigenvectors only.
+        try:
+            A_gpu = _cp.asarray(A)
+            w_gpu, v_gpu = _cp.linalg.eig(A_gpu)
+            w = _cp.asnumpy(w_gpu)
+            vr = _cp.asnumpy(v_gpu)
+            if want_partial:
+                idx = _select(w, int(k))
+                w = w[idx]
+                vr = vr[:, idx]
+            if right:
+                return (w, vr)
+            return (w,)
+        except Exception:
+            # Fall through to CPU
+            pass
+
+    # CPU path: scipy.linalg.eig handles left=True + right=True with
+    # consistent eigenvalue ordering (required by plasmonmode).
+    if not want_partial:
+        # full spectrum on LAPACK
+        from scipy.linalg import eig as _scipy_eig
+        kwargs.setdefault("check_finite", False)
+        if left and right:
+            w, vl, vr = _scipy_eig(A, left=True, right=True, **kwargs)
+            return (w, vl, vr)
+        if left and not right:
+            w, vl = _scipy_eig(A, left=True, right=False, **kwargs)
+            return (w, vl)
+        if not left and right:
+            w, vr = _scipy_eig(A, left=False, right=True, **kwargs)
+            return (w, vr)
+        w = _scipy_eig(A, left=False, right=False, **kwargs)
+        return (w,)
+
+    # Partial-spectrum CPU path
+    from scipy.sparse.linalg import eigs as _scipy_eigs
+    eigs_kwargs = dict(which=which, maxiter=kwargs.pop('maxiter', 1000))
+    if right:
+        w_r, vr = _scipy_eigs(A, k=int(k), **eigs_kwargs)
+    else:
+        w_r = _scipy_eigs(A, k=int(k), return_eigenvectors=False, **eigs_kwargs)
+    if left:
+        if right:
+            w_l, vl = _scipy_eigs(A.T, k=int(k), **eigs_kwargs)
+        else:
+            w_l, vl = _scipy_eigs(A.T, k=int(k), **eigs_kwargs)
+        # NOTE: scipy.sparse.eigs may permute eigenvalues differently for
+        # A and A.T; the caller is responsible for re-pairing via overlap.
+        if right:
+            return (w_r, vl, vr)
+        return (w_l, vl)
+    if right:
+        return (w_r, vr)
+    return (w_r,)
+
+
+# ---------------------------------------------------------------------------
+# Multi-GPU Hermitian eigendecomposition via cusolverMgSyevd
+# ---------------------------------------------------------------------------
+#
+# v1.7.4: cusolverMgSyevd IS in the public cusolverMg.h header (unlike
+# cusolverMgGemm), so a ctypes binding is safe ABI-wise.  Distribution
+# mirrors the LU path: block-cyclic column scatter of A; eigenvalues
+# (W) are stored on device 0; result is gathered back to host.
+#
+# Hermitian only — non-Hermitian general eig has no cusolverMg
+# equivalent.  Callers that need a non-Hermitian path must use
+# ``eig_dispatch`` (which falls back to single-GPU cupy.linalg.eig
+# or CPU scipy.linalg.eig).
+# ---------------------------------------------------------------------------
+
+
+# cusolverEigMode_t
+CUSOLVER_EIG_MODE_NOVECTOR = 0
+CUSOLVER_EIG_MODE_VECTOR = 1
+
+# cublasFillMode_t
+CUBLAS_FILL_MODE_LOWER = 0
+CUBLAS_FILL_MODE_UPPER = 1
+
+# cudaDataType
+_CUDA_R_32F = 0
+_CUDA_R_64F = 1
+_CUDA_C_32F = 4
+_CUDA_C_64F = 5
+
+
+class MultiGPUEigh(object):
+    """Block-cyclic Hermitian eigendecomposition across multiple GPUs.
+
+    Uses cusolverMgSyevd (single-binding, in-place: A returns eigenvectors,
+    W returns ascending real eigenvalues).
+
+    Backend
+    -------
+    cuSolverMg only.  Falls back to ``RuntimeError`` if the system has
+    no libcusolverMg.so or libcudart.so loadable.
+    """
+
+    def __init__(self,
+            n_gpus: int,
+            device_ids: Optional[list] = None) -> None:
+        # Lazy import — multi_gpu_lu's module-level _libcusolverMg /
+        # _libcudart are mutated by cusolvermg_available() (the first
+        # call to it triggers dlopen).  Bind to the module itself so
+        # we always read the *current* attribute, not a stale None
+        # captured at import time.
+        from . import multi_gpu_lu as _mg
+        if not _mg.cusolvermg_available():
+            raise RuntimeError(
+                '[error] cuSolverMg unavailable — '
+                '<libcusolverMg.so> or <libcudart.so> not found')
+        _mg._bind_cusolvermg()
+
+        # Bind cusolverMgSyevd here (not in _bind_cusolvermg to keep that
+        # function focused on LU; ABI of Syevd matches the public header).
+        from ctypes import c_int as _c_int, c_int64 as _c_int64
+        from ctypes import c_void_p as _c_void_p, POINTER as _PTR
+        lib = _mg._libcusolverMg
+        if lib is None:
+            raise RuntimeError(
+                '[error] cuSolverMg lib handle is None despite cusolvermg_available()=True')
+        if not getattr(lib, '_mnpbem_syevd_bound', False):
+            lib.cusolverMgSyevd_bufferSize.argtypes = [
+                _c_void_p, _c_int, _c_int, _c_int,
+                _PTR(_c_void_p), _c_int, _c_int, _c_void_p,
+                _c_void_p, _c_int, _c_int, _PTR(_c_int64)]
+            lib.cusolverMgSyevd_bufferSize.restype = _c_int
+            lib.cusolverMgSyevd.argtypes = [
+                _c_void_p, _c_int, _c_int, _c_int,
+                _PTR(_c_void_p), _c_int, _c_int, _c_void_p,
+                _c_void_p, _c_int, _c_int,
+                _PTR(_c_void_p), _c_int64, _PTR(_c_int)]
+            lib.cusolverMgSyevd.restype = _c_int
+            lib._mnpbem_syevd_bound = True
+
+        self.n_gpus = int(n_gpus)
+        self.device_ids = (
+            list(range(self.n_gpus)) if device_ids is None
+            else list(device_ids))
+        assert len(self.device_ids) == self.n_gpus, \
+            '[error] <device_ids> length must equal <n_gpus>'
+
+        self._lib = lib
+        self._rt = _mg._libcudart
+        self.handle = None
+        self.grid = None
+        self.descr = None
+
+    def _real_dtype_for(self, dtype: np.dtype) -> np.dtype:
+        # W (eigenvalues) is always real even for complex Hermitian inputs.
+        if dtype == np.complex128 or dtype == np.float64:
+            return np.dtype(np.float64)
+        if dtype == np.complex64 or dtype == np.float32:
+            return np.dtype(np.float32)
+        raise ValueError(
+            '[error] unsupported dtype <{}> for cusolverMgSyevd'.format(dtype))
+
+    def _cuda_dtype_for(self, dtype: np.dtype) -> int:
+        if dtype == np.complex128:
+            return _CUDA_C_64F
+        if dtype == np.complex64:
+            return _CUDA_C_32F
+        if dtype == np.float64:
+            return _CUDA_R_64F
+        if dtype == np.float32:
+            return _CUDA_R_32F
+        raise ValueError(
+            '[error] unsupported dtype <{}> for cusolverMgSyevd'.format(dtype))
+
+    def _w_cuda_dtype_for(self, dtype: np.dtype) -> int:
+        rdt = self._real_dtype_for(dtype)
+        if rdt == np.dtype(np.float64):
+            return _CUDA_R_64F
+        return _CUDA_R_32F
+
+    def eigh(self, A: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute (w, v) of a Hermitian matrix A on multiple GPUs.
+
+        Returns
+        -------
+        w : (n,) real ndarray, ascending order.
+        v : (n, n) ndarray, columns are eigenvectors (in-place
+            replacement of A on device; gathered to host).
+        """
+        from ctypes import (
+            c_int as _c_int, c_int32 as _c_int32, c_int64 as _c_int64,
+            c_void_p as _c_void_p, POINTER as _PTR, byref as _byref,
+        )
+        from .multi_gpu_lu import (
+            _cuda_set_device, _cuda_malloc, _cuda_free,
+            _cuda_memcpy_h2d, _cuda_memcpy_d2h, _cuda_device_sync,
+            _check_status, _itemsize_for,
+            GRID_MAPPING_COL_MAJOR,
+        )
+
+        was_cupy = hasattr(A, 'get') and not isinstance(A, np.ndarray)
+        if was_cupy:
+            try:
+                A = A.get()
+            except Exception:
+                A = np.asarray(A)
+        # Free other cupy pool blocks before allocating multi-GPU buffers
+        try:
+            _cp.get_default_memory_pool().free_all_blocks()  # type: ignore
+            _cp.get_default_pinned_memory_pool().free_all_blocks()  # type: ignore
+        except Exception:
+            pass
+
+        assert A.ndim == 2 and A.shape[0] == A.shape[1], \
+            '[error] cusolverMgSyevd requires square matrix'
+        N = A.shape[0]
+        dtype = A.dtype
+        cuda_dt = self._cuda_dtype_for(dtype)
+        w_cuda_dt = self._w_cuda_dtype_for(dtype)
+        w_dt = self._real_dtype_for(dtype)
+        itemsz = _itemsize_for(dtype)
+        w_itemsz = _itemsize_for(w_dt)
+        lib = self._lib
+
+        # Optional ABI-debug tracing (set MNPBEM_EIGH_TRACE=1 for stderr
+        # log of each cuSolverMg call sequence) — disabled by default.
+        _trace = os.environ.get('MNPBEM_EIGH_TRACE', '0') == '1'
+        def _t(msg: str) -> None:
+            if _trace:
+                import sys
+                sys.stderr.write('[MultiGPUEigh] ' + msg + '\n')
+                sys.stderr.flush()
+
+        # Create handle / grid / descriptor
+        _t('cusolverMgCreate')
+        h = _c_void_p(0)
+        _check_status(lib.cusolverMgCreate(_byref(h)), 'cusolverMgCreate')
+        self.handle = h
+        _t('cusolverMgDeviceSelect')
+        dev_arr_c = (_c_int * self.n_gpus)(*self.device_ids)
+        _check_status(
+            lib.cusolverMgDeviceSelect(h, _c_int(self.n_gpus), dev_arr_c),
+            'cusolverMgDeviceSelect')
+
+        _t('cusolverMgCreateDeviceGrid')
+        grid = _c_void_p(0)
+        dev_arr32 = (_c_int32 * self.n_gpus)(*self.device_ids)
+        _check_status(
+            lib.cusolverMgCreateDeviceGrid(
+                _byref(grid), _c_int32(1), _c_int32(self.n_gpus),
+                dev_arr32, _c_int(GRID_MAPPING_COL_MAJOR)),
+            'cusolverMgCreateDeviceGrid')
+        self.grid = grid
+        _t('grid OK')
+
+        # Block-cyclic distribution params (mirror MultiGPULU)
+        blk = int(os.environ.get('MNPBEM_VRAM_SHARE_BLK', '256'))
+        max_blk = max(32, ((N // self.n_gpus + 31) // 32) * 32)
+        blk = min(blk, max_blk)
+        if blk < 32:
+            blk = 32
+
+        nblocks = (N + blk - 1) // blk
+        max_blocks_per_gpu = (nblocks + self.n_gpus - 1) // self.n_gpus
+        local_cols_alloc = max_blocks_per_gpu * blk
+
+        _t('alloc A tiles N={} local_cols_alloc={} blk={}'.format(N, local_cols_alloc, blk))
+        # Per-GPU A tiles
+        ptrs_A = (_c_void_p * self.n_gpus)()
+        for g, dev in enumerate(self.device_ids):
+            _cuda_set_device(dev)
+            nbytes_A = N * local_cols_alloc * itemsz
+            ptrs_A[g] = _c_void_p(_cuda_malloc(nbytes_A))
+
+        # Scatter A (block-cyclic, F-order)
+        A_f = np.asfortranarray(A)
+        for g, dev in enumerate(self.device_ids):
+            _cuda_set_device(dev)
+            tile_full = np.zeros((N, local_cols_alloc), dtype=A_f.dtype, order='F')
+            local_offset = 0
+            for ib in range(nblocks):
+                if ib % self.n_gpus != g:
+                    continue
+                start = ib * blk
+                stop = min(N, start + blk)
+                ncols = stop - start
+                tile_full[:, local_offset:local_offset + ncols] = A_f[:, start:stop]
+                local_offset += blk
+            _cuda_memcpy_h2d(int(ptrs_A[g] or 0), tile_full)
+
+        # Descriptor for A
+        _t('CreateMatrixDesc')
+        descr = _c_void_p(0)
+        _check_status(
+            lib.cusolverMgCreateMatrixDesc(
+                _byref(descr), _c_int64(N), _c_int64(N),
+                _c_int64(N), _c_int64(blk),
+                _c_int(cuda_dt), grid),
+            'cusolverMgCreateMatrixDesc(A)')
+        self.descr = descr
+
+        # W lives on device 0 (cusolverMgSyevd doc: W is single-device).
+        # Allocate (N,) on device 0.
+        _t('alloc W on device 0')
+        _cuda_set_device(self.device_ids[0])
+        ptr_W = _c_void_p(_cuda_malloc(N * w_itemsz))
+
+        # Query workspace size
+        _t('Syevd_bufferSize')
+        lwork = _c_int64(0)
+        _check_status(
+            lib.cusolverMgSyevd_bufferSize(
+                h,
+                _c_int(CUSOLVER_EIG_MODE_VECTOR),
+                _c_int(CUBLAS_FILL_MODE_LOWER),
+                _c_int(N), ptrs_A,
+                _c_int(1), _c_int(1), descr,
+                ptr_W, _c_int(w_cuda_dt), _c_int(cuda_dt),
+                _byref(lwork)),
+            'cusolverMgSyevd_bufferSize')
+        work_lwork = int(lwork.value)
+        _t('work_lwork={}'.format(work_lwork))
+
+        # Workspace per device
+        ptrs_w = (_c_void_p * self.n_gpus)()
+        for g, dev in enumerate(self.device_ids):
+            _cuda_set_device(dev)
+            ptrs_w[g] = _c_void_p(_cuda_malloc(max(1, work_lwork) * itemsz))
+
+        # Run Syevd
+        _t('Syevd call')
+        info = _c_int(0)
+        _check_status(
+            lib.cusolverMgSyevd(
+                h,
+                _c_int(CUSOLVER_EIG_MODE_VECTOR),
+                _c_int(CUBLAS_FILL_MODE_LOWER),
+                _c_int(N), ptrs_A,
+                _c_int(1), _c_int(1), descr,
+                ptr_W, _c_int(w_cuda_dt), _c_int(cuda_dt),
+                ptrs_w, _c_int64(work_lwork), _byref(info)),
+            'cusolverMgSyevd')
+        if info.value != 0:
+            # Free intermediates before raising
+            for g, dev in enumerate(self.device_ids):
+                try:
+                    _cuda_set_device(dev)
+                    _cuda_free(int(ptrs_w[g] or 0))
+                except Exception:
+                    pass
+            for g, dev in enumerate(self.device_ids):
+                try:
+                    _cuda_set_device(dev)
+                    _cuda_free(int(ptrs_A[g] or 0))
+                except Exception:
+                    pass
+            _cuda_set_device(self.device_ids[0])
+            _cuda_free(int(ptr_W.value or 0))
+            raise RuntimeError(
+                '[error] cusolverMgSyevd reports info={}'.format(info.value))
+        _cuda_device_sync()
+
+        # Gather W from device 0
+        W_host = np.empty(N, dtype=w_dt)
+        _cuda_set_device(self.device_ids[0])
+        _cuda_memcpy_d2h(W_host, int(ptr_W.value or 0), N * w_itemsz)
+
+        # Gather A (= eigenvectors V) back to host, block-cyclic.
+        V_f = np.empty((N, N), dtype=dtype, order='F')
+        for g, dev in enumerate(self.device_ids):
+            _cuda_set_device(dev)
+            tile_full = np.empty((N, local_cols_alloc), dtype=dtype, order='F')
+            nbytes = N * local_cols_alloc * itemsz
+            _cuda_memcpy_d2h(tile_full, int(ptrs_A[g] or 0), nbytes)
+            local_offset = 0
+            for ib in range(nblocks):
+                if ib % self.n_gpus != g:
+                    continue
+                start = ib * blk
+                stop = min(N, start + blk)
+                ncols = stop - start
+                V_f[:, start:stop] = tile_full[:, local_offset:local_offset + ncols]
+                local_offset += blk
+
+        # Free intermediates
+        for g, dev in enumerate(self.device_ids):
+            _cuda_set_device(dev)
+            _cuda_free(int(ptrs_w[g] or 0))
+            _cuda_free(int(ptrs_A[g] or 0))
+        _cuda_set_device(self.device_ids[0])
+        _cuda_free(int(ptr_W.value or 0))
+        return W_host, np.ascontiguousarray(V_f)
+
+    def close(self) -> None:
+        lib = self._lib
+        if self.descr is not None:
+            try:
+                lib.cusolverMgDestroyMatrixDesc(self.descr)
+            except Exception:
+                pass
+            self.descr = None
+        if self.grid is not None:
+            try:
+                lib.cusolverMgDestroyGrid(self.grid)
+            except Exception:
+                pass
+            self.grid = None
+        if self.handle is not None:
+            try:
+                lib.cusolverMgDestroy(self.handle)
+            except Exception:
+                pass
+            self.handle = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def matmul_dispatch(A: np.ndarray, B: np.ndarray, **kwargs: Any) -> np.ndarray:

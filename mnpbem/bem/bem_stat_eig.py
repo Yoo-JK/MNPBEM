@@ -16,23 +16,149 @@ import numpy as np
 from typing import Optional, Tuple, Any
 
 from ..greenfun import CompGreenStat, CompStruct
-from ..utils.gpu import matmul_dispatch, solve_dispatch, to_host, is_cupy_array
+from ..utils.gpu import (
+    matmul_dispatch, solve_dispatch, to_host, is_cupy_array,
+    eig_dispatch,
+)
 from .plasmonmode import plasmonmode
 
 
+# v1.7.4: ``MNPBEM_GPU_EIG=1`` opt-in routes BEMStatEig's quasistatic
+# eigenmode decomposition through ``eig_dispatch`` (single-GPU
+# ``cupy.linalg.eig`` for n >= GPU_THRESHOLD).  When disabled (default)
+# the path matches v1.7.3 exactly — ``plasmonmode()`` runs on the host
+# via scipy.linalg.eig / scipy.sparse.eigs.  This keeps the regression
+# surface zero while exposing the GPU win for production sweeps.
+#
 # v1.7.3 Phase 2: BEMStatEig's quasistatic eigenmode pipeline is dominated
-# by scipy.sparse.linalg.eigs (CPU only — no cuSolverMg eigh equivalent),
-# but the surrounding GEMMs / dense solves (ur @ inv(resolvent) @ ul) still
-# go through matmul_dispatch / solve_dispatch and pick up MNPBEM_VRAM_SHARE_*
-# automatically.  The remaining wins are pool drains after plasmonmode()
-# and the per-wavelength resolvent solve, to keep the cupy pool from
-# accumulating across long sweeps.
+# by scipy.sparse.linalg.eigs / scipy.linalg.eig (CPU only — no cuSolverMg
+# eigh equivalent for non-Hermitian F).  The surrounding GEMMs / dense
+# solves (ur @ inv(resolvent) @ ul) still go through matmul_dispatch /
+# solve_dispatch and pick up MNPBEM_VRAM_SHARE_* automatically.  The
+# remaining wins are pool drains after plasmonmode() and the per-
+# wavelength resolvent solve, to keep the cupy pool from accumulating
+# across long sweeps.
+USE_GPU_EIG: bool = os.environ.get("MNPBEM_GPU_EIG", "0").strip() == "1"
 try:
     import cupy as _cp_eig  # type: ignore
     _CUPY_OK_EIG = True
 except Exception:
     _cp_eig = None  # type: ignore
     _CUPY_OK_EIG = False
+
+
+def _gpu_eig_available() -> bool:
+    """Return True iff cupy.linalg.eig (geev) is callable on this build.
+
+    cupy 14 + CUDA 12.x ship without ``geev`` in cuSOLVER, so calling
+    ``cupy.linalg.eig`` raises ``RuntimeError("geev is not available")``.
+    Detecting that up-front avoids paying the import + tiny-matrix
+    overhead inside ``_plasmonmode_gpu`` only to fall back to LAPACK.
+    """
+    if not _CUPY_OK_EIG:
+        return False
+    try:
+        tiny = _cp_eig.asarray(np.eye(4, dtype=np.complex128))
+        _cp_eig.linalg.eig(tiny)
+        return True
+    except Exception:
+        return False
+
+
+_GPU_EIG_AVAIL: Optional[bool] = None
+
+
+def _gpu_eig_available_cached() -> bool:
+    global _GPU_EIG_AVAIL
+    if _GPU_EIG_AVAIL is None:
+        _GPU_EIG_AVAIL = _gpu_eig_available()
+    return _GPU_EIG_AVAIL
+
+
+def _plasmonmode_gpu(p, F, nev, options):
+    """GPU-accelerated plasmonmode replacement (MNPBEM_GPU_EIG=1 path).
+
+    Path selection
+    --------------
+    - If cupy.linalg.eig (geev) is unavailable in the current cupy build
+      (e.g. cupy 14 + CUDA 12.x), the function returns the *same* result
+      as ``plasmonmode()`` by calling it directly — no slowdown, no
+      regression.
+    - When geev becomes available, the right-eigenpair is computed on
+      GPU (``cupy.linalg.eig``), the left-eigenpair is computed on host
+      (``scipy.linalg.eig(F.T)``), eigenvalues are paired by nearest
+      neighbour, and the result is bi-orthogonalised.
+
+    The wrapper intentionally never picks a strategy that is slower than
+    ``plasmonmode()``: for n >= 2000 the host code path uses
+    ``scipy.sparse.linalg.eigs`` (ARPACK, much faster than dense LAPACK
+    when ``nev << n``), and our GPU path can only beat that once cupy
+    ships a partial-eig backend.  Until then, falling through to
+    ``plasmonmode()`` is the correct call.
+
+    Parameters
+    ----------
+    p : ComParticle (unused; F encodes the geometry).
+    F : (n, n) ndarray — surface derivative of the quasistatic Green
+        function.  May be cupy or numpy; brought to host.
+    nev : int — requested number of eigenmodes.
+    options : dict — passed through if we fall back to plasmonmode().
+
+    Returns
+    -------
+    ene, ur, ul : same shape/semantics as plasmonmode().
+    """
+    if is_cupy_array(F):
+        F = to_host(F)
+    n = F.shape[0]
+    nev_actual = min(nev, n - 1) if n > 1 else 1
+
+    # Fast path: if GPU eig is not usable, just call the CPU
+    # plasmonmode.  This matches v1.7.3 behaviour exactly so a user who
+    # flips MNPBEM_GPU_EIG=1 on a system without working geev never sees
+    # a perf regression.
+    if not _gpu_eig_available_cached():
+        return plasmonmode(p, nev=nev, **options)
+
+    # GPU path: right eigenpair on device, left eigenpair on host.
+    out_r = eig_dispatch(F, k=None, left=False, right=True)
+    ene_all = out_r[0]
+    vr_all = out_r[1]
+
+    from scipy.linalg import eig as _scipy_eig
+    ene_l, vl_all = _scipy_eig(F.T, left=False, right=True,
+            check_finite=False)
+
+    # Match left eigenvalues to right eigenvalues by nearest-neighbour.
+    # eigenvalues of F and F.T are mathematically identical; numerical
+    # ordering may differ across solvers, so we re-pair explicitly.
+    idx_sort = np.argsort(ene_all.real)[:nev_actual]
+    ene_diag = ene_all[idx_sort]
+    ur = vr_all[:, idx_sort]
+
+    ene_l_idx = []
+    used = set()
+    for w in ene_diag:
+        d = np.abs(ene_l - w)
+        order = np.argsort(d)
+        for j in order:
+            ji = int(j)
+            if ji not in used:
+                ene_l_idx.append(ji)
+                used.add(ji)
+                break
+    ul = vl_all[:, np.asarray(ene_l_idx, dtype=int)].conj().T
+
+    # Sort by ascending real part (final ordering)
+    sort_idx = np.argsort(ene_diag.real)
+    ene = ene_diag[sort_idx]
+    ur = ur[:, sort_idx]
+    ul = ul[sort_idx, :]
+
+    # Bi-orthogonalisation: ul = (ul @ ur)^{-1} @ ul
+    overlap = ul @ ur
+    ul = np.linalg.solve(overlap, ul)
+    return ene, ur, ul
 
 
 def _gpu_pool_cleanup_eig(apply_limit: bool = False) -> None:
@@ -178,8 +304,11 @@ class BEMStatEig(object):
         if _CUPY_OK_EIG:
             _gpu_pool_cleanup_eig()
 
-        # eigenmode expansion using plasmonmode
-        ene, ur, ul = plasmonmode(p, nev = nev, **options)
+        # eigenmode expansion using plasmonmode (or GPU dispatch when opted-in)
+        if USE_GPU_EIG and _CUPY_OK_EIG:
+            ene, ur, ul = _plasmonmode_gpu(p, F, nev, options)
+        else:
+            ene, ur, ul = plasmonmode(p, nev = nev, **options)
         # v1.7.3 Phase 2: plasmonmode internally builds (and discards) a dense
         # F + may route through cupy for the eigendecomposition staging.
         # Drain the pool so the constructor leaves the device in a clean state.

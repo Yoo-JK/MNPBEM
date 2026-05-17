@@ -171,17 +171,50 @@ def _distributed_block_assemble_layer(green: Any,
     Green function.  We keep a separate helper here so the layered path
     can grow extra parameters (e.g. block-key forwarding for the (ss, hh,
     p, sh, hs) decomposition) without touching the BEMRetIter helper.
+
+    Robustness mirrors BEMRetIter helper: scalar-zero promotion for
+    con==0 cross blocks + numpy/cupy backend coercion before add/sub.
     """
     from ..utils.distributed_matrix import DistributedMatrix
     import numpy as _np_local
 
+    try:
+        import cupy as _cp_local  # type: ignore
+        _cp_ok = True
+    except Exception:
+        _cp_local = None  # type: ignore
+        _cp_ok = False
+
+    def _safe_eval(i: int, j: int, key: str, c0: int, c1: int) -> Any:
+        blk = green.eval_block(i, j, key, enei, c0, c1)
+        if isinstance(blk, (int, float)) and blk == 0:
+            return _np_local.zeros((nrows, c1 - c0), dtype = _np_local.complex128)
+        return blk
+
+    def _is_cupy(x: Any) -> bool:
+        return _cp_ok and isinstance(x, _cp_local.ndarray)
+
+    def _coerce_pair(a: Any, b: Any) -> Tuple[Any, Any]:
+        if _is_cupy(a) or _is_cupy(b):
+            if not _is_cupy(a):
+                a = _cp_local.asarray(a, dtype = _np_local.complex128)
+            if not _is_cupy(b):
+                b = _cp_local.asarray(b, dtype = _np_local.complex128)
+        return a, b
+
     def _evalfn(gpu_idx: int, c0: int, c1: int) -> Any:
         out = None
         for (i, j, key, sign) in ncomb_list:
-            blk = green.eval_block(i, j, key, enei, c0, c1)
+            blk = _safe_eval(i, j, key, c0, c1)
             if out is None:
-                out = sign * blk if sign != 1 else blk.copy()
+                if sign == 1:
+                    out = blk.copy() if hasattr(blk, 'copy') else _np_local.asarray(blk).copy()
+                elif sign == -1:
+                    out = -blk
+                else:
+                    out = sign * blk
             else:
+                out, blk = _coerce_pair(out, blk)
                 if sign == 1:
                     out = out + blk
                 elif sign == -1:
