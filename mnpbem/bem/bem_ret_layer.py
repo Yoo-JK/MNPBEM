@@ -291,6 +291,35 @@ class BEMRetLayer(object):
                       'm_full'):
             if hasattr(self, _attr):
                 setattr(self, _attr, None)
+        # v1.7.4: also drop the reflected-Green per-component dicts that
+        # GreenRetLayer.eval_components caches on ``self.gr`` (G_comp /
+        # F_comp / Gp_comp).  For a 15072-face substrate dimer each of
+        # G_comp/F_comp is 5 dict entries x (n,n) c128 (~18 GB) and
+        # Gp_comp is 5 x (n,3,n) c128 (~54 GB) — a single wavelength's
+        # cache is roughly 90 GB of host RSS that survives across
+        # wavelengths because BEMRetLayer.init() never touched it.
+        # On a 7-wavelength sweep this pinned ~150 GB host residue
+        # *before* the next wavelength's eval_components could overwrite
+        # the dicts, and during the overwrite the peak briefly doubled
+        # (old dict + new dict held simultaneously), producing the
+        # 195 GB / 257 GB VmPeak the user observed at wl_0450 entry.
+        # Setting these to None up-front lets _gc.collect() actually
+        # free the prior wavelength's reflected blocks before the next
+        # BEM build allocates its own G/H/Sigma matrices.
+        _gr = getattr(getattr(self, 'g', None), 'gr', None)
+        if _gr is not None:
+            for _gr_attr in ('G_comp', 'F_comp', 'Gp_comp'):
+                if hasattr(_gr, _gr_attr):
+                    setattr(_gr, _gr_attr, None)
+            # Reset cached enei so the next eval_components rebuilds
+            # the table cleanly without relying on stale data.
+            if hasattr(_gr, 'enei'):
+                _gr.enei = None
+        try:
+            import gc as _gc
+            _gc.collect()
+        except Exception:
+            pass
         if _CUPY_OK_V172:
             try:
                 _mempool_pre = _cp_v172.get_default_memory_pool()
@@ -303,8 +332,6 @@ class BEMRetLayer(object):
                     _pool_limit_gb = 0.0
                 if _pool_limit_gb > 0:
                     _mempool_pre.set_limit(size=int(_pool_limit_gb * (1024 ** 3)))
-                import gc as _gc
-                _gc.collect()
                 _cp_v172.cuda.runtime.deviceSynchronize()
                 _mempool_pre.free_all_blocks()
                 _pinned_pre.free_all_blocks()
