@@ -308,7 +308,13 @@ class BEMRetLayer(object):
         # BEM build allocates its own G/H/Sigma matrices.
         _gr = getattr(getattr(self, 'g', None), 'gr', None)
         if _gr is not None:
-            for _gr_attr in ('G_comp', 'F_comp', 'Gp_comp'):
+            # ``G_comp``/``F_comp``/``Gp_comp`` are the per-component
+            # dicts produced by eval_components (used by BEMRetLayer);
+            # ``G``/``F``/``Gp`` are the single-key arrays produced by
+            # the scalar eval() path (used by potential/field).  Both
+            # families can pin (n,n) or (n,3,n) c128 buffers across
+            # wavelengths if not cleared.
+            for _gr_attr in ('G_comp', 'F_comp', 'Gp_comp', 'G', 'F', 'Gp'):
                 if hasattr(_gr, _gr_attr):
                     setattr(_gr, _gr_attr, None)
             # Reset cached enei so the next eval_components rebuilds
