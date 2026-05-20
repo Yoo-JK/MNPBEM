@@ -221,8 +221,24 @@ def lu_solve_dispatch(piv_pkg: Tuple, b: np.ndarray, **kwargs: Any) -> np.ndarra
             chunk_size=chunk_size,
             trans=trans)
     if tag == "gpu":
+        lu_gpu = piv_pkg[1]
+        # dtype-aware solve: when MNPBEM_GPU_LOWPREC=1 the LU factor is
+        # held in complex64 on device while callers (e.g. BEMRetLayer
+        # _solve_single) build the RHS in complex128.  Cusolver's getrs
+        # requires LU and B to share dtype, so we down-cast the RHS to
+        # the LU dtype before solving and up-cast the result back to the
+        # caller's dtype.  This keeps the 4x memory savings of the c64
+        # LU factor (critical for the 2n x 2n m_full of the substrate
+        # path) without forcing a host-side scipy.lu_solve fallback.
+        b_dtype_target = (b.dtype if hasattr(b, 'dtype')
+                          else np.asarray(b).dtype)
         b_gpu = _cp.asarray(b)
-        x_gpu = _cp_lu_solve((piv_pkg[1], piv_pkg[2]), b_gpu)
+        if (hasattr(lu_gpu, 'dtype')
+                and b_gpu.dtype != lu_gpu.dtype):
+            b_gpu = b_gpu.astype(lu_gpu.dtype, copy=False)
+        x_gpu = _cp_lu_solve((lu_gpu, piv_pkg[2]), b_gpu)
+        if x_gpu.dtype != b_dtype_target:
+            x_gpu = x_gpu.astype(b_dtype_target, copy=False)
         return _cp.asnumpy(x_gpu)
     kwargs.setdefault("check_finite", False)
     return _scipy_lu_solve((piv_pkg[1], piv_pkg[2]), b, **kwargs)

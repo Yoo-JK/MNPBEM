@@ -683,25 +683,27 @@ class BEMRetLayer(object):
             if isinstance(G2e, dict):
                 for _k in list(G2e.keys()):
                     G2e[_k] = _c128(G2e[_k])
-            # Cast LU factors back to complex128 (single-GPU 'gpu' tag and
-            # CPU 'cpu' tag both carry an ndarray-like LU slot at index 1;
-            # the 'mgpu' tag holds an opaque handle and is left alone).
-            for _luattr in ('_G1_lu', '_G2p_lu', '_Gamma_lu', 'm_lu'):
-                _tag = getattr(self, _luattr, None)
-                if (isinstance(_tag, tuple) and len(_tag) == 3
-                        and _tag[0] in ('gpu', 'cpu')
-                        and _tag[1] is not None
-                        and hasattr(_tag[1], 'astype')
-                        and hasattr(_tag[1], 'dtype')
-                        and _tag[1].dtype == np.complex64):
-                    setattr(self, _luattr,
-                            (_tag[0], _tag[1].astype(np.complex128), _tag[2]))
-            if _CUPY_OK_V172:
-                try:
-                    _cp_v172.cuda.runtime.deviceSynchronize()
-                    _cp_v172.get_default_memory_pool().free_all_blocks()
-                except Exception:
-                    pass
+            # LU factors are intentionally left in their native fp32/
+            # complex64 form on the device.  CRITICAL difference vs
+            # bem_ret.py: m_lu here is the (2n x 2n) block LU (~14.6 GB
+            # c128 at n=15096); an in-place device astype(c128) would
+            # keep BOTH the c64 source (7.3 GB) and the c128 image
+            # (14.6 GB) alive while cupy ran the copy, and accumulated
+            # across the four LU factors this pinned ~25 GB of device
+            # memory after init() returned.  The next wavelength's
+            # m_full c64 build (7.3 GB) then could not find a contiguous
+            # chunk and the cuSolverMg / cupy LU path stalled (the
+            # user-visible "warmup done, then 0% GPU forever" hang at
+            # wl 3 of the sub-fp32 sweep).
+            #
+            # Fix: keep the LU factor c64 on device.  ``lu_solve_dispatch``
+            # has been taught to down-cast a complex128 RHS to the LU
+            # dtype before cusolverDnZgetrs and up-cast the result back,
+            # so downstream solve() sees its expected c128 output without
+            # the device-side dtype widening.  This preserves the full
+            # 4x memory saving + 14x LU speed-up of fp32 mode while
+            # leaving GPU residue at 0 GB after each wavelength's cleanup.
+            pass
 
         self.G1i = G1i
         self.G2pi = G2pi
