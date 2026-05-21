@@ -34,6 +34,13 @@ class GreenRetLayer(object):
         self.F = None
         self.Gp = None
 
+        # Per-component reflected Green caches (filled by eval_components).
+        # Initialised here so the wavelength cache guard in eval_components
+        # can test them without an AttributeError on the first call.
+        self.G_comp = None
+        self.F_comp = None
+        self.Gp_comp = None
+
         # MATLAB init.m: offdiag='full' -> skip shape-function sparse precompute
         # (use slow but exact full boundary element integration at eval time).
         # Default (anything else, including absent) -> shape-function singularity
@@ -777,6 +784,29 @@ class GreenRetLayer(object):
           self.F_comp  : dict of (n1, n2) arrays (normal derivative)
           self.Gp_comp : dict of (n1, n2, 3) arrays (Cartesian derivative)
         """
+        _gprof = os.environ.get('MNPBEM_INIT_PROFILE', '0') == '1'
+        if _gprof:
+            import time as _t
+            _gt0 = _t.perf_counter()
+
+        # The per-component reflected Green function (G_comp/F_comp/Gp_comp)
+        # depends only on ``enei`` and the fixed geometry, never on which
+        # CompGreenRetLayer.eval() key requested it.  BEMRetLayer.init()
+        # issues four outer-surface evals per wavelength (G22, G12, H22,
+        # H12), each of which previously re-ran the full O(n^2) tabulated
+        # interpolation + refinement here — a 4x redundancy that dominates
+        # the substrate BEM build (≈19s per call on a 2696-face dimer).
+        # Cache by wavelength so the heavy work runs once per enei; mirrors
+        # the guard already present in eval() above.
+        if (self.enei is not None and np.isclose(self.enei, enei)
+                and self.G_comp is not None
+                and self.F_comp is not None
+                and self.Gp_comp is not None):
+            if _gprof:
+                print('[gr-prof]   eval_components CACHED (enei={:.3f})'.format(
+                    enei), flush=True)
+            return
+
         n1 = self.p1.pos.shape[0]
         n2 = self.p2.pos.shape[0]
 
@@ -789,6 +819,9 @@ class GreenRetLayer(object):
 
         G_dict, Fr_dict, Fz_dict = self.tab.eval_components(
             enei, r_flat, z1_flat, z2_flat)
+        if _gprof:
+            print('[gr-prof]   tab.eval_components(full) {:.3f}s'.format(
+                _t.perf_counter() - _gt0), flush=True); _gt0 = _t.perf_counter()
 
         self.enei = enei
         self.G_comp = {}
@@ -799,6 +832,22 @@ class GreenRetLayer(object):
         r_safe = np.maximum(self._r, np.finfo(float).eps)
         area2 = self.p2.area  # (n2,)
 
+        # Precompute the area-weighted Cartesian factors once.  At 5768
+        # faces each (n,3,n) c128 Gp block is ~1.6 GB; the old form
+        # allocated it via np.zeros, filled the slices, then re-allocated
+        # a second full copy for ``Gp * area2`` (peak 2 blocks) and finally
+        # routed the (n,3,n) reduction through einsum.  Folding area2 into
+        # the per-slice expressions, writing into a single np.empty buffer,
+        # and computing F directly from the three slices halves the
+        # allocation traffic and the einsum overhead — numerically identical
+        # to the previous form (associativity of the elementwise products).
+        area_row = area2[np.newaxis, :]                  # (1, n2)
+        dx_over_r = self._dx / r_safe                    # (n1, n2)
+        dy_over_r = self._dy / r_safe
+        nvx = nvec1[:, 0:1]
+        nvy = nvec1[:, 1:2]
+        nvz = nvec1[:, 2:3]
+
         for name in G_dict:
             G = G_dict[name].reshape(n1, n2)
             Fr = Fr_dict[name].reshape(n1, n2)
@@ -806,22 +855,35 @@ class GreenRetLayer(object):
 
             # MATLAB initrefl2.m line 35-40: Gp uses raw Fr/Fz, then area'
             # is applied via fun(...); G itself is multiplied by area' in place.
-            self.G_comp[name] = G * area2[np.newaxis, :]
+            self.G_comp[name] = G * area_row
 
-            Gp = np.zeros((n1, 3, n2), dtype = complex)
-            Gp[:, 0, :] = Fr * self._dx / r_safe
-            Gp[:, 1, :] = Fr * self._dy / r_safe
-            Gp[:, 2, :] = Fz
-            Gp = Gp * area2[np.newaxis, np.newaxis, :]
+            Fr_area = Fr * area_row
+            gp_x = Fr_area * dx_over_r
+            gp_y = Fr_area * dy_over_r
+            gp_z = Fz * area_row
+
+            Gp = np.empty((n1, 3, n2), dtype = complex)
+            Gp[:, 0, :] = gp_x
+            Gp[:, 1, :] = gp_y
+            Gp[:, 2, :] = gp_z
             self.Gp_comp[name] = Gp
 
-            # Normal derivative: F = inner(nvec, Gp) (MATLAB initrefl2.m line 197)
-            self.F_comp[name] = np.einsum('ik,ikj->ij', nvec1, Gp)
+            # Normal derivative: F = inner(nvec, Gp) (MATLAB initrefl2.m
+            # line 197).  Compute directly from the slices to skip einsum's
+            # (n,3,n) intermediate; identical to np.einsum('ik,ikj->ij').
+            self.F_comp[name] = gp_x * nvx + gp_y * nvy + gp_z * nvz
+
+        if _gprof:
+            print('[gr-prof]   build G/F/Gp comp        {:.3f}s'.format(
+                _t.perf_counter() - _gt0), flush=True); _gt0 = _t.perf_counter()
 
         # Apply refinement if configured
         has_refinement = (len(self._diag_id) > 0 or len(self._offdiag_ind) > 0)
         if has_refinement:
             self._apply_refinement_components()
+        if _gprof:
+            print('[gr-prof]   apply_refinement          {:.3f}s'.format(
+                _t.perf_counter() - _gt0), flush=True)
 
     # -----------------------------------------------------------------
     #  Surface derivative computation (unrefined, for eval())

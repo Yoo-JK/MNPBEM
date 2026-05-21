@@ -7,6 +7,7 @@ import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 
 from ..utils.gpu import lu_factor_dispatch, lu_solve_dispatch, matmul_dispatch, to_host, is_cupy_array
+from ..utils import gpu as _gpu_mod
 
 from ..greenfun import CompGreenRetLayer, CompStruct
 from .bem_ret import _vram_share_lu_kwargs
@@ -48,6 +49,111 @@ except Exception:
 # When the gate is OFF (default) the legacy single-GPU/host path runs
 # verbatim -- this keeps every regression scenario bit-identical.
 # ---------------------------------------------------------------------------
+
+
+def _init_profile_enabled() -> bool:
+    return os.environ.get('MNPBEM_INIT_PROFILE', '0') == '1'
+
+
+def _prof_mark(label, t_prev, store=None):
+    """Print + record an init() stage timing when MNPBEM_INIT_PROFILE=1.
+
+    Returns the current perf_counter so the caller can chain stage marks.
+    """
+    import time as _time
+    now = _time.perf_counter()
+    if _init_profile_enabled():
+        dt = now - t_prev
+        print('[init-prof] {:<22s} {:8.3f}s'.format(label, dt), flush=True)
+        if store is not None:
+            store.append((label, dt))
+    return now
+
+
+def _assemble_m_blocks_resident(
+        L1, L2p, Sigma1, Sigma1e, Gamma,
+        G2, G2e, H2, H2e,
+        npar, nperp, k, wd, wd_real, lowprec):
+    """Assemble the four m11..m22 BEM blocks with each operand uploaded to
+    the GPU exactly once.
+
+    The legacy path issued ~12 separate ``matmul_dispatch`` calls, each of
+    which re-uploaded BOTH operands and downloaded the result.  Reused
+    operands (L1 x3, Sigma1e x2, Sigma1 x2, Gammapar x2) were therefore
+    transferred over PCIe several times — ~5 GB of redundant traffic per
+    wavelength on a 5768-face fp32 substrate dimer (≈19s).  Here every
+    matrix is moved to the device once, all GEMMs run resident, and only
+    the four host m_ij blocks are downloaded.  Returns ``None`` when the
+    GPU path is unavailable so the caller falls back to the host path
+    (numerically identical, just slower).
+    """
+    if not (_CUPY_OK_V172 and getattr(_gpu_mod, 'USE_GPU', False)):
+        return None
+    if _vram_share_active():
+        # Multi-GPU column-split assembly is owned by matmul_dispatch's
+        # distributed path; do not shadow it with the single-device build.
+        return None
+    cp = _cp_v172
+    try:
+        n = L1.shape[0]
+
+        def up(a):
+            if a is None:
+                return None
+            ad = cp.asarray(a)
+            if lowprec and ad.dtype == cp.complex128:
+                ad = ad.astype(cp.complex64)
+            return ad
+
+        L1g = up(L1); L2pg = up(L2p)
+        S1g = up(Sigma1); S1eg = up(Sigma1e); Gg = up(Gamma)
+        ss = up(G2['ss']); sh = up(G2['sh']); hh = up(G2['hh']); hs = up(G2['hs'])
+        ess = up(G2e['ss']); esh = up(G2e['sh']); ehh = up(G2e['hh'])
+        h2hs = up(H2['hs']); h2hh = up(H2['hh'])
+        h2ess = up(H2e['ss']); h2esh = up(H2e['sh'])
+
+        npar_outer = cp.asarray(npar) @ cp.asarray(npar).T
+        if lowprec:
+            npar_outer = npar_outer.astype(cp.dtype(wd_real))
+        Gammapar = 1j * k * (L1g - L2pg) @ Gg * npar_outer
+        if lowprec:
+            Gammapar = Gammapar.astype(cp.dtype(wd))
+        del npar_outer
+
+        nperp_col = cp.asarray(nperp)[:, None]
+        if lowprec:
+            nperp_col = nperp_col.astype(cp.dtype(wd_real))
+
+        diff_ss = L1g @ ss - ess
+        diff_sh = L1g @ sh - esh
+        diff_hh = L1g @ hh - ehh
+
+        m11 = (S1eg @ ss - h2ess
+               - 1j * k * (Gammapar @ diff_ss + diff_sh * nperp_col))
+        m12 = (S1eg @ sh - h2esh
+               - 1j * k * (Gammapar @ diff_sh + diff_hh * nperp_col))
+        m21 = (S1g @ hs - h2hs
+               - 1j * k * diff_ss * nperp_col)
+        m22 = (S1g @ hh - h2hh
+               - 1j * k * diff_sh * nperp_col)
+        if lowprec:
+            m11 = m11.astype(cp.dtype(wd)); m12 = m12.astype(cp.dtype(wd))
+            m21 = m21.astype(cp.dtype(wd)); m22 = m22.astype(cp.dtype(wd))
+
+        out = (cp.asnumpy(m11), cp.asnumpy(m12),
+               cp.asnumpy(m21), cp.asnumpy(m22))
+        del (L1g, L2pg, S1g, S1eg, Gg, ss, sh, hh, hs, ess, esh, ehh,
+             h2hs, h2hh, h2ess, h2esh, Gammapar, diff_ss, diff_sh, diff_hh,
+             m11, m12, m21, m22, nperp_col)
+        cp.cuda.runtime.deviceSynchronize()
+        cp.get_default_memory_pool().free_all_blocks()
+        return out
+    except Exception:
+        try:
+            cp.get_default_memory_pool().free_all_blocks()
+        except Exception:
+            pass
+        return None
 
 
 def _vram_share_active() -> bool:
@@ -346,6 +452,10 @@ class BEMRetLayer(object):
 
         self.enei = enei
 
+        import time as _prof_time
+        _prof_t0 = _prof_time.perf_counter()
+        _prof_store: list = []
+
         # Path A precision lever (mirrors bem_ret.py): when MNPBEM_GPU_LOWPREC=1
         # build the G/H/Sigma/L/Gamma/m_full matrices in complex64 so the
         # 2n x 2n m_full LU factor fits half the device memory (verified
@@ -401,6 +511,8 @@ class BEMRetLayer(object):
                     opts['greentab_obj'] = gt
             self.g = CompGreenRetLayer(self.p, self.p, self.layer, **opts)
 
+        _prof_t0 = _prof_mark('setup', _prof_t0, _prof_store)
+
         # ---- Green functions for inner surfaces (plain scalar matrices) ----
         # MATLAB: G11 = obj.g{1,1}.G(enei);  G21 = obj.g{2,1}.G(enei);
         G11 = self.g.eval(0, 0, 'G', enei)
@@ -421,6 +533,8 @@ class BEMRetLayer(object):
             G1e = G1e.astype(_wd) if hasattr(G1e, 'astype') else G1e
             H1 = H1.astype(_wd) if hasattr(H1, 'astype') else H1
             H1e = H1e.astype(_wd) if hasattr(H1e, 'astype') else H1e
+        _prof_t0 = _prof_mark('green-eval-inner', _prof_t0, _prof_store)
+
         # v1.7.2: release inner-surface Green intermediates as soon as the
         # combined G1/G1e/H1/H1e are formed.  Mirrors BEMRet's per-stage
         # del + free_all_blocks pattern.
@@ -435,10 +549,12 @@ class BEMRetLayer(object):
         # ---- Green functions for outer surfaces (structured dict) ----
         # MATLAB: G22 = obj.g{2,2}.G(enei) -> structured {ss,hh,p,sh,hs}
         #         G12 = obj.g{1,2}.G(enei) -> plain scalar
+        _prof_t0 = _prof_mark('green-eval-pre-outer', _prof_t0, _prof_store)
         G22 = self.g.eval(1, 1, 'G', enei)
         G12 = self.g.eval(0, 1, 'G', enei)
         H22 = self.g.eval(1, 1, 'H2', enei)
         H12 = self.g.eval(0, 1, 'H2', enei)
+        _prof_t0 = _prof_mark('green-eval-outer', _prof_t0, _prof_store)
 
         # Build G2 structured dict: G2.ss = G22.ss - G12, etc.
         G2 = self._build_outer_mixed(G22, G12)
@@ -563,19 +679,19 @@ class BEMRetLayer(object):
                 except Exception:
                     pass
 
-            # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
-            # Element-wise multiply with outer product of parallel normals
-            # MNPBEM_GPU_LOWPREC: cast the real normal-vector outer product
-            # to float32 so the complex-times-real promotion stays inside
-            # complex64 (otherwise complex64 * float64 -> complex128 would
-            # silently double m11..m22's footprint).
-            npar_outer = npar @ npar.T  # (n, n)
-            if _lowprec:
-                npar_outer = npar_outer.astype(_wd_real)
-            Gammapar = 1j * k * matmul_dispatch(L1 - L2p, Gamma) * npar_outer
-            if _lowprec and hasattr(Gammapar, 'astype'):
-                Gammapar = Gammapar.astype(_wd)
-            del npar_outer
+            # ---- Set up 2x2 block response matrix (MATLAB initmat.m lines 72-77) ----
+            # m{1,1} = Sigma1e*G2.ss - H2e.ss - ik*(Gammapar*(L1*G2.ss - G2e.ss)
+            #          + bsxfun(@times, L1*G2.sh - G2e.sh, nperp))
+            #
+            # Fast path: when single-device cupy is active, assemble all four
+            # blocks GPU-resident with each operand uploaded once (avoids the
+            # ~5 GB/wavelength of redundant PCIe traffic the per-matmul
+            # dispatch incurs).  Gammapar is recomputed inside the helper from
+            # L1/L2p/Gamma so the resident path never re-uploads it; the host
+            # Gammapar below is only built for the fallback.
+            _m_blocks = _assemble_m_blocks_resident(
+                L1, L2p, Sigma1, Sigma1e, Gamma,
+                G2, G2e, H2, H2e, npar, nperp, k, _wd, _wd_real, _lowprec)
 
             # MNPBEM_GPU_LOWPREC: cast nperp to float32 so the
             # broadcasting multiplies below stay in complex64.
@@ -583,29 +699,42 @@ class BEMRetLayer(object):
             if _lowprec:
                 _nperp_col = _nperp_col.astype(_wd_real)
 
-            # ---- Set up 2x2 block response matrix (MATLAB initmat.m lines 72-77) ----
-            # m{1,1} = Sigma1e*G2.ss - H2e.ss - ik*(Gammapar*(L1*G2.ss - G2e.ss)
-            #          + bsxfun(@times, L1*G2.sh - G2e.sh, nperp))
-            diff_ss = matmul_dispatch(L1, G2['ss']) - G2e['ss']
-            diff_sh = matmul_dispatch(L1, G2['sh']) - G2e['sh']
-            diff_hh = matmul_dispatch(L1, G2['hh']) - G2e['hh']
+            if _m_blocks is not None:
+                m11, m12, m21, m22 = _m_blocks
+                del _m_blocks
+                diff_ss = diff_sh = diff_hh = None  # consumed on device
+                Gammapar = None                     # recomputed inside helper
+            else:
+                # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
+                # Element-wise multiply with outer product of parallel normals
+                npar_outer = npar @ npar.T  # (n, n)
+                if _lowprec:
+                    npar_outer = npar_outer.astype(_wd_real)
+                Gammapar = 1j * k * matmul_dispatch(L1 - L2p, Gamma) * npar_outer
+                if _lowprec and hasattr(Gammapar, 'astype'):
+                    Gammapar = Gammapar.astype(_wd)
+                del npar_outer
 
-            m11 = (matmul_dispatch(Sigma1e, G2['ss']) - H2e['ss']
-                - 1j * k * (matmul_dispatch(Gammapar, diff_ss) + diff_sh * _nperp_col))
-            m12 = (matmul_dispatch(Sigma1e, G2['sh']) - H2e['sh']
-                - 1j * k * (matmul_dispatch(Gammapar, diff_sh) + diff_hh * _nperp_col))
-            m21 = (matmul_dispatch(Sigma1, G2['hs']) - H2['hs']
-                - 1j * k * diff_ss * _nperp_col)
-            m22 = (matmul_dispatch(Sigma1, G2['hh']) - H2['hh']
-                - 1j * k * diff_sh * _nperp_col)
-            # MNPBEM_GPU_LOWPREC: defensively cast the m_ij blocks to the
-            # working dtype in case any 1j*k * complex64 broadcast leaked
-            # back to complex128 (numpy default literal dtype).
-            if _lowprec:
-                if hasattr(m11, 'astype'): m11 = m11.astype(_wd)
-                if hasattr(m12, 'astype'): m12 = m12.astype(_wd)
-                if hasattr(m21, 'astype'): m21 = m21.astype(_wd)
-                if hasattr(m22, 'astype'): m22 = m22.astype(_wd)
+                diff_ss = matmul_dispatch(L1, G2['ss']) - G2e['ss']
+                diff_sh = matmul_dispatch(L1, G2['sh']) - G2e['sh']
+                diff_hh = matmul_dispatch(L1, G2['hh']) - G2e['hh']
+
+                m11 = (matmul_dispatch(Sigma1e, G2['ss']) - H2e['ss']
+                    - 1j * k * (matmul_dispatch(Gammapar, diff_ss) + diff_sh * _nperp_col))
+                m12 = (matmul_dispatch(Sigma1e, G2['sh']) - H2e['sh']
+                    - 1j * k * (matmul_dispatch(Gammapar, diff_sh) + diff_hh * _nperp_col))
+                m21 = (matmul_dispatch(Sigma1, G2['hs']) - H2['hs']
+                    - 1j * k * diff_ss * _nperp_col)
+                m22 = (matmul_dispatch(Sigma1, G2['hh']) - H2['hh']
+                    - 1j * k * diff_sh * _nperp_col)
+                # MNPBEM_GPU_LOWPREC: defensively cast the m_ij blocks to the
+                # working dtype in case any 1j*k * complex64 broadcast leaked
+                # back to complex128 (numpy default literal dtype).
+                if _lowprec:
+                    if hasattr(m11, 'astype'): m11 = m11.astype(_wd)
+                    if hasattr(m12, 'astype'): m12 = m12.astype(_wd)
+                    if hasattr(m21, 'astype'): m21 = m21.astype(_wd)
+                    if hasattr(m22, 'astype'): m22 = m22.astype(_wd)
             # v1.7.3 (VRAM-share path): matmul_dispatch may return cupy
             # arrays under MNPBEM_GPU=1.  Materialise the m11..m22 blocks
             # on the host before assembling m_full so the 4*N^2 buffer
@@ -649,8 +778,10 @@ class BEMRetLayer(object):
                 except Exception:
                     pass
 
+            _prof_t0 = _prof_mark('matrix-assemble', _prof_t0, _prof_store)
             self.m_full = None
             self.m_lu = lu_factor_dispatch(m_full, **_vram_share_lu_kwargs())
+            _prof_t0 = _prof_mark('m_full-LU', _prof_t0, _prof_store)
             # v1.7.2: the dense m_full (2n x 2n) is now captured by the LU
             # factor; drop the local handle so its 4*N^2 complex buffer
             # returns to the pool before we exit init().
@@ -759,6 +890,11 @@ class BEMRetLayer(object):
                 _cp_v172.get_default_pinned_memory_pool().free_all_blocks()
             except Exception:
                 pass
+
+        _prof_t0 = _prof_mark('host-transfer+cleanup', _prof_t0, _prof_store)
+        if _init_profile_enabled():
+            _tot = sum(d for _, d in _prof_store)
+            print('[init-prof] {:<22s} {:8.3f}s'.format('TOTAL', _tot), flush=True)
 
         return self
 

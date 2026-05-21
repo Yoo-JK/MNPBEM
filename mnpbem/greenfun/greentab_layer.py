@@ -421,15 +421,21 @@ class GreenTabLayer(object):
             # Denormalization factors at query points
             inv_d, r_over_d3, zmin_over_d3 = self._query_denorm_factors_2d(r_q, z1_eff)
 
+            # Batched interpolation: stack all (component x field) slabs and
+            # locate each query cell once.  Each name contributes 3 slabs
+            # (G, Fr, Fz); the cell index only depends on (r, z1) so doing
+            # it once for the whole stack removes the per-slab redundancy.
+            slabs = []
             for name in names:
-                Gsav = self._Gsav_comp[name][:, :, 0]   # (nr, nz1) — normalized
-                Frsav = self._Frsav_comp[name][:, :, 0]
-                Fzsav = self._Fzsav_comp[name][:, :, 0]
+                slabs.append(self._Gsav_comp[name][:, :, 0])
+                slabs.append(self._Frsav_comp[name][:, :, 0])
+                slabs.append(self._Fzsav_comp[name][:, :, 0])
+            vals = self._interp_complex_batch(grid_2d, slabs, points_2d)
 
-                G_n = self._interp_complex(grid_2d, Gsav, points_2d)
-                Fr_n = self._interp_complex(grid_2d, Frsav, points_2d)
-                Fz_n = self._interp_complex(grid_2d, Fzsav, points_2d)
-
+            for ci, name in enumerate(names):
+                G_n = vals[3 * ci + 0]
+                Fr_n = vals[3 * ci + 1]
+                Fz_n = vals[3 * ci + 2]
                 # Denormalize
                 G_dict[name] = (G_n * inv_d).reshape(shape)
                 Fr_dict[name] = (Fr_n * r_over_d3).reshape(shape)
@@ -447,15 +453,17 @@ class GreenTabLayer(object):
             # Denormalization factors at query points
             inv_d, r_over_d3, zmin_over_d3 = self._query_denorm_factors(r_q, z1_q, z2_q)
 
+            slabs = []
             for name in names:
-                Gsav = self._Gsav_comp[name]
-                Frsav = self._Frsav_comp[name]
-                Fzsav = self._Fzsav_comp[name]
+                slabs.append(self._Gsav_comp[name])
+                slabs.append(self._Frsav_comp[name])
+                slabs.append(self._Fzsav_comp[name])
+            vals = self._interp_complex_batch(grid, slabs, points)
 
-                G_n = self._interp_complex(grid, Gsav, points)
-                Fr_n = self._interp_complex(grid, Frsav, points)
-                Fz_n = self._interp_complex(grid, Fzsav, points)
-
+            for ci, name in enumerate(names):
+                G_n = vals[3 * ci + 0]
+                Fr_n = vals[3 * ci + 1]
+                Fz_n = vals[3 * ci + 2]
                 # Denormalize
                 G_dict[name] = (G_n * inv_d).reshape(shape)
                 Fr_dict[name] = (Fr_n * r_over_d3).reshape(shape)
@@ -467,11 +475,17 @@ class GreenTabLayer(object):
     def _interp_complex(grid, data, points):
         """Interpolate complex array on a regular grid (split real/imag).
 
-        Dispatches to numba kernel when ``MNPBEM_NUMBA`` is set, else falls
-        back to scipy.RegularGridInterpolator (split real/imag).
+        Dispatches to the numba multilinear kernel when numba is importable
+        (it is numerically identical to RegularGridInterpolator's linear
+        method) and falls back to scipy otherwise.  The numba path is the
+        default whenever numba is present because the scipy path rebuilds a
+        fresh RegularGridInterpolator for every component/field and is
+        ~20-50x slower on the O(n^2) substrate query grids that dominate
+        BEMRetLayer.init() — set ``MNPBEM_NUMBA=0`` to force the scipy
+        reference path.
         """
-        from ._numba_layer import trilinear_complex, _numba_enabled
-        if _numba_enabled():
+        from ._numba_layer import trilinear_complex, _numba_layer_preferred
+        if _numba_layer_preferred():
             return trilinear_complex(grid, data, points)
         val_r = RegularGridInterpolator(
             grid, data.real, method='linear',
@@ -480,6 +494,35 @@ class GreenTabLayer(object):
             grid, data.imag, method='linear',
             bounds_error=False, fill_value=None)(points)
         return val_r + 1j * val_i
+
+    @staticmethod
+    def _interp_complex_batch(grid, slabs, points):
+        """Interpolate a list of complex grids at common query points.
+
+        Stacks ``slabs`` into a single (K, *grid_shape) array so the numba
+        kernel locates each query point's cell once and reuses the weights
+        across all K slabs (the 5 reflection components x {G, Fr, Fz} of
+        the substrate Green function).  Returns a (K, n) array.  Falls back
+        to per-slab scipy interpolation when numba is unavailable so the
+        reference path stays bit-identical.
+        """
+        from ._numba_layer import (trilinear_complex_batch,
+                                    _numba_layer_preferred)
+        data_stack = np.ascontiguousarray(np.stack(slabs, axis=0),
+                                          dtype=complex)
+        if _numba_layer_preferred():
+            return trilinear_complex_batch(grid, data_stack, points)
+        out = np.empty((data_stack.shape[0], points.shape[0]), dtype=complex)
+        for kk in range(data_stack.shape[0]):
+            d = data_stack[kk]
+            val_r = RegularGridInterpolator(
+                grid, d.real, method='linear',
+                bounds_error=False, fill_value=None)(points)
+            val_i = RegularGridInterpolator(
+                grid, d.imag, method='linear',
+                bounds_error=False, fill_value=None)(points)
+            out[kk] = val_r + 1j * val_i
+        return out
 
     def _compute_tab(self,
             enei: float) -> None:
