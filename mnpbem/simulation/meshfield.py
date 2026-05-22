@@ -80,6 +80,14 @@ class MeshField(object):
         # Expand dimensions if needed (MATLAB: expand function)
         x, y, z = self._expand(x, y, z)
 
+        # Layer structure (substrate). When present, the field is evaluated
+        # with the layer-aware Green function (direct + reflected), matching
+        # MATLAB @meshfield/init.m where greenfunction() dispatches to
+        # compgreenretlayer. The associated tabulated reflected Green function
+        # may be supplied via 'greentab'.
+        self._layer = options.pop('layer', None)
+        self._greentab = options.pop('greentab', None)
+
         # Save positions and particle
         self.x = x
         self.y = y
@@ -92,7 +100,7 @@ class MeshField(object):
         # Make ComPoint object
         # Flatten grid positions to (N, 3) array
         pos = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
-        self.pt = ComPoint(p, pos, mindist=mindist)
+        self.pt = ComPoint(p, pos, mindist=mindist, layer=self._layer)
 
         if nmax is None:
             # Precompute Green function
@@ -169,8 +177,7 @@ class MeshField(object):
 
         return x, y, z
 
-    @staticmethod
-    def _make_green(pt, p, sim='stat', **options):
+    def _make_green(self, pt, p, sim='stat', **options):
         """
         Create Green function between grid points and particle.
 
@@ -187,12 +194,30 @@ class MeshField(object):
 
         Returns
         -------
-        g : CompGreenStat or CompGreenRet
-            Green function object
+        g : CompGreenStat / CompGreenRet / CompGreenStatLayer / CompGreenRetLayer
+            Green function object. Layer-aware variants are returned when a
+            layer structure was supplied to the constructor.
         """
+        layer = getattr(self, '_layer', None)
+        greentab = getattr(self, '_greentab', None)
+
         if sim == 'stat':
+            if layer is not None:
+                from ..greenfun.compgreen_stat_layer import CompGreenStatLayer
+                return CompGreenStatLayer(pt, p, layer, **options)
             return CompGreenStat(pt, p, **options)
         else:
+            if layer is not None:
+                from ..greenfun.compgreen_ret_layer import CompGreenRetLayer
+                opts = dict(options)
+                if greentab is not None:
+                    # Mirror BEMRetLayer: pass the underlying GreenTabLayer.
+                    gt = greentab
+                    if hasattr(gt, 'tab'):
+                        opts['greentab_obj'] = gt.tab
+                    elif hasattr(gt, 'r'):
+                        opts['greentab_obj'] = gt
+                return CompGreenRetLayer(pt, p, layer, **opts)
             from ..greenfun.compgreen_ret import CompGreenRet
             return CompGreenRet(pt, p, **options)
 

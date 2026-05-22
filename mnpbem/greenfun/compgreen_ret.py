@@ -446,15 +446,26 @@ class CompGreenRet(object):
         """
         # Get masked inout property
         # MATLAB: get = @(p)(p.inout(p.mask,:))
+        # ComPoint stores inout as a 1D array (one medium per point group); it
+        # must become a COLUMN (n_groups, 1) so each group is treated as a
+        # separate "particle" with a single region, matching MATLAB
+        # @compoint/init.m (obj.inout(i,1) = iotab(i)). ComParticle.inout is
+        # already 2D (nparticles, nregions) and is left unchanged.
+        def _inout2d(io):
+            io = np.asarray(io)
+            if io.ndim == 1:
+                return io.reshape(-1, 1)
+            return io
+
         if hasattr(p1, 'inout'):
-            inout1 = np.atleast_2d(p1.inout)
+            inout1 = _inout2d(p1.inout)
         else:
             inout1 = np.array([[1, 2]])  # Default
 
         if p1 is p2:
             inout2 = inout1
         elif hasattr(p2, 'inout'):
-            inout2 = np.atleast_2d(p2.inout)
+            inout2 = _inout2d(p2.inout)
         else:
             inout2 = np.array([[1, 2]])
 
