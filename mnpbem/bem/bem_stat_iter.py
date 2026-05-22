@@ -297,7 +297,11 @@ def _distributed_block_assemble_stat(green: Any,
 # the helper becomes a no-op so the CPU path stays untouched.
 try:
     import cupy as _cp_stat  # type: ignore
-    _CUPY_OK_STAT = True
+    # cupy importable is not enough — a masked-GPU env (CUDA_VISIBLE_DEVICES="")
+    # imports cupy fine but has no device, so pool/compute calls raise
+    # cudaErrorNoDevice.  Require an actual device so the whole GPU path
+    # (incl. every free_all_blocks drain) cleanly falls back to CPU.
+    _CUPY_OK_STAT = _cp_stat.cuda.runtime.getDeviceCount() > 0
 except Exception:
     _cp_stat = None  # type: ignore
     _CUPY_OK_STAT = False
