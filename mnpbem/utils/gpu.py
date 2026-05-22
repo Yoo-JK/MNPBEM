@@ -230,15 +230,22 @@ def lu_solve_dispatch(piv_pkg: Tuple, b: np.ndarray, **kwargs: Any) -> np.ndarra
         # caller's dtype.  This keeps the 4x memory savings of the c64
         # LU factor (critical for the 2n x 2n m_full of the substrate
         # path) without forcing a host-side scipy.lu_solve fallback.
-        b_dtype_target = (b.dtype if hasattr(b, 'dtype')
-                          else np.asarray(b).dtype)
+        #
+        # The result dtype must be the type-promotion of b and the LU
+        # factor, NOT b's dtype alone: a real RHS solved against a complex
+        # LU (e.g. the quasistatic BEMStat F matrix excited by a real
+        # Sigma) yields a complex surface charge.  Casting the result down
+        # to b's real dtype here silently discards the imaginary part and
+        # corrupts sig.
+        b_dtype = (b.dtype if hasattr(b, 'dtype') else np.asarray(b).dtype)
+        lu_dtype = getattr(lu_gpu, 'dtype', b_dtype)
+        out_dtype = np.result_type(b_dtype, lu_dtype)
         b_gpu = _cp.asarray(b)
-        if (hasattr(lu_gpu, 'dtype')
-                and b_gpu.dtype != lu_gpu.dtype):
-            b_gpu = b_gpu.astype(lu_gpu.dtype, copy=False)
+        if b_gpu.dtype != lu_dtype:
+            b_gpu = b_gpu.astype(lu_dtype, copy=False)
         x_gpu = _cp_lu_solve((lu_gpu, piv_pkg[2]), b_gpu)
-        if x_gpu.dtype != b_dtype_target:
-            x_gpu = x_gpu.astype(b_dtype_target, copy=False)
+        if x_gpu.dtype != out_dtype:
+            x_gpu = x_gpu.astype(out_dtype, copy=False)
         return _cp.asnumpy(x_gpu)
     kwargs.setdefault("check_finite", False)
     return _scipy_lu_solve((piv_pkg[1], piv_pkg[2]), b, **kwargs)
