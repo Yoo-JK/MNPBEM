@@ -68,6 +68,32 @@ def test_multi_gpu_lu_handle_factor_solve_2gpu():
     assert rel < 1e-10, '[error] 2-GPU LU rel={:.2e} exceeds 1e-10'.format(rel)
 
 
+def test_multi_gpu_lu_complex64_promotes():
+    """complex64 input must auto-promote to complex128.
+
+    cuSolverMg's single-precision getrf (cgetrf) returns
+    INTERNAL_ERROR=7; the wrapper promotes single -> double for the
+    factorization and restores complex64 on the solve output. This
+    guards the fp32 sweep path (MNPBEM_GPU_LOWPREC=1).
+    """
+
+    from mnpbem.utils.multi_gpu_lu import MultiGPULU
+
+    N = 1024
+    A, B = _make_test_problem(N)
+    X_cpu = _cpu_solve(A, B)
+
+    lu = MultiGPULU(2, backend = 'cusolvermg')
+    lu.factor(A.astype(np.complex64).copy())
+    X = lu.solve(B.astype(np.complex64))
+    lu.close()
+
+    assert X.dtype == np.complex64, \
+        '[error] output dtype must be restored to complex64, got {}'.format(X.dtype)
+    rel = np.linalg.norm(X - X_cpu) / np.linalg.norm(X_cpu)
+    assert rel < 1e-5, '[error] complex64 LU rel={:.2e} exceeds 1e-5'.format(rel)
+
+
 def test_multi_gpu_lu_dispatch_kwarg():
     """lu_factor_dispatch with n_gpus=2 should produce 'mgpu' tag."""
 

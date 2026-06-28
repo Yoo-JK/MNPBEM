@@ -276,6 +276,7 @@ class MultiGPULU(object):
         self.work_lwork: int = 0
         self.N: int = 0
         self.dtype: Optional[np.dtype] = None
+        self._input_dtype: Optional[np.dtype] = None
         self.cuda_dtype: int = -1
         self.col_blk_size: int = 0
         self.tile_cols_per_gpu: List[int] = []
@@ -436,6 +437,16 @@ class MultiGPULU(object):
             '[error] cuSolverMg LU requires square matrix'
         N = A.shape[0]
         self.N = N
+        # cuSolverMg's single-precision getrf (cgetrf/sgetrf) returns
+        # INTERNAL_ERROR(7); the double-precision path (zgetrf/dgetrf) is
+        # solid. Promote single -> double for the factorization and restore
+        # the caller's dtype on solve() output. Memory doubles but the matrix
+        # is distributed across GPUs, and accuracy improves.
+        self._input_dtype = A.dtype
+        if A.dtype == np.complex64:
+            A = A.astype(np.complex128)
+        elif A.dtype == np.float32:
+            A = A.astype(np.float64)
         self.dtype = A.dtype
         self.cuda_dtype = _cuda_dtype_for(A)
         lib = _libcusolverMg
@@ -632,6 +643,10 @@ class MultiGPULU(object):
         lib.cusolverMgDestroyMatrixDesc(descrB)
 
         X = np.ascontiguousarray(X_f)
+        # Restore the caller's input dtype (we promote single -> double in
+        # factor() to dodge the cuSolverMg single-precision getrf bug).
+        if self._input_dtype is not None and X.dtype != self._input_dtype:
+            X = X.astype(self._input_dtype)
         if squeeze:
             X = X[:, 0]
         return X
@@ -685,9 +700,9 @@ class MultiGPULU(object):
             return self.solve(B, trans=trans)
 
         n_rows, n_cols = B.shape
-        # Preserve dtype semantics of solve() — it auto-promotes B to the
-        # factor dtype, so the output ends up in ``self.dtype``.
-        out_dtype = self.dtype if self.dtype is not None else B.dtype
+        # Preserve dtype semantics of solve() — it restores the caller's
+        # input dtype (single-precision is promoted to double internally).
+        out_dtype = self._input_dtype or (self.dtype if self.dtype is not None else B.dtype)
         out = np.empty((n_rows, n_cols), dtype=out_dtype)
         for c0 in range(0, n_cols, chunk_size):
             c1 = min(c0 + chunk_size, n_cols)
