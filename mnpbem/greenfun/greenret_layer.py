@@ -1,6 +1,7 @@
 import os
 import sys
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
@@ -10,6 +11,27 @@ from mnpbem.utils.matlab_compat import mlinspace, msqrt
 
 from .greentab_layer import GreenTabLayer
 from .refine_utils import refinematrixlayer
+
+
+# The per-component build of the reflected G/F/Gp blocks in eval_components
+# is embarrassingly parallel across reflection names (each is an independent
+# chain of elementwise (n1, nc) array ops).  NumPy releases the GIL for these
+# large-array ops, so a small thread pool over the 5 components speeds up the
+# dominant host stage of a large substrate BEM warmup with bit-identical
+# results (same ops, same order, per component).  Set MNPBEM_GREEN_BUILD_THREADS
+# to override; =1 forces the serial reference path.
+def _green_build_threads(n_items: int) -> int:
+    env = os.environ.get('MNPBEM_GREEN_BUILD_THREADS', '')
+    if env.strip() not in ('', '0'):
+        try:
+            return max(1, min(int(env), n_items))
+        except (TypeError, ValueError):
+            pass
+    try:
+        ncpu = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        ncpu = os.cpu_count() or 1
+    return max(1, min(n_items, ncpu, 8))
 
 
 class GreenRetLayer(object):
@@ -40,6 +62,14 @@ class GreenRetLayer(object):
         self.G_comp = None
         self.F_comp = None
         self.Gp_comp = None
+
+        # Size-1 cache key for eval_components: (enei, c0, c1).  col_range=None
+        # is normalised to (0, n2).  A repeat call with the same key reuses the
+        # G_comp/F_comp/Gp_comp dicts (e.g. the column-split builder assembling
+        # several CompGreenRetLayer keys from one chunk); a different enei OR a
+        # different column range forces a recompute, swapping the dicts wholesale
+        # so only one (enei, col_range) block is ever resident.
+        self._comp_cache_key = None
 
         # MATLAB init.m: offdiag='full' -> skip shape-function sparse precompute
         # (use slow but exact full boundary element integration at eval time).
@@ -393,20 +423,30 @@ class GreenRetLayer(object):
     # -----------------------------------------------------------------
     def _refine_diagonal_norm(self,
             G_dict: Dict[str, np.ndarray],
-            F_dict: Dict[str, np.ndarray]
+            F_dict: Dict[str, np.ndarray],
+            c0: int,
+            c1: int
             ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """Refine diagonal elements for deriv='norm'.
 
         MATLAB: initrefl1.m lines 44-131
+
+        The polar integration runs over all diagonal faces (each is
+        independent), but only faces with column in [c0, c1) are written back,
+        at local (face, face - c0) positions in the (n1, c1-c0) comp buffers.
         """
         if len(self._diag_id) == 0:
             return G_dict, F_dict
 
         n1 = self.p1.n
-        n2 = self.p2.n
+        nc = c1 - c0
         p = self.p1
-        id_linear = self._diag_id
         id_faces = self._diag_faces
+        # Local ravel of diagonal (face, face) -> (n1, nc); -1 if out of range.
+        in_range = (id_faces >= c0) & (id_faces < c1)
+        id_local = np.full(len(id_faces), -1, dtype = np.int64)
+        id_local[in_range] = np.ravel_multi_index(
+                (id_faces[in_range], id_faces[in_range] - c0), (n1, nc))
 
         # Polar integration points and weights
         pos_quad, weight_quad, row_quad = p.quadpol(id_faces)
@@ -446,10 +486,11 @@ class GreenRetLayer(object):
             lin_map[lin] = np.arange(np.sum(lin))
             irow = lin_map[row_quad[lin_row]]
 
-            # Linear index for in-layer diagonal matrix entries
-            lin2_row = id_faces[lin]
-            lin2_col = id_faces[lin]
-            lin2_linear = np.ravel_multi_index((lin2_row, lin2_col), (n1, n2))
+            # Local linear index for in-layer diagonal entries (mask out-of-range).
+            lin_faces = id_faces[lin]
+            lin2_keep = (lin_faces >= c0) & (lin_faces < c1)
+            lin2_linear = np.ravel_multi_index(
+                    (lin_faces[lin2_keep], lin_faces[lin2_keep] - c0), (n1, nc))
         else:
             f_coeff = None
 
@@ -465,8 +506,8 @@ class GreenRetLayer(object):
             G_refined = np.zeros(n_faces_diag, dtype = complex)
             np.add.at(G_refined, row_quad, weight_quad * g_vals)
             G_flat = G_dict[name].ravel()
-            G_flat[id_linear] = G_refined
-            G_dict[name] = G_flat.reshape(n1, n2)
+            G_flat[id_local[in_range]] = G_refined[in_range]
+            G_dict[name] = G_flat.reshape(n1, nc)
 
             # Subtract divergent term from fz for in-layer faces
             if np.any(lin) and f_coeff is not None:
@@ -480,30 +521,47 @@ class GreenRetLayer(object):
             np.add.at(F_refined, row_quad, weight_quad * f_integrand)
 
             F_flat = F_dict[name].ravel()
-            F_flat[id_linear] = F_refined
+            F_flat[id_local[in_range]] = F_refined[in_range]
 
-            # Add back divergent term
+            # Add back divergent term (in-layer faces within [c0, c1) only)
             if np.any(lin) and f_coeff is not None:
                 f = f_coeff[name]
-                F_flat[lin2_linear] += 2 * np.pi * f * p.nvec[id_faces[lin], 2]
+                add_back = 2 * np.pi * f * p.nvec[id_faces[lin], 2]
+                F_flat[lin2_linear] += add_back[lin2_keep]
 
-            F_dict[name] = F_flat.reshape(n1, n2)
+            F_dict[name] = F_flat.reshape(n1, nc)
 
         return G_dict, F_dict
 
     def _refine_diagonal_cart_gp_only(self,
-            Gp_dict: Dict[str, np.ndarray]) -> None:
+            Gp_dict: Optional[Dict[str, np.ndarray]],
+            c0: int,
+            c1: int) -> Optional[Dict[str, np.ndarray]]:
         """Refine only the Gp (Cartesian derivative) diagonal elements.
 
         MATLAB: initrefl2.m lines 43-129, Gp parts only.
+
+        Only diagonal faces with column in [c0, c1) are written, at global
+        row = face and local column = face - c0.
+
+        When ``Gp_dict`` is None the full (n1, 3, nc) Gp block is not
+        available (need_gp=False); instead of scattering into it, the routine
+        returns a dict ``{name: F_diag}`` giving the diagonal normal-derivative
+        contribution ``inner(nvec, Gp_refined)`` for the in-range diagonal
+        faces (ordered as ``self._diag_faces`` filtered by [c0, c1), i.e. the
+        same order as ``_diag_in_range``'s local index).  The arithmetic on
+        Gp_x/y/z_refined is identical to the materialized path, so the caller's
+        diagonal F is bit-identical either way.
         """
         if len(self._diag_id) == 0:
-            return
+            return {} if Gp_dict is None else None
 
-        n1 = self.p1.n
-        n2 = self.p2.n
+        return_F = Gp_dict is None
+        F_diag_out: Dict[str, np.ndarray] = {}
+
         p = self.p1
         id_faces = self._diag_faces
+        in_range = (id_faces >= c0) & (id_faces < c1)
 
         pos_quad, weight_quad, row_quad = p.quadpol(id_faces)
         pos_centroid = p.pos[id_faces[row_quad]]
@@ -531,7 +589,7 @@ class GreenRetLayer(object):
         else:
             f_coeff = None
 
-        names = list(Gp_dict.keys())
+        names = list(self.F_comp.keys()) if return_F else list(Gp_dict.keys())
         n_faces_diag = len(id_faces)
 
         for name in names:
@@ -551,27 +609,52 @@ class GreenRetLayer(object):
             np.add.at(Gp_y_refined, row_quad, weight_quad * fr_vals * dy / r_safe)
             np.add.at(Gp_z_refined, row_quad, weight_quad * fz_vals)
 
-            Gp = Gp_dict[name]
-            Gp[id_faces, 0, id_faces] = Gp_x_refined
-            Gp[id_faces, 1, id_faces] = Gp_y_refined
-            Gp[id_faces, 2, id_faces] = Gp_z_refined
+            if return_F:
+                # Diagonal-only path: fold the (later) divergent z add-back into
+                # Gp_z, then form F = inner(nvec, Gp) at the diagonal.  This is
+                # the exact value the materialized einsum path would produce.
+                gp_z_full = Gp_z_refined.copy()
+                if np.any(lin) and f_coeff is not None:
+                    f = f_coeff[name]
+                    gp_z_full[lin] = gp_z_full[lin] + 2 * np.pi * f
+                nvd = p.nvec[id_faces]
+                F_full = (nvd[:, 0] * Gp_x_refined
+                          + nvd[:, 1] * Gp_y_refined
+                          + nvd[:, 2] * gp_z_full)
+                F_diag_out[name] = F_full[in_range]
+                continue
 
-            # Add back divergent term for z-component
+            Gp = Gp_dict[name]
+            rows_w = id_faces[in_range]
+            cols_w = id_faces[in_range] - c0
+            Gp[rows_w, 0, cols_w] = Gp_x_refined[in_range]
+            Gp[rows_w, 1, cols_w] = Gp_y_refined[in_range]
+            Gp[rows_w, 2, cols_w] = Gp_z_refined[in_range]
+
+            # Add back divergent term for z-component (in-layer faces in range)
             if np.any(lin) and f_coeff is not None:
                 f = f_coeff[name]
                 lin_faces_idx = id_faces[lin]
-                Gp[lin_faces_idx, 2, lin_faces_idx] += 2 * np.pi * f
+                lin_keep = (lin_faces_idx >= c0) & (lin_faces_idx < c1)
+                Gp[lin_faces_idx[lin_keep], 2, lin_faces_idx[lin_keep] - c0] \
+                        += 2 * np.pi * f[lin_keep]
 
             Gp_dict[name] = Gp
+
+        if return_F:
+            return F_diag_out
 
     # -----------------------------------------------------------------
     #  Off-diagonal refinement (boundary element integration)
     # -----------------------------------------------------------------
-    def _refine_offdiagonal_components(self) -> None:
+    def _refine_offdiagonal_components(self,
+            c0: int,
+            c1: int) -> None:
         """Refine off-diagonal elements for all components (G, F, Gp).
 
         MATLAB: initrefl1.m lines 134-186 + initrefl2.m lines 132-190
-        Uses full boundary element integration over source faces.
+        Uses full boundary element integration over source faces.  Columns
+        (source faces) outside [c0, c1) are skipped; writes use local col-c0.
         """
         if len(self._offdiag_ind) == 0:
             return
@@ -586,8 +669,11 @@ class GreenRetLayer(object):
         ind_matrix[offdiag_rows, offdiag_cols] = 1
 
         columns_with_refine = np.unique(offdiag_cols)
+        columns_with_refine = columns_with_refine[
+                (columns_with_refine >= c0) & (columns_with_refine < c1)]
 
         for col in columns_with_refine:
+            lcol = col - c0
             rows = np.where(ind_matrix[:, col])[0]
             if len(rows) == 0:
                 continue
@@ -625,21 +711,24 @@ class GreenRetLayer(object):
                 fz_q = fz_dict_q[name].reshape(r.shape)
 
                 # Refine G
-                self.G_comp[name][rows, col] = g_q @ w
+                self.G_comp[name][rows, lcol] = g_q @ w
 
-                # Refine F (normal derivative)
+                # Refine F (normal derivative) — independent of the Gp block.
                 f_integrand = fr_q * in_product + fz_q * nvec[:, 2:3]
-                self.F_comp[name][rows, col] = f_integrand @ w
+                self.F_comp[name][rows, lcol] = f_integrand @ w
 
-                # Refine Gp (Cartesian derivative)
-                self.Gp_comp[name][rows, 0, col] = (fr_q * x / r_safe) @ w
-                self.Gp_comp[name][rows, 1, col] = (fr_q * y / r_safe) @ w
-                self.Gp_comp[name][rows, 2, col] = fz_q @ w
+                # Refine Gp (Cartesian derivative) — skipped when not built.
+                if self.Gp_comp:
+                    self.Gp_comp[name][rows, 0, lcol] = (fr_q * x / r_safe) @ w
+                    self.Gp_comp[name][rows, 1, lcol] = (fr_q * y / r_safe) @ w
+                    self.Gp_comp[name][rows, 2, lcol] = fz_q @ w
 
     # -----------------------------------------------------------------
     #  Off-diagonal refinement (sparse, fast path)
     # -----------------------------------------------------------------
-    def _refine_offdiagonal_sparse(self) -> None:
+    def _refine_offdiagonal_sparse(self,
+            c0: int,
+            c1: int) -> None:
         """Fast sparse off-diagonal refinement using singularity subtraction.
 
         MATLAB: initrefl1.m lines 135-143 + initrefl2.m lines 133-141.
@@ -648,7 +737,8 @@ class GreenRetLayer(object):
         which encode shape-function-weighted static-kernel integrals.  At
         eval time we sample the tabulated Green function at the vertex
         points stored in ``_refine_ir``/``_refine_iz`` and accumulate via
-        sparse matmul.
+        sparse matmul.  Only off-diagonal entries whose column (source face)
+        lies in [c0, c1) are written back, at local column (col - c0).
         """
         if not self._refine_ready:
             return
@@ -661,12 +751,13 @@ class GreenRetLayer(object):
                 self._refine_iz[:, 1])
 
         names = list(self.G_comp.keys())
-        n1 = self.p1.n
-        n2 = self.p2.n
 
-        # Rows/cols of off-diagonal entries (flat -> 2D).
+        # Rows/cols of off-diagonal entries; keep only those in [c0, c1).
         rows = self._offdiag_rows
         cols = self._offdiag_cols
+        mask = (cols >= c0) & (cols < c1)
+        rows_w = rows[mask]
+        cols_w = cols[mask] - c0
 
         for name in names:
             g_vec = np.asarray(g_dict[name]).ravel()
@@ -683,50 +774,90 @@ class GreenRetLayer(object):
             gp_y = np.asarray(self._refine_if2 @ fr_vec).ravel()
             gp_z = np.asarray(self._refine_ifz_cart @ fz_vec).ravel()
 
-            # Slot back into per-component matrices.
-            self.G_comp[name][rows, cols] = g_ref
-            self.F_comp[name][rows, cols] = f_ref
-            self.Gp_comp[name][rows, 0, cols] = gp_x
-            self.Gp_comp[name][rows, 1, cols] = gp_y
-            self.Gp_comp[name][rows, 2, cols] = gp_z
+            # Slot back into per-component matrices (in-range columns only).
+            # F is filled from its own norm-path sparse product (not from Gp),
+            # so it stays correct even when the (n,3,nc) Gp block was skipped.
+            self.G_comp[name][rows_w, cols_w] = g_ref[mask]
+            self.F_comp[name][rows_w, cols_w] = f_ref[mask]
+            if self.Gp_comp:
+                self.Gp_comp[name][rows_w, 0, cols_w] = gp_x[mask]
+                self.Gp_comp[name][rows_w, 1, cols_w] = gp_y[mask]
+                self.Gp_comp[name][rows_w, 2, cols_w] = gp_z[mask]
 
     # -----------------------------------------------------------------
     #  Apply refinement to per-component Green functions
     # -----------------------------------------------------------------
-    def _apply_refinement_components(self) -> None:
+    def _diag_in_range(self,
+            c0: int,
+            c1: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Diagonal faces whose column falls in [c0, c1) and their local ravel.
+
+        Diagonal refinement writes at global (face, face); for a column slice
+        a diagonal contributes iff c0 <= face < c1, at local (face, face - c0).
+        Returns (faces_in_range, local_flat_index_into_(n1, c1-c0)).
+        """
+        faces = self._diag_faces
+        keep = (faces >= c0) & (faces < c1)
+        faces_kept = faces[keep]
+        nc = c1 - c0
+        n1 = self.p1.n
+        local_flat = np.ravel_multi_index(
+                (faces_kept, faces_kept - c0), (n1, nc))
+        return faces_kept, local_flat
+
+    def _apply_refinement_components(self,
+            c0: int,
+            c1: int) -> None:
         """Apply diagonal and off-diagonal refinement to per-component Green functions.
 
-        Handles both norm and cart derivatives simultaneously since
-        eval_components always needs both F_comp and Gp_comp.
+        Refines G_comp/F_comp (norm-style) and, when the (n,3,nc) Gp block was
+        materialized (need_gp), Gp_comp (cart-style).  When Gp_comp was skipped,
+        the diagonal-F contribution the cart path implies is computed directly
+        so F_comp stays bit-identical without the full Gp allocation.
+
+        Column range [c0, c1) selects the source-face columns present in the
+        (already-sliced) comp buffers; refinement writes are filtered and
+        shifted to those local columns.
         """
         # Diagonal refinement
         if len(self._diag_id) > 0:
             # Refine G_comp and F_comp (norm-style: initrefl1.m)
             self.G_comp, self.F_comp = self._refine_diagonal_norm(
-                self.G_comp, self.F_comp)
-            # Refine Gp_comp (cart-style: initrefl2.m)
-            self._refine_diagonal_cart_gp_only(self.Gp_comp)
+                self.G_comp, self.F_comp, c0, c1)
+            # Refine Gp_comp (cart-style: initrefl2.m).  When Gp_comp was not
+            # materialized (need_gp=False), compute only the diagonal-F
+            # contribution the cart path implies (F = inner(nvec, Gp) at the
+            # diagonal); the full off-diagonal Gp block is unused by the
+            # scalar G/H keys so it is never built.
+            have_gp = bool(self.Gp_comp)
+            F_diag_cart = self._refine_diagonal_cart_gp_only(
+                self.Gp_comp if have_gp else None, c0, c1)
             # MATLAB compgreenretlayer routes 'F'/'H1'/'H2' via gr.F, which is
             # filled by initrefl2.m: F = inner(nvec, Gp) AFTER cart refinement.
-            # Recompute F_comp[diag] from refined Gp_comp[diag] so we match
+            # Recompute F_comp[diag] from refined Gp[diag] so we match
             # MATLAB's cart-style result (rim faces with quad points near the
             # centroid otherwise diverge between the norm/cart formulas due to
             # the rmin-clamp in `interp` only being applied on the cart path).
-            nvec1 = self.p1.nvec
-            for nm in self.F_comp.keys():
-                Gp_diag = self.Gp_comp[nm]
-                F_einsum = np.einsum('ik,ikj->ij', nvec1, Gp_diag)
-                F_flat = self.F_comp[nm].ravel()
-                F_flat[self._diag_id] = F_einsum.ravel()[self._diag_id]
-                self.F_comp[nm] = F_flat.reshape(self.F_comp[nm].shape)
+            _, diag_local = self._diag_in_range(c0, c1)
+            if len(diag_local) > 0:
+                nvec1 = self.p1.nvec
+                for nm in self.F_comp.keys():
+                    if have_gp:
+                        F_einsum = np.einsum('ik,ikj->ij', nvec1, self.Gp_comp[nm])
+                        F_vals = F_einsum.ravel()[diag_local]
+                    else:
+                        F_vals = F_diag_cart[nm]
+                    F_flat = self.F_comp[nm].ravel()
+                    F_flat[diag_local] = F_vals
+                    self.F_comp[nm] = F_flat.reshape(self.F_comp[nm].shape)
 
         # Off-diagonal refinement: prefer sparse (shape-function) path when
         # available, fall back to full integration otherwise.
         if len(self._offdiag_ind) > 0:
             if getattr(self, '_refine_ready', False):
-                self._refine_offdiagonal_sparse()
+                self._refine_offdiagonal_sparse(c0, c1)
             else:
-                self._refine_offdiagonal_components()
+                self._refine_offdiagonal_components(c0, c1)
 
     # -----------------------------------------------------------------
     #  Main evaluation methods
@@ -734,7 +865,13 @@ class GreenRetLayer(object):
     def eval(self,
             enei: float) -> None:
 
-        if self.enei is not None and np.isclose(self.enei, enei):
+        # Guard on self.G too: eval_components() also writes self.enei (it
+        # needs it for the refinement tab lookups) but leaves the scalar
+        # self.G/self.F untouched.  Requiring self.G is not None prevents a
+        # matching-enei early return from handing back a stale scalar block
+        # after a component-only (incl. col_range) eval on the same instance.
+        if (self.enei is not None and np.isclose(self.enei, enei)
+                and self.G is not None):
             return
 
         self.enei = enei
@@ -773,47 +910,82 @@ class GreenRetLayer(object):
             self._compute_F_cart(self.G, Fr, Fz, area2)
 
     def eval_components(self,
-            enei: float) -> None:
+            enei: float,
+            col_range: Optional[Tuple[int, int]] = None,
+            need_gp: bool = True) -> None:
         """Compute per-component reflected Green function (G, F, Gp).
 
-        Always computes both normal and Cartesian derivatives regardless
-        of self.deriv, since field() needs Gp and potential() needs F.
+        col_range = None (default) computes the full (n1, n2) matrices.
+        col_range = (c0, c1) computes only the source-face columns [c0, c1),
+        producing (n1, c1-c0) shaped comp blocks.  Reflected-Green columns are
+        physically independent (each entry depends only on the face-pair
+        distance), so a column slice is exact — used for 4-GPU column-split
+        substrate builds.
+
+        need_gp: when False the (n1, 3, nc) Cartesian-derivative block
+        ``Gp_comp`` is not materialized.  Only the scalar-key BEM build
+        ('G', 'F', 'H1', 'H2') needs G_comp/F_comp; the huge off-diagonal
+        Gp entries are provably unused by those keys (F reads Gp only at the
+        diagonal, which the cart refinement recomputes locally).  Skipping it
+        avoids a ~5*(n,3,nc) c128 allocation per column chunk — tens of GB on
+        large substrate dimers — with bit-identical G_comp/F_comp.  Callers
+        that request a derivative key ('Gp', 'H1p', 'H2p') pass need_gp=True.
 
         After calling, results are stored in:
-          self.G_comp  : dict of (n1, n2) arrays
-          self.F_comp  : dict of (n1, n2) arrays (normal derivative)
-          self.Gp_comp : dict of (n1, n2, 3) arrays (Cartesian derivative)
+          self.G_comp  : dict of (n1, nc) arrays
+          self.F_comp  : dict of (n1, nc) arrays (normal derivative)
+          self.Gp_comp : dict of (n1, 3, nc) arrays (Cartesian derivative),
+                         or {} when need_gp is False.
+        where nc = n2 when col_range is None else c1 - c0.
         """
         _gprof = os.environ.get('MNPBEM_INIT_PROFILE', '0') == '1'
         if _gprof:
             import time as _t
             _gt0 = _t.perf_counter()
 
-        # The per-component reflected Green function (G_comp/F_comp/Gp_comp)
-        # depends only on ``enei`` and the fixed geometry, never on which
-        # CompGreenRetLayer.eval() key requested it.  BEMRetLayer.init()
-        # issues four outer-surface evals per wavelength (G22, G12, H22,
-        # H12), each of which previously re-ran the full O(n^2) tabulated
-        # interpolation + refinement here — a 4x redundancy that dominates
-        # the substrate BEM build (≈19s per call on a 2696-face dimer).
-        # Cache by wavelength so the heavy work runs once per enei; mirrors
-        # the guard already present in eval() above.
-        if (self.enei is not None and np.isclose(self.enei, enei)
-                and self.G_comp is not None
-                and self.F_comp is not None
-                and self.Gp_comp is not None):
-            if _gprof:
-                print('[gr-prof]   eval_components CACHED (enei={:.3f})'.format(
-                    enei), flush=True)
-            return
-
         n1 = self.p1.pos.shape[0]
         n2 = self.p2.pos.shape[0]
 
-        z1, z2 = self.layer.round_z(self._z1, self._z2)
+        if col_range is None:
+            c0, c1 = 0, n2
+        else:
+            c0, c1 = col_range
+            assert 0 <= c0 <= c1 <= n2, '[error] invalid <col_range>!'
+        nc = c1 - c0
 
-        r_flat = self._r.ravel()
-        z1_flat = np.repeat(z1, n2)
+        # The per-component reflected Green function (G_comp/F_comp/Gp_comp)
+        # depends only on ``enei``, the fixed geometry, and the requested
+        # column range — never on which CompGreenRetLayer.eval() key asked
+        # for it.  The column-split substrate builder assembles several keys
+        # (G22, G12, H22, H12) from the SAME chunk, so caching on
+        # (enei, c0, c1) lets the heavy Sommerfeld tab interpolation +
+        # refinement run once per chunk instead of once per (chunk, key).
+        # Size-1: a different key swaps the dicts wholesale (memory bound at
+        # large face counts).  The G_comp-not-None checks also cover external
+        # cache clears (BEMRetLayer.init drops the dicts between wavelengths).
+        cache_key = (enei, c0, c1)
+        # A cached block satisfies the request when G_comp/F_comp are present
+        # for the same (enei, col_range).  Gp_comp is additionally required
+        # only when the caller needs it; a Gp-less cached block therefore
+        # forces a rebuild for a later derivative-key request.
+        if (self._comp_cache_key is not None
+                and np.isclose(self._comp_cache_key[0], enei)
+                and self._comp_cache_key[1] == c0
+                and self._comp_cache_key[2] == c1
+                and self.G_comp is not None
+                and self.F_comp is not None
+                and (not need_gp or self.Gp_comp)):
+            if _gprof:
+                print('[gr-prof]   eval_components CACHED (enei={:.3f}, col={}:{})'.format(
+                    enei, c0, c1), flush=True)
+            return
+
+        z1, z2 = self.layer.round_z(self._z1, self._z2)
+        z2 = z2[c0:c1]
+
+        r_slab = self._r[:, c0:c1]
+        r_flat = r_slab.ravel()
+        z1_flat = np.repeat(z1, nc)
         z2_flat = np.tile(z2, n1)
         r_flat = np.maximum(r_flat, self.layer.rmin)
 
@@ -829,8 +1001,8 @@ class GreenRetLayer(object):
         self.Gp_comp = {}
 
         nvec1 = self.p1.nvec
-        r_safe = np.maximum(self._r, np.finfo(float).eps)
-        area2 = self.p2.area  # (n2,)
+        r_safe = np.maximum(r_slab, np.finfo(float).eps)  # (n1, nc)
+        area2 = self.p2.area[c0:c1]  # (nc,)
 
         # Precompute the area-weighted Cartesian factors once.  At 5768
         # faces each (n,3,n) c128 Gp block is ~1.6 GB; the old form
@@ -841,17 +1013,17 @@ class GreenRetLayer(object):
         # and computing F directly from the three slices halves the
         # allocation traffic and the einsum overhead — numerically identical
         # to the previous form (associativity of the elementwise products).
-        area_row = area2[np.newaxis, :]                  # (1, n2)
-        dx_over_r = self._dx / r_safe                    # (n1, n2)
-        dy_over_r = self._dy / r_safe
+        area_row = area2[np.newaxis, :]                  # (1, nc)
+        dx_over_r = self._dx[:, c0:c1] / r_safe          # (n1, nc)
+        dy_over_r = self._dy[:, c0:c1] / r_safe
         nvx = nvec1[:, 0:1]
         nvy = nvec1[:, 1:2]
         nvz = nvec1[:, 2:3]
 
-        for name in G_dict:
-            G = G_dict[name].reshape(n1, n2)
-            Fr = Fr_dict[name].reshape(n1, n2)
-            Fz = Fz_dict[name].reshape(n1, n2)
+        def _build_one(name):
+            G = G_dict[name].reshape(n1, nc)
+            Fr = Fr_dict[name].reshape(n1, nc)
+            Fz = Fz_dict[name].reshape(n1, nc)
 
             # MATLAB initrefl2.m line 35-40: Gp uses raw Fr/Fz, then area'
             # is applied via fun(...); G itself is multiplied by area' in place.
@@ -862,16 +1034,29 @@ class GreenRetLayer(object):
             gp_y = Fr_area * dy_over_r
             gp_z = Fz * area_row
 
-            Gp = np.empty((n1, 3, n2), dtype = complex)
-            Gp[:, 0, :] = gp_x
-            Gp[:, 1, :] = gp_y
-            Gp[:, 2, :] = gp_z
-            self.Gp_comp[name] = Gp
+            if need_gp:
+                Gp = np.empty((n1, 3, nc), dtype = complex)
+                Gp[:, 0, :] = gp_x
+                Gp[:, 1, :] = gp_y
+                Gp[:, 2, :] = gp_z
+                self.Gp_comp[name] = Gp
 
             # Normal derivative: F = inner(nvec, Gp) (MATLAB initrefl2.m
             # line 197).  Compute directly from the slices to skip einsum's
             # (n,3,n) intermediate; identical to np.einsum('ik,ikj->ij').
             self.F_comp[name] = gp_x * nvx + gp_y * nvy + gp_z * nvz
+
+        # Each name writes disjoint dict keys, so the pool has no data races.
+        # NumPy drops the GIL for the large (n1, nc) elementwise ops, so this
+        # parallelizes the dominant host stage of a big substrate warmup.
+        names_list = list(G_dict)
+        nthr = _green_build_threads(len(names_list))
+        if nthr > 1 and len(names_list) > 1:
+            with ThreadPoolExecutor(max_workers = nthr) as _ex:
+                list(_ex.map(_build_one, names_list))
+        else:
+            for name in names_list:
+                _build_one(name)
 
         if _gprof:
             print('[gr-prof]   build G/F/Gp comp        {:.3f}s'.format(
@@ -880,10 +1065,16 @@ class GreenRetLayer(object):
         # Apply refinement if configured
         has_refinement = (len(self._diag_id) > 0 or len(self._offdiag_ind) > 0)
         if has_refinement:
-            self._apply_refinement_components()
+            self._apply_refinement_components(c0, c1)
         if _gprof:
             print('[gr-prof]   apply_refinement          {:.3f}s'.format(
                 _t.perf_counter() - _gt0), flush=True)
+
+        # Record the cache key only after the dicts are fully built (incl.
+        # refinement), so a hit implies a complete, consistent block for this
+        # exact (enei, col_range).  Set last to avoid a stale key surviving a
+        # partial build.
+        self._comp_cache_key = cache_key
 
     # -----------------------------------------------------------------
     #  Surface derivative computation (unrefined, for eval())

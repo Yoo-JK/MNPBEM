@@ -15,6 +15,7 @@ Reference:
 import os
 import sys
 
+from collections import OrderedDict
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 
 import numpy as np
@@ -28,6 +29,23 @@ from ..utils.matlab_compat import (
 )
 from ..utils.matlab_ode45 import matlab_ode45
 from ..utils.gpu import layer_gpu_active, get_layer_xp
+
+
+# Sommerfeld Bessel/Hankel memoization.  During a tabulated-Green build
+# (@greentablayer/set/parset), layer.green() is evaluated once per (z1, z2)
+# grid cell.  The Bessel/Hankel arguments arg = kpar[:, None] * r[None, :]
+# depend only on the integration nodes (kpar, fixed at a wavelength) and the
+# radial grid r — never on z1/z2 — so the semi-ellipse contribution repeats a
+# byte-identical (M, n) argument across every grid cell.  Memoizing the
+# scipy special-function evaluation returns exactly the same values (no
+# numerical change) while removing the ~nz1*nz2-fold recomputation.  Set
+# MNPBEM_LAYER_BESSEL_CACHE=0 to restore the uncached reference path.
+_BESSEL_CACHE_ON = os.environ.get(
+    "MNPBEM_LAYER_BESSEL_CACHE", "1").strip() not in ("", "0", "false", "False")
+# Cap the number of retained (order, kpar, r) blocks so a long wavelength
+# sweep cannot grow the cache without bound (each new wavelength introduces
+# fresh kpar keys that never match older ones).
+_BESSEL_CACHE_MAX = 64
 
 
 class LayerStructure(object):
@@ -156,6 +174,11 @@ class LayerStructure(object):
         self._matlab_eps_specs_cmd = None
         if self.use_matlab_engine:
             self._init_matlab_engine(epstab)
+
+        # Memoization store for the Sommerfeld Bessel/Hankel evaluations
+        # (see _besselj01 / _hankel01).  Keyed by (order, kpar-bytes,
+        # r-bytes); an OrderedDict gives us cheap LRU eviction.
+        self._bessel_cache: 'OrderedDict[Any, Tuple[np.ndarray, np.ndarray]]' = OrderedDict()
 
     def _init_matlab_engine(self, epstab: list) -> None:
         # Wave 51: spin up MATLAB Engine and pre-build a workspace command
@@ -1230,24 +1253,28 @@ class LayerStructure(object):
 
         return r, rz, kz
 
-    def _reflection_subs_batch(self,
+    def _reflection_subs_coeffs(self,
             kpar_arr: np.ndarray,
-            ctx: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray]:
-        # Vectorized substrate reflection over array of kpar.
-        # kpar_arr shape (M,). Returns refl[name] shape depending on same_size:
-        #   same_size: (M, n_flat); not same_size: (M, n1, n2).
-        # kz shape (M, 2).
-        eps_vals = ctx['eps_vals']
-        k_vals = ctx['k_vals']
-        k0 = ctx['k0']
-        ind1 = ctx['ind1']
-        ind2 = ctx['ind2']
-        abs_z1 = ctx['abs_z1']
-        abs_z2 = ctx['abs_z2']
-        sign_z1 = ctx['sign_z1']
-        same_size = ctx['same_size_refl']
+            eps_vals: np.ndarray,
+            k_vals: np.ndarray,
+            k0: float) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+        # Compute (kz, mats) for the two-layer substrate reflection.  These are
+        # a pure function of (kpar, eps_vals, k_vals, k0) — the z-independent
+        # part of _reflection_subs_batch — so they are memoized to avoid the
+        # bit-exact m_sqrt_c + matrix-assembly recomputation across the many
+        # grid cells that share the same kpar (see _reflection_subs_batch).
+        cache = getattr(self, '_refl_coeff_cache', None)
+        if cache is None:
+            cache = self._refl_coeff_cache = OrderedDict()
+        key = None
+        if _BESSEL_CACHE_ON:
+            key = (kpar_arr.shape, kpar_arr.dtype.str, kpar_arr.tobytes(),
+                   eps_vals.tobytes(), k_vals.tobytes(), float(k0))
+            hit = cache.get(key)
+            if hit is not None:
+                cache.move_to_end(key)
+                return hit
 
-        kpar_arr = np.asarray(kpar_arr)
         M = kpar_arr.size
 
         # kz shape (M, 2) — small (2 layers); compute on CPU with MATLAB-bitexact
@@ -1309,6 +1336,41 @@ class LayerStructure(object):
         mats['hs'] = _mat2(r_hs_11, r_hs_22)
         mats['sh'] = _mat2(r_sh_11, r_sh_22)
         mats['hh'] = _mat1(r_hh_11, r_hh_22)
+
+        if key is not None:
+            cache[key] = (kz, mats)
+            cache.move_to_end(key)
+            while len(cache) > _BESSEL_CACHE_MAX:
+                cache.popitem(last = False)
+
+        return kz, mats
+
+    def _reflection_subs_batch(self,
+            kpar_arr: np.ndarray,
+            ctx: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray]:
+        # Vectorized substrate reflection over array of kpar.
+        # kpar_arr shape (M,). Returns refl[name] shape depending on same_size:
+        #   same_size: (M, n_flat); not same_size: (M, n1, n2).
+        # kz shape (M, 2).
+        eps_vals = ctx['eps_vals']
+        k_vals = ctx['k_vals']
+        k0 = ctx['k0']
+        ind1 = ctx['ind1']
+        ind2 = ctx['ind2']
+        abs_z1 = ctx['abs_z1']
+        abs_z2 = ctx['abs_z2']
+        sign_z1 = ctx['sign_z1']
+        same_size = ctx['same_size_refl']
+
+        kpar_arr = np.asarray(kpar_arr)
+        M = kpar_arr.size
+
+        # kz and the 2x2 reflection-coefficient matrices depend only on
+        # (kpar, k_vals, eps_vals, k0) — never on z1/z2 — so they are shared
+        # by every (z1, z2) grid cell of a tabulated Green build (the
+        # semi-ellipse kpar in particular repeats across the whole grid).
+        # Memoize them; only the z-dependent propagation below runs per call.
+        kz, mats = self._reflection_subs_coeffs(kpar_arr, eps_vals, k_vals, k0)
 
         # Propagation factors
         kz_i1 = kz[:, ind1 - 1]  # (M, n1)
@@ -1382,6 +1444,68 @@ class LayerStructure(object):
 
         return refl_out, reflz_out, kz
 
+    def _bessel_cache_get(self,
+            tag: str,
+            kpar_arr: np.ndarray,
+            r_ind: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        # Look up a memoized (f0, f1) pair for the given order tag and the
+        # (kpar, r) that define arg = kpar[:, None] * r[None, :].  The two
+        # 1-D vectors are much smaller than the (M, n) product, so hashing
+        # their bytes is cheap relative to the special-function evaluation.
+        if not _BESSEL_CACHE_ON:
+            return None
+        key = (tag, kpar_arr.shape, kpar_arr.dtype.str, kpar_arr.tobytes(),
+               r_ind.shape, r_ind.tobytes())
+        cache = self._bessel_cache
+        hit = cache.get(key)
+        if hit is not None:
+            cache.move_to_end(key)
+        return hit
+
+    def _bessel_cache_put(self,
+            tag: str,
+            kpar_arr: np.ndarray,
+            r_ind: np.ndarray,
+            f0: np.ndarray,
+            f1: np.ndarray) -> None:
+        if not _BESSEL_CACHE_ON:
+            return
+        key = (tag, kpar_arr.shape, kpar_arr.dtype.str, kpar_arr.tobytes(),
+               r_ind.shape, r_ind.tobytes())
+        cache = self._bessel_cache
+        cache[key] = (f0, f1)
+        cache.move_to_end(key)
+        while len(cache) > _BESSEL_CACHE_MAX:
+            cache.popitem(last = False)
+
+    def _besselj01(self,
+            arg: np.ndarray,
+            kpar_arr: np.ndarray,
+            r_ind: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        # Memoized besselj(0, arg), besselj(1, arg).  Returns byte-identical
+        # values to the direct scipy call — memoization only removes the
+        # redundant recomputation over (z1, z2) grid cells that share arg.
+        hit = self._bessel_cache_get('J', kpar_arr, r_ind)
+        if hit is not None:
+            return hit
+        j0 = besselj(0, arg)
+        j1 = besselj(1, arg)
+        self._bessel_cache_put('J', kpar_arr, r_ind, j0, j1)
+        return j0, j1
+
+    def _hankel01(self,
+            arg: np.ndarray,
+            kpar_arr: np.ndarray,
+            r_ind: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        # Memoized hankel1(0, arg), hankel1(1, arg).
+        hit = self._bessel_cache_get('H', kpar_arr, r_ind)
+        if hit is not None:
+            return hit
+        h0 = hankel1(0, arg)
+        h1 = hankel1(1, arg)
+        self._bessel_cache_put('H', kpar_arr, r_ind, h0, h1)
+        return h0, h1
+
     def _intbessel_batch(self,
             kpar_arr: np.ndarray,
             ctx: Dict[str, Any],
@@ -1414,8 +1538,9 @@ class LayerStructure(object):
         r_ind = ctx['r_flat'][ind]
         arg = kpar_arr[:, np.newaxis] * r_ind[np.newaxis, :]
         # Bessel accepts complex directly; small cost increase for complex kpar.
-        j0 = besselj(0, arg)
-        j1 = besselj(1, arg)
+        # Memoized on (kpar, r): the semi-ellipse contribution repeats the same
+        # arg for every (z1, z2) grid cell of a tabulated Green build.
+        j0, j1 = self._besselj01(arg, kpar_arr, r_ind)
 
         # Wave 49: match MATLAB intbessel.m FP ordering exactly.
         # MATLAB: 1i * j0 .* (rr .* (kpar ./ kz))  - inner factor (rr*kpar/kz) first.
@@ -1535,8 +1660,7 @@ class LayerStructure(object):
 
         r_ind = ctx['r_flat'][ind]
         arg = kpar_arr[:, np.newaxis] * r_ind[np.newaxis, :]
-        h0 = hankel1(0, arg)
-        h1 = hankel1(1, arg)
+        h0, h1 = self._hankel01(arg, kpar_arr, r_ind)
         h0_conj = np.conj(h0)
         h1_conj = np.conj(h1)
 

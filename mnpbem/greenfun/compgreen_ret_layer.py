@@ -612,8 +612,11 @@ class CompGreenRetLayer(object):
         if not self._is_outer_surface(i, j):
             return g_direct
 
-        # Compute reflected Green function components
-        self.gr.eval_components(enei)
+        # Compute reflected Green function components.  Only derivative keys
+        # consume the (n,3,n) Gp block; scalar/normal keys ('G','F','H1','H2')
+        # do not, so skip building it to save the large per-chunk allocation.
+        _need_gp = key in ('Gp', 'H1p', 'H2p')
+        self.gr.eval_components(enei, need_gp = _need_gp)
 
         # Select reflected Green function based on key
         if key == 'G':
@@ -694,6 +697,138 @@ class CompGreenRetLayer(object):
                 gr_block = _to_host_arr(gr_block)
                 g_base[np.ix_(ind1, range(3), ind2)] = (
                     g_base[np.ix_(ind1, range(3), ind2)] + gr_block)
+
+            result[name] = g_base
+
+        return result
+
+    def eval_block(self,
+            i: int,
+            j: int,
+            key: str,
+            enei: float,
+            col_start: int,
+            col_stop: int) -> Any:
+
+        # Column-range analogue of eval(): returns exactly the columns
+        # [col_start, col_stop) of what eval(i, j, key, enei) would give.
+        # Scalar key -> (p1.n, col_stop - col_start).
+        # Derivative key (Gp/H1p/H2p) -> (p1.n, 3, col_stop - col_start).
+        col_start = int(col_start)
+        col_stop = int(col_stop)
+        assert 0 <= col_start <= col_stop <= self.p2.n, \
+            ('[error] eval_block col range ({}, {}) out of bounds for <p2.n>={}'
+             .format(col_start, col_stop, self.p2.n))
+
+        ncol = col_stop - col_start
+
+        # Direct (free-space) part restricted to the column tile.  self.g is a
+        # CompGreenRet, which already exposes a column-range eval_block whose
+        # output column m maps to global p2 column (col_start + m).
+        g_direct = self.g.eval_block(i, j, key, enei, col_start, col_stop)
+
+        if isinstance(g_direct, (int, float)) and g_direct == 0:
+            if key in ('Gp', 'H1p', 'H2p'):
+                g_direct = np.zeros((self.p1.n, 3, ncol), dtype = complex)
+            else:
+                g_direct = np.zeros((self.p1.n, ncol), dtype = complex)
+
+        # Reflected part is added only for the outer surface (same guard as
+        # eval()); otherwise the direct tile is the whole answer.
+        if not self._is_outer_surface(i, j):
+            return g_direct
+
+        # Reflected components sliced to the same column tile.  The concurrent
+        # GreenRetLayer.eval_components(col_range=(c0, c1)) contract stores
+        # G_comp/F_comp/Gp_comp[name] already restricted to columns [c0, c1)
+        # in local coordinates, i.e. shape (n1, nc) or (n1, 3, nc) with
+        # nc = c1 - c0 and local column m mapping to global column (c0 + m).
+        _need_gp = key in ('Gp', 'H1p', 'H2p')
+        self.gr.eval_components(enei, col_range = (col_start, col_stop),
+                need_gp = _need_gp)
+
+        if key == 'G':
+            gr_comp = self.gr.G_comp
+        elif key in ('F', 'H1', 'H2'):
+            gr_comp = self.gr.F_comp
+        elif key in ('Gp', 'H1p', 'H2p'):
+            gr_comp = self.gr.Gp_comp
+        else:
+            return g_direct
+
+        if not gr_comp:
+            return g_direct
+
+        return self._assembly_block(g_direct, gr_comp, col_start, col_stop)
+
+    def _assembly_block(self, g_direct, gr_comp, col_start, col_stop):
+        # Column-range analogue of _assembly().  g_direct already covers only
+        # the columns [col_start, col_stop) (local output column m == global
+        # p2 column col_start + m), and every gr_comp[name] is already sliced
+        # to the same column tile (local column m == global p2 column
+        # col_start + m; shape (n1, nc) or (n1, 3, nc), nc = col_stop -
+        # col_start).
+        #
+        # In the full-matrix _assembly() the reflected block is scattered into
+        # g_base[np.ix_(ind1, ind2)], where ind2 is the (global) subset of p2
+        # faces that touch the layer.  With the column tile fixed, only those
+        # ind2 columns that also fall inside [col_start, col_stop) contribute;
+        # the rest of the reflected matrix lives in other GPUs' tiles.  We keep
+        # the ind2 entries with col_start <= ind2 < col_stop and shift them by
+        # -col_start to land in the local output-column frame.  Because the
+        # reflected block itself is sliced by the very same col_start, that
+        # identical shift also indexes the correct columns of gr_block, so the
+        # two stay aligned.
+        result = {}
+        ind1 = self.ind1
+        ind2 = self.ind2
+        n_p1 = self.p1.n
+        n_p2 = self.p2.n
+        ncol = col_stop - col_start
+
+        from ..utils.gpu import to_host as _to_host_arr
+
+        g_direct_host = _to_host_arr(g_direct) if not isinstance(g_direct, np.ndarray) else g_direct
+
+        # Global ind2 columns that survive the tile, and their position within
+        # the local [col_start, col_stop) output frame.  gr_block was sliced by
+        # the same col_start, so ind2_local also selects its matching columns.
+        tile_mask = (ind2 >= col_start) & (ind2 < col_stop)
+        ind2_kept = ind2[tile_mask]
+        ind2_local = ind2_kept - col_start
+
+        for name in gr_comp:
+            if name in ('ss', 'hh', 'p'):
+                g_base = g_direct_host.copy()
+            else:
+                g_base = g_direct_host * 0
+
+            if ind2_local.size == 0:
+                result[name] = g_base
+                continue
+
+            gr_val = gr_comp[name]
+
+            if g_direct_host.ndim == 2:
+                # gr_val expected (n1, nc) tile.  Its columns are already the
+                # [col_start, col_stop) slice, so pick the kept ind2 columns in
+                # local frame; rows follow the same ind1 subset as _assembly().
+                if gr_val.shape == (n_p1, ncol):
+                    gr_block = gr_val[np.ix_(ind1, ind2_local)]
+                else:
+                    gr_block = gr_val
+                gr_block = _to_host_arr(gr_block)
+                g_base[np.ix_(ind1, ind2_local)] = (
+                    g_base[np.ix_(ind1, ind2_local)] + gr_block)
+            else:
+                # 3D: gr_val expected (n1, 3, nc) tile.
+                if gr_val.shape == (n_p1, 3, ncol):
+                    gr_block = gr_val[np.ix_(ind1, range(3), ind2_local)]
+                else:
+                    gr_block = gr_val
+                gr_block = _to_host_arr(gr_block)
+                g_base[np.ix_(ind1, range(3), ind2_local)] = (
+                    g_base[np.ix_(ind1, range(3), ind2_local)] + gr_block)
 
             result[name] = g_base
 

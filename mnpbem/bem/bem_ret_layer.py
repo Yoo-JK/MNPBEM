@@ -12,6 +12,7 @@ from ..utils import gpu as _gpu_mod
 
 from ..greenfun import CompGreenRetLayer, CompStruct
 from .bem_ret import _vram_share_lu_kwargs
+from . import _numba_bem_elem as _bem_elem
 
 
 # v1.7.2 memory-pool parity: when cupy is importable and MNPBEM_GPU=1 the
@@ -1006,6 +1007,15 @@ class BEMRetLayer(object):
             return _to_host_safe(A)
         if isinstance(A, (int, float)) and A == 0:
             return _to_host_safe(-B if not _is_cupy_array(B) else -B)
+        # Host-resident A - B is a thread-invariant N^2 element-wise op
+        # (numpy runs it single-threaded).  When both operands already live
+        # on the host, the numba-parallel subtract is bit-identical and
+        # ~10x faster on a large substrate; cupy/mixed operands keep the
+        # existing backend-aligned path untouched.
+        if (not _is_cupy_array(A) and not _is_cupy_array(B)
+                and isinstance(A, np.ndarray) and isinstance(B, np.ndarray)
+                and A.ndim == 2 and B.ndim == 2):
+            return _bem_elem.sub2(A, B)
         A, B = _backend_align(A, B)
         result = A - B
         return _to_host_safe(result)
@@ -1473,6 +1483,45 @@ class BEMRetLayer(object):
     # B-3 distributed build path (Agent E)
     # ------------------------------------------------------------------
 
+    def _build_greens_chunked(self, enei, chunk_cols):
+        # Column-chunked build of the init Green matrices via eval_block: each
+        # chunk's columns are built on GPU then moved to host, so the device
+        # peak is one chunk (N x chunk) instead of the full N^2. gr (reflected)
+        # is recomputed once per chunk (cached by (enei, col_range) in
+        # GreenRetLayer) and reused across the outer-surface keys within a chunk.
+        n = self.p.n
+        chunk = max(1, min(int(chunk_cols), n))
+        G11 = np.empty((n, n), dtype = complex)
+        G21 = np.empty((n, n), dtype = complex)
+        H11 = np.empty((n, n), dtype = complex)
+        H21 = np.empty((n, n), dtype = complex)
+        G12 = np.empty((n, n), dtype = complex)
+        H12 = np.empty((n, n), dtype = complex)
+        G22 = None
+        H22 = None
+        for c0 in range(0, n, chunk):
+            c1 = min(c0 + chunk, n)
+            G11[:, c0:c1] = to_host(self.g.eval_block(0, 0, 'G', enei, c0, c1))
+            G21[:, c0:c1] = to_host(self.g.eval_block(1, 0, 'G', enei, c0, c1))
+            H11[:, c0:c1] = to_host(self.g.eval_block(0, 0, 'H1', enei, c0, c1))
+            H21[:, c0:c1] = to_host(self.g.eval_block(1, 0, 'H1', enei, c0, c1))
+            g22 = self.g.eval_block(1, 1, 'G', enei, c0, c1)
+            h22 = self.g.eval_block(1, 1, 'H2', enei, c0, c1)
+            if G22 is None:
+                G22 = {k: np.empty((n, n), dtype = complex) for k in g22}
+                H22 = {k: np.empty((n, n), dtype = complex) for k in h22}
+            for k in g22:
+                G22[k][:, c0:c1] = to_host(g22[k])
+            for k in h22:
+                H22[k][:, c0:c1] = to_host(h22[k])
+            G12[:, c0:c1] = to_host(self.g.eval_block(0, 1, 'G', enei, c0, c1))
+            H12[:, c0:c1] = to_host(self.g.eval_block(0, 1, 'H2', enei, c0, c1))
+            try:
+                _cp_v172.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                pass
+        return G11, G21, H11, H21, G22, G12, H22, H12
+
     def _init_distributed_precond(self, enei: float) -> 'BEMRetLayer':
         """Distributed BEM build for the substrate (layer) solver.
 
@@ -1597,11 +1646,14 @@ class BEMRetLayer(object):
                     opts['greentab_obj'] = gt
             self.g = CompGreenRetLayer(self.p, self.p, self.layer, **opts)
 
-        # ---- Inner-surface Green (plain scalar matrices) ----
-        G11 = self.g.eval(0, 0, 'G', enei)
-        G21 = self.g.eval(1, 0, 'G', enei)
-        H11 = self.g.eval(0, 0, 'H1', enei)
-        H21 = self.g.eval(1, 0, 'H1', enei)
+        import time as _dprof_time
+        _dprof_t0 = _prof_mark('dist.setup', _dprof_time.perf_counter(), None)
+
+        # ---- Green build (column-chunked; GPU peak = one chunk) ----
+        _chunk = int(os.environ.get('MNPBEM_GREEN_CHUNK_COLS', '2048'))
+        (G11, G21, H11, H21,
+                G22, G12, H22, H12) = self._build_greens_chunked(enei, _chunk)
+        _dprof_t0 = _prof_mark('dist.green-build', _dprof_t0, None)
 
         G1 = self._sub_mat(G11, G21)
         G1e = self._sub_mat(self._mul_eps(eps1, G11), self._mul_eps(eps2, G21))
@@ -1614,17 +1666,12 @@ class BEMRetLayer(object):
         except Exception:
             pass
 
-        # ---- Outer-surface Green (structured dict) ----
-        G22 = self.g.eval(1, 1, 'G', enei)
-        G12 = self.g.eval(0, 1, 'G', enei)
-        H22 = self.g.eval(1, 1, 'H2', enei)
-        H12 = self.g.eval(0, 1, 'H2', enei)
-
         G2 = self._build_outer_mixed(G22, G12)
         H2 = self._build_outer_mixed(H22, H12)
         G2e = self._build_outer_mixed_eps(G22, G12, eps2, eps1)
         H2e = self._build_outer_mixed_eps(H22, H12, eps2, eps1)
         del G22, G12, H22, H12
+        _dprof_t0 = _prof_mark('dist.outer-mixed', _dprof_t0, None)
         try:
             cp.cuda.runtime.deviceSynchronize()
             cp.get_default_memory_pool().free_all_blocks()
@@ -1652,7 +1699,8 @@ class BEMRetLayer(object):
         self._G1_lu = ('mgpu', G1_lu_handle, None)
         self._G1_dm = G1_dm  # keep distributed buffers alive
         # Recover full inverse on host (one cuSolverMg gather).
-        G1i = G1_lu_handle.solve(np.eye(n, dtype=complex))
+        G1i = G1_lu_handle.solve_chunked(np.eye(n, dtype=complex))
+        _dprof_t0 = _prof_mark('dist.G1-LU+inv', _dprof_t0, None)
 
         # ============================================================
         # Step 2: distributed LU of G2.p (substrate parallel block)
@@ -1668,17 +1716,19 @@ class BEMRetLayer(object):
         G2p_lu_handle = G2p_dm.lu_factor(backend='cusolvermg')
         self._G2p_lu = ('mgpu', G2p_lu_handle, None)
         self._G2p_dm = G2p_dm
-        G2pi = G2p_lu_handle.solve(np.eye(n, dtype=complex))
+        G2pi = G2p_lu_handle.solve_chunked(np.eye(n, dtype=complex))
 
         # ============================================================
         # Step 3: Sigma / L matrices on host (structured G2 dict)
         # ============================================================
+        _dprof_t0 = _prof_mark('dist.G2p-LU+inv', _dprof_t0, None)
         Sigma1 = H1 @ G1i
         Sigma1e = H1e @ G1i
         Sigma2p = H2['p'] @ G2pi
         L1 = G1e @ G1i
         L2p = G2e['p'] @ G2pi
         del H1, H1e, G1e
+        _dprof_t0 = _prof_mark('dist.Sigma/L-GEMM', _dprof_t0, None)
 
         # ============================================================
         # Step 4: distributed LU of Gamma = Sigma1 - Sigma2p
@@ -1694,10 +1744,14 @@ class BEMRetLayer(object):
         Gamma_lu_handle = Gamma_dm.lu_factor(backend='cusolvermg')
         self._Gamma_lu = ('mgpu', Gamma_lu_handle, None)
         self._Gamma_dm = Gamma_dm
-        Gamma = Gamma_lu_handle.solve(np.eye(n, dtype=complex))
+        Gamma = Gamma_lu_handle.solve_chunked(np.eye(n, dtype=complex))
         del Gamma_host
+        _dprof_t0 = _prof_mark('dist.Gamma-LU+inv', _dprof_t0, None)
 
         # Gammapar = ik*(L1-L2p)*Gamma .* (npar*npar')
+        # Kept on numpy: the chained complex*complex product here rounds
+        # ~1 ULP differently under numba (max rel ~1.5e-16), which would
+        # violate the bit-identical (max rel = 0) contract this build holds.
         npar_outer = npar @ npar.T
         Gammapar = 1j * k * ((L1 - L2p) @ Gamma) * npar_outer
         del npar_outer
@@ -1710,18 +1764,25 @@ class BEMRetLayer(object):
         # which is the same peak as the legacy path.  The DistributedMatrix
         # then scatters columns block-cyclic and the host copy is freed
         # immediately so subsequent wavelengths do not double-occupy.
-        diff_ss = L1 @ G2['ss'] - G2e['ss']
-        diff_sh = L1 @ G2['sh'] - G2e['sh']
-        diff_hh = L1 @ G2['hh'] - G2e['hh']
+        #
+        # Every ``@`` below is a dense N^2 GEMM handled by MKL; only the
+        # trailing subtractions / ik-scaling / nperp-broadcast (no matmul,
+        # so MKL threads never touch them) move to the numba-parallel
+        # element-wise kernels.  Subtraction and scaling carry no
+        # reassociation, so the fused kernels are bit-identical to the
+        # numpy expressions they replace (verified max rel err = 0, fp64).
+        diff_ss = _bem_elem.sub2(L1 @ G2['ss'], G2e['ss'])
+        diff_sh = _bem_elem.sub2(L1 @ G2['sh'], G2e['sh'])
+        diff_hh = _bem_elem.sub2(L1 @ G2['hh'], G2e['hh'])
 
-        m11 = (Sigma1e @ G2['ss'] - H2e['ss']
-            - 1j * k * (Gammapar @ diff_ss + diff_sh * nperp[:, np.newaxis]))
-        m12 = (Sigma1e @ G2['sh'] - H2e['sh']
-            - 1j * k * (Gammapar @ diff_sh + diff_hh * nperp[:, np.newaxis]))
-        m21 = (Sigma1 @ G2['hs'] - H2['hs']
-            - 1j * k * diff_ss * nperp[:, np.newaxis])
-        m22 = (Sigma1 @ G2['hh'] - H2['hh']
-            - 1j * k * diff_sh * nperp[:, np.newaxis])
+        m11 = _bem_elem.m_full_block(
+            Sigma1e @ G2['ss'], H2e['ss'], Gammapar @ diff_ss, diff_sh, nperp, k)
+        m12 = _bem_elem.m_full_block(
+            Sigma1e @ G2['sh'], H2e['sh'], Gammapar @ diff_sh, diff_hh, nperp, k)
+        m21 = _bem_elem.m_half_block(
+            Sigma1 @ G2['hs'], H2['hs'], diff_ss, nperp, k)
+        m22 = _bem_elem.m_half_block(
+            Sigma1 @ G2['hh'], H2['hh'], diff_sh, nperp, k)
         del diff_ss, diff_sh, diff_hh, Gammapar, H2, H2e
 
         m_full = np.empty((2 * n, 2 * n), dtype=complex)
@@ -1730,6 +1791,7 @@ class BEMRetLayer(object):
         m_full[n:, :n] = m21
         m_full[n:, n:] = m22
         del m11, m12, m21, m22
+        _dprof_t0 = _prof_mark('dist.m-assemble-GEMM', _dprof_t0, None)
 
         m_full_dm = DistributedMatrix.from_host(
             m_full,
@@ -1749,6 +1811,7 @@ class BEMRetLayer(object):
         self.m_full = None
         self.m_lu = ('mgpu', m_lu_handle, None)
         self._m_full_dm = m_full_dm
+        _dprof_t0 = _prof_mark('dist.m_full-LU(2Nx2N)', _dprof_t0, None)
 
         # Store auxiliary matrices on host (same as legacy path) so
         # ``_solve_single`` can reuse the existing numpy code path.
@@ -1761,6 +1824,17 @@ class BEMRetLayer(object):
         self.Sigma1 = Sigma1
         self.Sigma1e = Sigma1e
         self.Gamma = Gamma
+
+        # solve-side 상수 GEMM 캐시. 일반 init(line 891-926)과 동일 — distributed
+        # init 에서 누락되면 _solve_single 이 stale/미정의 _sv_* 로 spectrum 이
+        # 발산한다 (green split 배선 시 빠졌던 버그).
+        self._sv_diff_ss = matmul_dispatch(L1, G2['ss']) - G2e['ss']
+        self._sv_diff_sh = matmul_dispatch(L1, G2['sh']) - G2e['sh']
+        self._sv_G2piGamma = matmul_dispatch(G2pi, Gamma)
+        self._sv_L1mL2p_Gamma = matmul_dispatch(L1 - L2p, Gamma)
+        for _svn in ('_sv_diff_ss', '_sv_diff_sh', '_sv_G2piGamma', '_sv_L1mL2p_Gamma'):
+            if is_cupy_array(getattr(self, _svn)):
+                setattr(self, _svn, to_host(getattr(self, _svn)))
 
         # Sync ALL devices in the distributed grid before returning.
         # cuSolverMg leaves async work queued on each device and the next
