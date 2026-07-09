@@ -1604,7 +1604,9 @@ class BEMRetLayer(object):
         for _attr in ('_G1_lu', '_G2p_lu', '_Gamma_lu', 'm_lu',
                       'G1i', 'G2pi', 'G2', 'G2e',
                       'L1', 'L2p', 'Sigma1', 'Sigma1e', 'Gamma',
-                      'm_full'):
+                      'm_full',
+                      '_sv_diff_ss', '_sv_diff_sh', '_sv_G2piGamma',
+                      '_sv_L1mL2p_Gamma'):
             if hasattr(self, _attr):
                 setattr(self, _attr, None)
         try:
@@ -1615,14 +1617,31 @@ class BEMRetLayer(object):
             _pool_limit_gb = 0.0
         try:
             _mempool = cp.get_default_memory_pool()
-            _pinned = cp.get_default_pinned_memory_pool()
             if _pool_limit_gb > 0:
                 _mempool.set_limit(size=int(_pool_limit_gb * (1024 ** 3)))
             import gc as _gc
             _gc.collect()
-            cp.cuda.runtime.deviceSynchronize()
-            _mempool.free_all_blocks()
-            _pinned.free_all_blocks()
+            # Free the previous wavelength's device buffers on EVERY device,
+            # not just the current one.  The single-GPU LU factors — above all
+            # ``m_lu`` (the 2N x 2N m_full factor, ~16 GB at 22560 in c64) —
+            # live on the last device (_lu_dev); a current-device-only
+            # free_all_blocks leaves that ~16 GB pinned there, so the next
+            # wavelength's m_full allocation OOMs on the 2nd wavelength of a
+            # sweep even though wavelength 1 fit.
+            _cur_dev = cp.cuda.runtime.getDevice()
+            _clean_devs = list(device_ids) if device_ids else list(range(n_gpus))
+            for _dev in _clean_devs:
+                try:
+                    cp.cuda.runtime.setDevice(int(_dev))
+                    cp.cuda.runtime.deviceSynchronize()
+                    cp.get_default_memory_pool().free_all_blocks()
+                    cp.get_default_pinned_memory_pool().free_all_blocks()
+                except Exception:
+                    pass
+            try:
+                cp.cuda.runtime.setDevice(int(_cur_dev))
+            except Exception:
+                pass
         except Exception:
             pass
 
