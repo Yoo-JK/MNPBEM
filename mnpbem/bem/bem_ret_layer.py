@@ -1025,6 +1025,17 @@ class BEMRetLayer(object):
             M: Any) -> Any:
         if isinstance(M, (int, float)) and M == 0:
             return 0
+        # Preserve M's working precision.  Under MNPBEM_GPU_LOWPREC the Green
+        # buffers are complex64 while ``eps`` (the dielectric) is a complex128
+        # scalar or diagonal; the product would otherwise upcast the result to
+        # complex128, doubling host RAM and forcing the distributed dense LU
+        # back into fp64 (~13x slower on the A6000).  Cast eps to M's dtype
+        # first so the whole outer/eps assembly stays c64.
+        if hasattr(M, 'dtype'):
+            if np.isscalar(eps):
+                eps = M.dtype.type(eps)
+            elif hasattr(eps, 'astype') and eps.dtype != M.dtype:
+                eps = eps.astype(M.dtype)
         if np.isscalar(eps):
             return _to_host_safe(eps * M)
         # ``eps`` is only ever constructed as a diagonal matrix
@@ -1491,12 +1502,19 @@ class BEMRetLayer(object):
         # GreenRetLayer) and reused across the outer-surface keys within a chunk.
         n = self.p.n
         chunk = max(1, min(int(chunk_cols), n))
-        G11 = np.empty((n, n), dtype = complex)
-        G21 = np.empty((n, n), dtype = complex)
-        H11 = np.empty((n, n), dtype = complex)
-        H21 = np.empty((n, n), dtype = complex)
-        G12 = np.empty((n, n), dtype = complex)
-        H12 = np.empty((n, n), dtype = complex)
+        # Under MNPBEM_GPU_LOWPREC hold the init Green buffers in complex64 so
+        # the downstream distributed dense LU factorises in fp32 (the A6000's
+        # fp64 throughput is ~1/16 of fp32: a 22560^2 factor is ~66 s in c128
+        # vs ~7 s in c64) and the host buffers take half the RAM.  eval_block
+        # still evaluates each chunk in c128 on the GPU; the assignment below
+        # downcasts on the way to host.
+        _gwd = np.complex64 if os.environ.get('MNPBEM_GPU_LOWPREC', '0') == '1' else complex
+        G11 = np.empty((n, n), dtype = _gwd)
+        G21 = np.empty((n, n), dtype = _gwd)
+        H11 = np.empty((n, n), dtype = _gwd)
+        H21 = np.empty((n, n), dtype = _gwd)
+        G12 = np.empty((n, n), dtype = _gwd)
+        H12 = np.empty((n, n), dtype = _gwd)
         G22 = None
         H22 = None
         for c0 in range(0, n, chunk):
@@ -1508,8 +1526,8 @@ class BEMRetLayer(object):
             g22 = self.g.eval_block(1, 1, 'G', enei, c0, c1)
             h22 = self.g.eval_block(1, 1, 'H2', enei, c0, c1)
             if G22 is None:
-                G22 = {k: np.empty((n, n), dtype = complex) for k in g22}
-                H22 = {k: np.empty((n, n), dtype = complex) for k in h22}
+                G22 = {k: np.empty((n, n), dtype = _gwd) for k in g22}
+                H22 = {k: np.empty((n, n), dtype = _gwd) for k in h22}
             for k in g22:
                 G22[k][:, c0:c1] = to_host(g22[k])
             for k in h22:
@@ -1680,43 +1698,52 @@ class BEMRetLayer(object):
 
         n = G1.shape[0]
 
+        # The distributed green build + outer-mixed leave large cupy pool
+        # blocks resident on every device (~27 GB on device 0 at 22560 faces).
+        # Release them on all devices before the single-GPU factors below, or
+        # the LU device is driven into memory-pool thrashing that turns a
+        # ~14 s inverse into a multi-hour hang.  Every matrix the LUs consume
+        # already lives on the host at this point, so this frees only stale
+        # scratch.
+        for _dev in (device_ids or list(range(n_gpus))):
+            try:
+                cp.cuda.runtime.setDevice(int(_dev))
+                cp.cuda.runtime.deviceSynchronize()
+                cp.get_default_memory_pool().free_all_blocks()
+                cp.get_default_pinned_memory_pool().free_all_blocks()
+            except Exception:
+                pass
+        # Run the per-matrix single-GPU LUs on a device that is NOT holding the
+        # green build's residual pool.  lu_solve_dispatch returns host arrays,
+        # so the downstream numpy '@' assembly is unaffected by the LU device.
+        _dev_list = list(device_ids) if device_ids else list(range(n_gpus))
+        _lu_dev = _dev_list[-1] if len(_dev_list) > 1 else _dev_list[0]
+        try:
+            cp.cuda.runtime.setDevice(int(_lu_dev))
+        except Exception:
+            pass
+
         # ============================================================
-        # Step 1: distributed LU of G1 and inverse construction
+        # Step 1: single-GPU LU of G1 + full inverse (n_gpus=1 overrides env).
         # ============================================================
-        # Scatter G1 to N GPUs, factor in place, then solve against I to
-        # recover G1i.  G1i is gathered to host because L1/Sigma1
-        # downstream are formed via host GEMM (with structured G2 dict).
-        G1_dm = DistributedMatrix.from_host(
-            np.ascontiguousarray(G1),
-            n_gpus=n_gpus,
-            device_ids=device_ids,
-            block_size=block_size,
-        )
-        del G1
-        G1_lu_handle = G1_dm.lu_factor(backend='cusolvermg')
-        # The DistributedMatrix tiles now hold the L/U factors; keep
-        # both refs alive so the lu_handle's pointer array stays valid.
-        self._G1_lu = ('mgpu', G1_lu_handle, None)
-        self._G1_dm = G1_dm  # keep distributed buffers alive
-        # Recover full inverse on host (one cuSolverMg gather).
-        G1i = G1_lu_handle.solve_chunked(np.eye(n, dtype=complex))
+        _g1dt = G1.dtype
+        _G1h = to_host(G1) if is_cupy_array(G1) else G1
+        _G1h = np.ascontiguousarray(_G1h)
+        self._G1_lu = lu_factor_dispatch(_G1h, n_gpus=1)
+        self._G1_dm = None
+        del G1, _G1h
+        G1i = lu_solve_dispatch(self._G1_lu, np.eye(n, dtype=_g1dt))
         _dprof_t0 = _prof_mark('dist.G1-LU+inv', _dprof_t0, None)
 
         # ============================================================
         # Step 2: distributed LU of G2.p (substrate parallel block)
         # ============================================================
         G2p = G2['p']
-        G2p_dm = DistributedMatrix.from_host(
-            np.ascontiguousarray(G2p),
-            n_gpus=n_gpus,
-            device_ids=device_ids,
-            block_size=block_size,
-        )
+        _g2dt = G2p.dtype
+        self._G2p_lu = lu_factor_dispatch(np.ascontiguousarray(G2p), n_gpus=1)
+        self._G2p_dm = None
         del G2p
-        G2p_lu_handle = G2p_dm.lu_factor(backend='cusolvermg')
-        self._G2p_lu = ('mgpu', G2p_lu_handle, None)
-        self._G2p_dm = G2p_dm
-        G2pi = G2p_lu_handle.solve_chunked(np.eye(n, dtype=complex))
+        G2pi = lu_solve_dispatch(self._G2p_lu, np.eye(n, dtype=_g2dt))
 
         # ============================================================
         # Step 3: Sigma / L matrices on host (structured G2 dict)
@@ -1735,16 +1762,9 @@ class BEMRetLayer(object):
         # ============================================================
         Gamma_host = np.ascontiguousarray(Sigma1 - Sigma2p)
         del Sigma2p
-        Gamma_dm = DistributedMatrix.from_host(
-            Gamma_host,
-            n_gpus=n_gpus,
-            device_ids=device_ids,
-            block_size=block_size,
-        )
-        Gamma_lu_handle = Gamma_dm.lu_factor(backend='cusolvermg')
-        self._Gamma_lu = ('mgpu', Gamma_lu_handle, None)
-        self._Gamma_dm = Gamma_dm
-        Gamma = Gamma_lu_handle.solve_chunked(np.eye(n, dtype=complex))
+        self._Gamma_lu = lu_factor_dispatch(np.ascontiguousarray(Gamma_host), n_gpus=1)
+        self._Gamma_dm = None
+        Gamma = lu_solve_dispatch(self._Gamma_lu, np.eye(n, dtype=Gamma_host.dtype))
         del Gamma_host
         _dprof_t0 = _prof_mark('dist.Gamma-LU+inv', _dprof_t0, None)
 
@@ -1754,6 +1774,10 @@ class BEMRetLayer(object):
         # violate the bit-identical (max rel = 0) contract this build holds.
         npar_outer = npar @ npar.T
         Gammapar = 1j * k * ((L1 - L2p) @ Gamma) * npar_outer
+        # LOWPREC: the 1j*k scalar promotes complex64 back to complex128; pull it
+        # down so the m-assembly GEMMs and the 2N×2N m_full LU stay fp32.
+        if os.environ.get('MNPBEM_GPU_LOWPREC', '0') == '1':
+            Gammapar = Gammapar.astype(np.complex64)
         del npar_outer
 
         # ============================================================
@@ -1785,7 +1809,9 @@ class BEMRetLayer(object):
             Sigma1 @ G2['hh'], H2['hh'], diff_sh, nperp, k)
         del diff_ss, diff_sh, diff_hh, Gammapar, H2, H2e
 
-        m_full = np.empty((2 * n, 2 * n), dtype=complex)
+        _mf_dtype = (np.complex64
+                if os.environ.get('MNPBEM_GPU_LOWPREC', '0') == '1' else complex)
+        m_full = np.empty((2 * n, 2 * n), dtype=_mf_dtype)
         m_full[:n, :n] = m11
         m_full[:n, n:] = m12
         m_full[n:, :n] = m21
@@ -1793,13 +1819,11 @@ class BEMRetLayer(object):
         del m11, m12, m21, m22
         _dprof_t0 = _prof_mark('dist.m-assemble-GEMM', _dprof_t0, None)
 
-        m_full_dm = DistributedMatrix.from_host(
-            m_full,
-            n_gpus=n_gpus,
-            device_ids=device_ids,
-            block_size=block_size,
-        )
-        del m_full  # host copy freed; tiles now hold the data
+        # Free the per-block GPU inverses before the 2N×2N factor so the
+        # single device has room for m_full (c64: 16 GB, c128: 32 GB).
+        self._G1_lu = None
+        self._G2p_lu = None
+        self._Gamma_lu = None
         try:
             cp.cuda.runtime.deviceSynchronize()
             cp.get_default_memory_pool().free_all_blocks()
@@ -1807,10 +1831,13 @@ class BEMRetLayer(object):
         except Exception:
             pass
 
-        m_lu_handle = m_full_dm.lu_factor(backend='cusolvermg')
+        # Single-GPU LU of the 2N×2N system matrix (n_gpus=1). _solve_single
+        # consumes self.m_lu through lu_solve_dispatch, which already handles
+        # the ('gpu', lu, piv) tag with the LOWPREC dtype bridging.
+        self.m_lu = lu_factor_dispatch(np.ascontiguousarray(m_full), n_gpus=1)
         self.m_full = None
-        self.m_lu = ('mgpu', m_lu_handle, None)
-        self._m_full_dm = m_full_dm
+        self._m_full_dm = None
+        del m_full  # host copy freed
         _dprof_t0 = _prof_mark('dist.m_full-LU(2Nx2N)', _dprof_t0, None)
 
         # Store auxiliary matrices on host (same as legacy path) so
