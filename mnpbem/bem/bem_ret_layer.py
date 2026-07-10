@@ -1609,6 +1609,20 @@ class BEMRetLayer(object):
                       '_sv_L1mL2p_Gamma'):
             if hasattr(self, _attr):
                 setattr(self, _attr, None)
+        # Drop the reflected-Green per-component caches on self.g.gr the same
+        # way the legacy init does (lines ~474-490).  GreenRetLayer.eval_components
+        # stashes G_comp/F_comp/Gp_comp (and the scalar G/F/Gp) keyed on the
+        # previous wavelength; the distributed path never cleared them, so they
+        # accumulated across the sweep (host RSS, and any cupy-native entries on
+        # the GPU) and contributed to the wl~12 OOM on 22560.  Reset _gr.enei so
+        # the next eval_components rebuilds cleanly.
+        _gr = getattr(getattr(self, 'g', None), 'gr', None)
+        if _gr is not None:
+            for _gr_attr in ('G_comp', 'F_comp', 'Gp_comp', 'G', 'F', 'Gp'):
+                if hasattr(_gr, _gr_attr):
+                    setattr(_gr, _gr_attr, None)
+            if hasattr(_gr, 'enei'):
+                _gr.enei = None
         try:
             _pool_limit_gb = float(
                 os.environ.get('MNPBEM_GPU_POOL_LIMIT_GB', '0')
@@ -1644,6 +1658,21 @@ class BEMRetLayer(object):
                 pass
         except Exception:
             pass
+
+        # Per-wavelength device-memory trace (gated on MNPBEM_INIT_PROFILE): the
+        # used_bytes on each device right AFTER the cleanup, so a rising trend
+        # across wavelengths exposes any residual leak that survived the free.
+        if _init_profile_enabled():
+            try:
+                _um = []
+                for _d in (device_ids if device_ids else list(range(n_gpus))):
+                    with cp.cuda.Device(int(_d)):
+                        _um.append('{}:{:.2f}GB'.format(
+                            _d, cp.get_default_memory_pool().used_bytes() / 1e9))
+                print('[init-prof] post-clean dev-used {}'.format(' '.join(_um)),
+                      flush=True)
+            except Exception:
+                pass
 
         self.enei = enei
 
