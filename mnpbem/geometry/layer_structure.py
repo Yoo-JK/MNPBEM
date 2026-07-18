@@ -188,7 +188,10 @@ class LayerStructure(object):
         import matlab.engine as _matlab_engine_mod
 
         eng = _matlab_engine_mod.start_matlab()
-        eng.addpath(eng.genpath('/home/yoojk20/workspace/MNPBEM'), nargout=0)
+        _mnpbem_root = os.environ.get(
+            'MNPBEM_MATLAB_PATH',
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        eng.addpath(eng.genpath(_mnpbem_root), nargout=0)
 
         specs = []
         for eps in epstab:
