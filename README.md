@@ -107,10 +107,14 @@ A complete worked spectrum + plot is in [`examples/01_sphere_extinction.py`](exa
 mnpbem/                  # Python package (geometry, bem, greenfun, simulation, ...)
 docs/                    # User documentation (API, migration, performance, architecture)
 examples/                # Runnable Python examples + Jupyter tutorial
-validation/              # MATLAB <-> Python regression suite (72 demos, sphere/rod, dimer)
+validation/              # Regression suite vs MATLAB MNPBEM17 (72 demos, sphere/rod, dimer)
 tests/                   # Unit tests (pytest)
-Particles/  Mesh2d/  Greenfun/  BEM/  Demo/   # MATLAB MNPBEM17 reference (read-only)
+benchmarks/  comparison/ # Performance benchmarks + MATLAB comparison drivers
 ```
+
+> The original MATLAB MNPBEM17 toolbox is **not** bundled here. To reproduce the
+> MATLAB comparison, install it from the [author's site](https://physik.uni-graz.at/de/mnpbem/)
+> and point `MNPBEM_MATLAB_PATH` at it.
 
 ## License
 
@@ -163,7 +167,7 @@ In addition, please cite this Python port:
 @software{mnpbem_python_2026,
   title  = {{MNPBEM} Python port (v1.0.0)},
   year   = {2026},
-  url    = {https://github.com/<your-org>/MNPBEM},
+  url    = {https://github.com/Yoo-JK/MNPBEM},
   note   = {Python port of MNPBEM17 with GPU acceleration and ACA / H-matrix solvers.}
 }
 ```
