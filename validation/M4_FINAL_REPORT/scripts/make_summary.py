@@ -11,7 +11,7 @@ import os
 import pandas as pd
 import numpy as np
 
-ROOT = '/home/yoojk20/workspace/MNPBEM/validation/M4_FINAL_REPORT'
+ROOT = 'validation/M4_FINAL_REPORT'
 DATA = os.path.join(ROOT, 'data')
 
 

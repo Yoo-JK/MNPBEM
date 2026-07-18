@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, '/home/yoojk20/workspace/MNPBEM')
+sys.path.insert(0, '.')
 
 import matplotlib
 matplotlib.use('Agg')
@@ -35,8 +35,8 @@ from mnpbem import (
 )
 
 
-DATA_DIR = '/home/yoojk20/workspace/MNPBEM/validation/13_shapes/data'
-FIG_DIR = '/home/yoojk20/workspace/MNPBEM/validation/13_shapes/figures'
+DATA_DIR = 'validation/13_shapes/data'
+FIG_DIR = 'validation/13_shapes/figures'
 ENEI = np.linspace(400, 800, 41)
 
 

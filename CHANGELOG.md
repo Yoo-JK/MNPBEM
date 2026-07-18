@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 검증
 
-- 72 demo regression (`/home/yoojk20/scratch/mnpbem_demo_comparison`):
+- 72 demo regression (`/tmp/mnpbem_demo_comparison`):
   v1.7 GPU 모드 BAD 0 / 72, perf 65 / 72.
 
 ## [1.6.4] - 2026-05-08

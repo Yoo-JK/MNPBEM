@@ -232,7 +232,7 @@ MATLAB 방식 (MKL 직접 호출). 가장 어렵지만 wrapper overhead 0.
 
 ```python
 import cProfile, pstats
-import sys; sys.path.insert(0, '/home/yoojk20/workspace/MNPBEM')
+import sys; sys.path.insert(0, '.')
 
 # 테스트 code (예: BEMStat sphere)
 def run_test():
@@ -269,7 +269,7 @@ snakeviz profile.out
 모든 optimization 후 validation 재실행 필수:
 
 ```bash
-cd /home/yoojk20/workspace/MNPBEM/validation
+cd validation
 for dir in 01_mie 02_bemstat_sphere 03_bemret_sphere 04_bemstat_layer \
            05_bemret_layer 09_dipole 12_nearfield 13_shapes; do
     [ -f "$dir/run_python.py" ] && python "$dir/run_python.py" > "$dir/opt_run.log" 2>&1

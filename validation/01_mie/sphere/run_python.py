@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 
-MNPBEM_ROOT = '/home/yoojk20/workspace/MNPBEM'
+MNPBEM_ROOT = os.environ.get('MNPBEM_ROOT', os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 sys.path.insert(0, MNPBEM_ROOT)
 sys.path.insert(0, os.path.join(MNPBEM_ROOT, 'validation'))
 

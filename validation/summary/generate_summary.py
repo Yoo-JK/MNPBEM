@@ -8,13 +8,13 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-MNPBEM_ROOT = '/home/yoojk20/workspace/MNPBEM'
+MNPBEM_ROOT = os.environ.get('MNPBEM_ROOT', os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.join(MNPBEM_ROOT, 'validation'))
 
 from _common import compute_rms
 
 
-VALIDATION_ROOT = '/home/yoojk20/workspace/MNPBEM/validation'
+VALIDATION_ROOT = 'validation'
 SUMMARY_DATA = os.path.join(VALIDATION_ROOT, 'summary', 'data')
 SUMMARY_FIG = os.path.join(VALIDATION_ROOT, 'summary', 'figures')
 

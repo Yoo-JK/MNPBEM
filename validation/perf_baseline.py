@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 
 
-DEMO_ROOT = Path('/home/yoojk20/scratch/mnpbem_demo_comparison')
+DEMO_ROOT = Path('/tmp/mnpbem_demo_comparison')
 
 
 def find_entry(demo_dir: Path) -> Path | None:
@@ -69,7 +69,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--out',
-        default='/home/yoojk20/workspace/MNPBEM/validation/perf_baseline_2026-04-27.csv',
+        default='validation/perf_baseline_2026-04-27.csv',
     )
     parser.add_argument('--timeout', type=int, default=1800,
                         help='per-demo timeout (sec)')

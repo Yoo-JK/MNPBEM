@@ -29,7 +29,7 @@ import traceback
 
 import numpy as np
 
-sys.path.insert(0, '/home/yoojk20/workspace/MNPBEM')
+sys.path.insert(0, '.')
 
 from mnpbem.materials import EpsConst, EpsDrude
 from mnpbem.geometry import ComParticle
@@ -187,7 +187,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--out',
-        default='/home/yoojk20/workspace/MNPBEM/validation/perf_5000face_2026-04-27.csv',
+        default='validation/perf_5000face_2026-04-27.csv',
     )
     args = parser.parse_args()
     run_all(args.out)

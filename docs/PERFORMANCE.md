@@ -47,8 +47,8 @@
 
 ### 1.1 정확도
 
-원본: `/home/yoojk20/scratch/mnpbem_validation/72demos_validation/data/accuracy_v2.csv`
-요약: `/home/yoojk20/scratch/mnpbem_validation/72demos_validation/FINAL_TABLE.md`
+원본: `/tmp/mnpbem_validation/72demos_validation/data/accuracy_v2.csv`
+요약: `/tmp/mnpbem_validation/72demos_validation/FINAL_TABLE.md`
 회귀 reference: `tests/regression/data/matlab_72demo_reference.json`
 
 | 등급 (`ACCEPTANCE_CRITERIA.md` §1.1) | 개수 / 72 | 비율 |
@@ -70,7 +70,7 @@
 
 ### 1.2 속도 (shell wall-time, 동일 metric)
 
-원본: `/home/yoojk20/scratch/mnpbem_validation/72demos_validation/data/timing_*.csv`
+원본: `/tmp/mnpbem_validation/72demos_validation/data/timing_*.csv`
 
 | 메트릭 | MATLAB | Python CPU | Python GPU |
 |---|---:|---:|---:|
@@ -88,14 +88,14 @@
 | `demoeelsret7` | 1d_series | 199.2 | 121.0 | **18.04** | 1.65× | **11.0×** |
 | `demospecstat17` | 1d_series | 651.3 | 142.6 | **101.5** | **4.57×** | **6.42×** |
 
-전체 plot: `/home/yoojk20/scratch/mnpbem_validation/72demos_validation/plots/avg_summary_all.png`,
+전체 plot: `/tmp/mnpbem_validation/72demos_validation/plots/avg_summary_all.png`,
 `matlab_vs_python_speedup_all_demos.png`.
 
 ---
 
 ## 2. sphere / rod / rod_lying validation (51 case)
 
-원본: `/home/yoojk20/scratch/mnpbem_validation/sphere_rod_validation/summary_table.csv`
+원본: `/tmp/mnpbem_validation/sphere_rod_validation/summary_table.csv`
 회귀 reference: `tests/regression/data/sphere_rod_reference.json`
 
 ### 2.1 등급 분포
@@ -129,16 +129,16 @@ Python 과 MATLAB 모두 같은 수렴 오차 영역에 있음.
 
 ### 2.3 plot
 
-`/home/yoojk20/scratch/mnpbem_validation/sphere_rod_validation/sphere/plots/`,
+`/tmp/mnpbem_validation/sphere_rod_validation/sphere/plots/`,
 `.../rod/plots/`, `.../rod_lying/plots/` (shape × category 별 abs/rel error).
 
 ---
 
 ## 3. Dimer benchmark (Au dimer 47 nm × 2, gap 0.6 nm, 6336 face × 100 wavelength)
 
-원본: `/home/yoojk20/scratch/mnpbem_validation/dimer_benchmark/data/`
+원본: `/tmp/mnpbem_validation/dimer_benchmark/data/`
 회귀 reference: `tests/regression/data/dimer_reference.json`
-GPU report: `/home/yoojk20/scratch/mnpbem_validation/dimer_benchmark/GPU_ACCEL_FINAL_REPORT.md`
+GPU report: `/tmp/mnpbem_validation/dimer_benchmark/GPU_ACCEL_FINAL_REPORT.md`
 
 ### 3.1 4-case 비교
 
@@ -275,7 +275,7 @@ F1 (Particle.quad 노드 정렬) 은 선택, 우선순위 낮음.
 | Phase 3 T1+T2+T3 | GPU_NATIVE | `6691b24` `2d005d9` `391c687` | 1 GPU 29.36 / 4 GPU 13.00 min |
 
 상세: `docs/H_MATRIX_GPU.md`,
-`/home/yoojk20/scratch/mnpbem_validation/dimer_benchmark/GPU_ACCEL_FINAL_REPORT.md`.
+`/tmp/mnpbem_validation/dimer_benchmark/GPU_ACCEL_FINAL_REPORT.md`.
 
 ---
 

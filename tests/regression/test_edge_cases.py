@@ -8,7 +8,7 @@ import pytest
 
 DIMER_BASE = Path(os.environ.get(
     'MNPBEM_VALIDATION_DIMER',
-    '/home/yoojk20/scratch/mnpbem_validation/dimer_benchmark'))
+    '/tmp/mnpbem_validation/dimer_benchmark'))
 
 
 def _load_json_if_exists(path: Path) -> Dict[str, Any]:

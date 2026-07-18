@@ -8,7 +8,7 @@ from typing import Dict, Any, List
 
 VALIDATION_BASE = Path(os.environ.get(
     'MNPBEM_VALIDATION_DIMER',
-    '/home/yoojk20/scratch/mnpbem_validation/dimer_benchmark'))
+    '/tmp/mnpbem_validation/dimer_benchmark'))
 
 
 def main(argv: List[str]) -> int:

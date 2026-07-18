@@ -12,9 +12,9 @@ Usage:
 import os, sys, glob, time, subprocess, csv
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-DEMO_ROOT = '/home/yoojk20/scratch/mnpbem_demo_comparison'
-OUT_DIR = '/home/yoojk20/workspace/MNPBEM/validation/M4_FINAL_REPORT/data'
-PYTHON = '/home/yoojk20/miniconda3/envs/mnpbem/bin/python'
+DEMO_ROOT = '/tmp/mnpbem_demo_comparison'
+OUT_DIR = 'validation/M4_FINAL_REPORT/data'
+PYTHON = 'python'
 TIMEOUT_SEC = 900
 
 

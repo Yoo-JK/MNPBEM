@@ -10,7 +10,7 @@ from typing import Dict, Any, List
 
 VALIDATION_BASE = Path(os.environ.get(
     'MNPBEM_VALIDATION_72DEMO',
-    '/home/yoojk20/scratch/mnpbem_validation/72demos_validation'))
+    '/tmp/mnpbem_validation/72demos_validation'))
 
 
 def classify(rel_err: float) -> str:
@@ -118,7 +118,7 @@ def build_result() -> Dict[str, Any]:
 def build_sphere_rod() -> Dict[str, Any]:
     base = Path(os.environ.get(
         'MNPBEM_VALIDATION_SPHERE_ROD',
-        '/home/yoojk20/scratch/mnpbem_validation/sphere_rod_validation'))
+        '/tmp/mnpbem_validation/sphere_rod_validation'))
     summ = base / 'summary_table.csv'
     if not summ.exists():
         return {}
@@ -145,7 +145,7 @@ def build_sphere_rod() -> Dict[str, Any]:
 def build_dimer() -> Dict[str, Any]:
     base = Path(os.environ.get(
         'MNPBEM_VALIDATION_DIMER',
-        '/home/yoojk20/scratch/mnpbem_validation/dimer_benchmark'))
+        '/tmp/mnpbem_validation/dimer_benchmark'))
     final_v4 = base / 'data' / 'final_v4.json'
     if not final_v4.exists():
         return {}

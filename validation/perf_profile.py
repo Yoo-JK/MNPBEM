@@ -8,7 +8,7 @@ Usage
 python validation/perf_profile.py <demo_name> [<demo_name> ...]
 
 Each <demo_name> must be a subdirectory under
-``/home/yoojk20/scratch/mnpbem_demo_comparison`` containing either
+``/tmp/mnpbem_demo_comparison`` containing either
 ``run_python.py`` or ``run.py``.
 """
 
@@ -25,7 +25,7 @@ import traceback
 from pathlib import Path
 
 
-DEMO_ROOT = Path('/home/yoojk20/scratch/mnpbem_demo_comparison')
+DEMO_ROOT = Path('/tmp/mnpbem_demo_comparison')
 
 
 def find_entry(demo_dir: Path) -> Path | None:

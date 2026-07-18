@@ -6,9 +6,9 @@ columns: demo, demo_type, max_rel_err, classification
 """
 import os, re, subprocess, csv
 
-OUT = '/home/yoojk20/workspace/MNPBEM/validation/M4_FINAL_REPORT/data/accuracy_results.csv'
-CMP = '/home/yoojk20/scratch/mnpbem_demo_comparison/compare_smart_v3.py'
-PY = '/home/yoojk20/miniconda3/envs/mnpbem/bin/python'
+OUT = 'validation/M4_FINAL_REPORT/data/accuracy_results.csv'
+CMP = '/tmp/mnpbem_demo_comparison/compare_smart_v3.py'
+PY = 'python'
 
 # Pattern: '  demoXXX [type]: 1.23e-04'
 DEMO_RE = re.compile(r'^\s+(demo\S+)\s+\[(\w+)\]:\s+([\d.eE+\-]+)$')

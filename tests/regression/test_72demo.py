@@ -9,7 +9,7 @@ import pytest
 
 VALIDATION_BASE = Path(os.environ.get(
     'MNPBEM_VALIDATION_72DEMO',
-    '/home/yoojk20/scratch/mnpbem_validation/72demos_validation'))
+    '/tmp/mnpbem_validation/72demos_validation'))
 
 
 def _load_accuracy_csv(path: Path) -> List[Dict[str, Any]]:

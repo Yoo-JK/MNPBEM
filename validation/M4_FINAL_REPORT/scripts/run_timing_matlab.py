@@ -9,9 +9,9 @@ Output: validation/M4_FINAL_REPORT/data/timing_matlab.csv
 """
 import os, glob, time, subprocess, csv, re
 
-DEMO_ROOT = '/home/yoojk20/scratch/mnpbem_demo_comparison'
-WORKDIR = '/home/yoojk20/workspace/MNPBEM'
-OUT_DIR = '/home/yoojk20/workspace/MNPBEM/validation/M4_FINAL_REPORT/data'
+DEMO_ROOT = '/tmp/mnpbem_demo_comparison'
+WORKDIR = '.'
+OUT_DIR = 'validation/M4_FINAL_REPORT/data'
 TIMEOUT_SEC = 1200
 
 TIME_RE = re.compile(r'time=([\d.]+)\s*s', re.IGNORECASE)

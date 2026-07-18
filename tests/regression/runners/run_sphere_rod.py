@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 
 VALIDATION_BASE = Path(os.environ.get(
     'MNPBEM_VALIDATION_SPHERE_ROD',
-    '/home/yoojk20/scratch/mnpbem_validation/sphere_rod_validation'))
+    '/tmp/mnpbem_validation/sphere_rod_validation'))
 
 
 KNOWN_XFAIL = {

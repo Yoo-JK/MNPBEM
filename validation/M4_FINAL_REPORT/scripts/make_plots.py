@@ -21,11 +21,11 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-ROOT = '/home/yoojk20/workspace/MNPBEM/validation/M4_FINAL_REPORT'
+ROOT = 'validation/M4_FINAL_REPORT'
 DATA = os.path.join(ROOT, 'data')
 PLOTS = os.path.join(ROOT, 'plots')
 PERDEMO = os.path.join(PLOTS, 'per_demo')
-DEMO_ROOT = '/home/yoojk20/scratch/mnpbem_demo_comparison'
+DEMO_ROOT = '/tmp/mnpbem_demo_comparison'
 
 os.makedirs(PERDEMO, exist_ok=True)
 
