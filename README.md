@@ -109,7 +109,7 @@ docs/                    # User documentation (API, migration, performance, arch
 examples/                # Runnable Python examples + Jupyter tutorial
 validation/              # Regression suite vs MATLAB MNPBEM17 (72 demos, sphere/rod, dimer)
 tests/                   # Unit tests (pytest)
-benchmarks/  comparison/ # Performance benchmarks + MATLAB comparison drivers
+benchmarks/              # Performance benchmarks (vs MATLAB MNPBEM17)
 ```
 
 > The original MATLAB MNPBEM17 toolbox is **not** bundled here. To reproduce the
