@@ -1,4 +1,4 @@
-# MNPBEM Python Port — Performance Optimization Strategy
+# PyMNPBEM — Performance Optimization Strategy
 
 Generated: 2026-04-23  
 Status: Reference document for future optimization work

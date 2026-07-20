@@ -1,4 +1,4 @@
-# Performance & Accuracy Report — MNPBEM Python v1.0.0
+# Performance & Accuracy Report — PyMNPBEM v1.0.0
 
 생성: 2026-05-02 (M5 Wave B — Agent ε)
 대상 릴리즈: `mnpbem` v1.0.0 (internal)

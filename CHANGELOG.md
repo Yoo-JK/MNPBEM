@@ -444,7 +444,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2026-05-XX
 
-First production release of the MNPBEM Python port. Pure-Python distribution
+First production release of the PyMNPBEM. Pure-Python distribution
 of Hohenester & Trügler's MATLAB MNPBEM toolbox, validated against MATLAB on
 50 + 22 official demos and on the sphere/rod/dimer cross-checks.
 
@@ -700,11 +700,11 @@ GPU geometry-build speedup: **3.60× faster than MATLAB** on RTX A6000.
 
 See `docs/PERFORMANCE.md` for the full table.
 
-[1.0.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.0.0
-[1.1.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.1.0
-[1.2.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.2.0
-[1.3.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.3.0
-[1.4.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.4.0
-[1.5.0]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.5.0
-[1.5.1]: https://github.com/Yoo-JK/MNPBEM/releases/tag/v1.5.1
-[Unreleased]: https://github.com/Yoo-JK/MNPBEM/compare/v1.5.1...HEAD
+[1.0.0]: https://github.com/Yoo-JK/PyMNPBEM/releases/tag/v1.0.0
+[1.1.0]: https://github.com/Yoo-JK/PyMNPBEM/releases/tag/v1.1.0
+[1.2.0]: https://github.com/Yoo-JK/PyMNPBEM/releases/tag/v1.2.0
+[1.3.0]: https://github.com/Yoo-JK/PyMNPBEM/releases/tag/v1.3.0
+[1.4.0]: https://github.com/Yoo-JK/PyMNPBEM/releases/tag/v1.4.0
+[1.5.0]: https://github.com/Yoo-JK/PyMNPBEM/releases/tag/v1.5.0
+[1.5.1]: https://github.com/Yoo-JK/PyMNPBEM/releases/tag/v1.5.1
+[Unreleased]: https://github.com/Yoo-JK/PyMNPBEM/compare/v1.5.1...HEAD

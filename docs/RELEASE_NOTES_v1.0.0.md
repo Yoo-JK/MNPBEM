@@ -1,4 +1,4 @@
-# Release Notes — MNPBEM Python v1.0.0 (internal)
+# Release Notes — PyMNPBEM v1.0.0 (internal)
 
 릴리즈 일자: 2026-05-XX
 릴리즈 태그: `v1.0.0`
@@ -125,7 +125,7 @@ API surface 자체는 v0.x → v1.0 변경 없음 (외부 사용자 zero-impact)
 
 Python port 사용 시:
 
-> "MNPBEM Python port v1.0.0 (2026), based on Hohenester & Trügler MNPBEM 17."
+> "PyMNPBEM v1.0.0 (2026), based on Hohenester & Trügler MNPBEM 17."
 
 원 저작 인용 (필수):
 
@@ -138,7 +138,7 @@ Python port 사용 시:
 ## Tag 메시지 (수동 git tag 시 사용)
 
 ```
-v1.0.0 — MNPBEM Python port first production release
+v1.0.0 — PyMNPBEM first production release
 
 - 72 demo machine precision 59/72, BAD 0/72
 - CPU geo-mean speedup 2.21x, GPU geo-mean 3.60x vs MATLAB

@@ -1,4 +1,4 @@
-# Release Notes — MNPBEM Python v1.2.0 (internal)
+# Release Notes — PyMNPBEM v1.2.0 (internal)
 
 릴리즈 일자: 2026-05-02
 릴리즈 태그: `v1.2.0`
@@ -146,7 +146,7 @@ pitfall #17 (Schur), #18 (VRAM share) 섹션을 참고하면 된다.
 
 Python port 사용 시:
 
-> "MNPBEM Python port v1.2.0 (2026), based on Hohenester & Trügler MNPBEM 17."
+> "PyMNPBEM v1.2.0 (2026), based on Hohenester & Trügler MNPBEM 17."
 
 원 저작 인용 (필수):
 

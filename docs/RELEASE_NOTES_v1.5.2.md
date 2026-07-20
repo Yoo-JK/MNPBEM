@@ -1,4 +1,4 @@
-# Release Notes — MNPBEM Python v1.5.2 (internal)
+# Release Notes — PyMNPBEM v1.5.2 (internal)
 
 릴리즈 일자: 2026-05-02
 릴리즈 태그: `v1.5.2`
@@ -198,7 +198,7 @@ python run_simulation.py \
 
 Python port 사용 시:
 
-> "MNPBEM Python port v1.5.2 (2026), based on Hohenester & Trügler MNPBEM 17."
+> "PyMNPBEM v1.5.2 (2026), based on Hohenester & Trügler MNPBEM 17."
 
 원 저작 인용 (필수):
 

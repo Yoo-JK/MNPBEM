@@ -8,15 +8,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mnpbem"
 version = "1.0.0"
-description = "Python port of MNPBEM (Boundary Element Method for plasmonics, Garcia de Abajo & Howie 2002)"
+description = "PyMNPBEM — Python port of MNPBEM (Boundary Element Method for plasmonics, Garcia de Abajo & Howie 2002)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [
-    { name = "MNPBEM Python port contributors" },
+    { name = "PyMNPBEM contributors" },
 ]
 maintainers = [
-    { name = "MNPBEM Python port contributors" },
+    { name = "PyMNPBEM contributors" },
 ]
 keywords = [
     "BEM",

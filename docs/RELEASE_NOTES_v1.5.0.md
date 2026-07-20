@@ -1,4 +1,4 @@
-# Release Notes — MNPBEM Python v1.5.0 (internal)
+# Release Notes — PyMNPBEM v1.5.0 (internal)
 
 릴리즈 일자: 2026-05-03
 릴리즈 태그: `v1.5.0`
@@ -196,7 +196,7 @@ bem = BEMRetIter(p, refun = refun,
 
 Python port 사용 시:
 
-> "MNPBEM Python port v1.5.0 (2026), based on Hohenester & Trügler MNPBEM 17."
+> "PyMNPBEM v1.5.0 (2026), based on Hohenester & Trügler MNPBEM 17."
 
 원 저작 인용 (필수):
 

@@ -1,4 +1,4 @@
-# MNPBEM Python Port v1.0.0
+# PyMNPBEM v1.0.0
 
 Python port of the [MATLAB MNPBEM toolbox](https://physik.uni-graz.at/de/mnpbem/)
 (Hohenester & Trügler) for the simulation of electromagnetic properties of
@@ -124,7 +124,7 @@ with the upstream code base.
 
 ```
 Copyright (C) 2017 Ulrich Hohenester (MATLAB MNPBEM17)
-Copyright (C) 2026 MNPBEM Python port contributors
+Copyright (C) 2026 PyMNPBEM contributors
 This code is distributed under the terms of the GNU General Public License v2.
 See the COPYING file for license details.
 ```
@@ -164,10 +164,10 @@ original MNPBEM papers:
 In addition, please cite this Python port:
 
 ```bibtex
-@software{mnpbem_python_2026,
-  title  = {{MNPBEM} Python port (v1.0.0)},
+@software{pymnpbem_2026,
+  title  = {{PyMNPBEM} (v1.0.0)},
   year   = {2026},
-  url    = {https://github.com/Yoo-JK/MNPBEM},
+  url    = {https://github.com/Yoo-JK/PyMNPBEM},
   note   = {Python port of MNPBEM17 with GPU acceleration and ACA / H-matrix solvers.}
 }
 ```

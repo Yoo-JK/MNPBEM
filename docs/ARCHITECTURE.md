@@ -1,4 +1,4 @@
-# MNPBEM Python Port — Architecture
+# PyMNPBEM — Architecture
 
 This document is aimed at contributors and maintainers (including future-self).
 It describes how the Python port is laid out, *why* the major design choices

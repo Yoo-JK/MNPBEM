@@ -1,4 +1,4 @@
-# MNPBEM Python Port v1.6.0 — Internal Release
+# PyMNPBEM v1.6.0 — Internal Release
 
 **Tag**: v1.6.0
 **Date**: 2026-05-02
@@ -45,7 +45,7 @@
 
 ## Citing
 
-본 release 인용 시 v1.0.0 인용 형식과 동일하게 처리한다 (저장소 저자, MNPBEM Python port 1.6.0, 2026, internal).
+본 release 인용 시 v1.0.0 인용 형식과 동일하게 처리한다 (저장소 저자, PyMNPBEM 1.6.0, 2026, internal).
 
 ## git tag command
 

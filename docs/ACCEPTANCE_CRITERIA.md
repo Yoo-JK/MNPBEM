@@ -1,4 +1,4 @@
-# MNPBEM Python Port — Acceptance Criteria (v1.0.0)
+# PyMNPBEM — Acceptance Criteria (v1.0.0)
 
 생성일: 2026-05-02 (M5-1)
 대상 릴리즈: `mnpbem-python` v1.0.0

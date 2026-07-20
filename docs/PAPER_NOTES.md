@@ -1,4 +1,4 @@
-# Paper Notes — MNPBEM Python Port
+# Paper Notes — PyMNPBEM
 
 이 문서는 **이 프로젝트로 논문을 작성할 때** 필요한 자료를 한 곳에 모은 종합
 가이드입니다. 깊이 들어가야 할 항목마다 더 자세한 docs / 코드 위치를 가리킵니다.
@@ -469,7 +469,7 @@ git show bf9125e  # v1.6.3 BEMRetIter precond GPU LU + host inverse
 
 논문의 Methods / Reproducibility 섹션용.
 
-- [x] 모든 source code: `https://github.com/Yoo-JK/MNPBEM` (또는 internal)
+- [x] 모든 source code: `https://github.com/Yoo-JK/PyMNPBEM` (또는 internal)
 - [x] Specific tag for paper: e.g. `v1.6.x` (작업 중 — 완료 시 명시)
 - [x] Hardware spec: §5.1
 - [x] Software environment: `pyproject.toml` + `docs/INSTALL.md`
