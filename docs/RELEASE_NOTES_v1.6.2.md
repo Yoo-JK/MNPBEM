@@ -7,86 +7,85 @@
 ## Highlights
 
 - **VRAM share env vars wiring fix** — `MNPBEM_VRAM_SHARE_GPUS` /
-  `MNPBEM_VRAM_SHARE_BACKEND` / `MNPBEM_VRAM_SHARE_DEVICE_IDS` 가 이제
-  `lu_factor_dispatch` / `solve_dispatch` 에서 자동 인식됩니다.
-  v1.6.0/v1.6.1 Tier-3 12672-face benchmark 시 single-GPU OOM 발생
-  원인이 해소되었습니다.
+  `MNPBEM_VRAM_SHARE_BACKEND` / `MNPBEM_VRAM_SHARE_DEVICE_IDS` are now
+  automatically recognized by `lu_factor_dispatch` / `solve_dispatch`.
+  The cause of the single-GPU OOM during the v1.6.0/v1.6.1 Tier-3 12672-face
+  benchmark has been resolved.
 
 ## What's new
 
-- `mnpbem/utils/gpu.py::_vram_share_env_defaults()` 헬퍼
-- `lu_factor_dispatch(A)` / `solve_dispatch(A, b)` — `n_gpus` 미지정 시
-  env var 자동 인식. 명시 kwarg 가 항상 우선
-- `MNPBEM_VRAM_SHARE_DEVICE_IDS=0,1,2,3` 신규 지원
-- `MNPBEM_VRAM_SHARE=0` master switch 로 강제 비활성
+- `mnpbem/utils/gpu.py::_vram_share_env_defaults()` helper
+- `lu_factor_dispatch(A)` / `solve_dispatch(A, b)` — automatic env var
+  recognition when `n_gpus` is unspecified. An explicit kwarg always takes precedence
+- New support for `MNPBEM_VRAM_SHARE_DEVICE_IDS=0,1,2,3`
+- Force-disable via the `MNPBEM_VRAM_SHARE=0` master switch
 - `mnpbem/tests/test_vram_share_env_wiring.py` (15 tests)
 
 ## Root cause
 
-C agent 발견:
-- `MNPBEM_VRAM_SHARE_GPUS=4` 등 env vars 가 set 되었으나
-- `bem_ret_iter.py:363`, `bem_stat_layer.py:66`, `bem_ret_layer.py:253`
-  등에서 `lu_factor_dispatch(A)` 만 호출 (kwarg 미전달)
-- 기존 `lu_factor_dispatch` 가 `n_gpus = int(kwargs.pop('n_gpus', 1))`
-  로 default 1 → cuSolverMg 분기 fall-through
-- 12672-face dense LU (49 GB) 가 single GPU 에 fit 안 되어 OOM
+Found by C agent:
+- env vars such as `MNPBEM_VRAM_SHARE_GPUS=4` were set, but
+- `bem_ret_iter.py:363`, `bem_stat_layer.py:66`, `bem_ret_layer.py:253`,
+  and others called only `lu_factor_dispatch(A)` (without passing the kwarg)
+- the existing `lu_factor_dispatch` used `n_gpus = int(kwargs.pop('n_gpus', 1))`,
+  defaulting to 1 → fall-through of the cuSolverMg branch
+- the 12672-face dense LU (49 GB) did not fit on a single GPU, causing OOM
 
-fix 방향: 옵션 A (`gpu.py` 자체에서 env var 자동 인식). BEM solver
-변경 최소화. `bem_ret.py` 의 기존 `_vram_share_lu_kwargs` 명시 전달
-경로는 kwarg 우선이므로 동작 변경 없음.
+Fix approach: option A (automatic env var recognition in `gpu.py` itself).
+Minimizes BEM solver changes. The existing `_vram_share_lu_kwargs` explicit
+passing path in `bem_ret.py` is unchanged in behavior since the kwarg takes precedence.
 
 ## Verified
 
-- 4× RTX A6000 host 에서 `MNPBEM_VRAM_SHARE_GPUS=2` 만 set 후
+- On a 4× RTX A6000 host, after setting only `MNPBEM_VRAM_SHARE_GPUS=2`,
   `lu_factor_dispatch(np.random.randn(256,256) + 1j*...)` →
-  pkg tag `'mgpu'` 진입, `lu_solve_dispatch` residual 9.3e-16
-- `MNPBEM_VRAM_SHARE=0` master switch 시 mgpu 분기 비활성, CPU 분기 진입
-- `MNPBEM_VRAM_SHARE_GPUS=1` 또는 invalid value 시 안전하게 단일-GPU
-  분기로 fall-through
+  enters the `'mgpu'` pkg tag, `lu_solve_dispatch` residual 9.3e-16
+- With the `MNPBEM_VRAM_SHARE=0` master switch, the mgpu branch is disabled and the CPU branch is entered
+- With `MNPBEM_VRAM_SHARE_GPUS=1` or an invalid value, it safely falls through to the single-GPU branch
 
 ## Tests
 
-15 신규 테스트 (`mnpbem/tests/test_vram_share_env_wiring.py`):
-- env var 헬퍼 5건 (unset / n_only / full set / master off / n=1 / invalid)
-- `lu_factor_dispatch` 라우팅 6건 (no-env / env-only / kwarg overrides /
+15 new tests (`mnpbem/tests/test_vram_share_env_wiring.py`):
+- env var helper, 5 cases (unset / n_only / full set / master off / n=1 / invalid)
+- `lu_factor_dispatch` routing, 6 cases (no-env / env-only / kwarg overrides /
   kwarg n=1 forces off / master off)
-- `lu_solve_dispatch` end-to-end 1건
-- `solve_dispatch` env routing 2건
+- `lu_solve_dispatch` end-to-end, 1 case
+- `solve_dispatch` env routing, 2 cases
 
-기존 `test_gpu_cupy_consistency.py` 14건 regression 없음 (9 PASS,
-5 SKIP — cupy device path 는 GPU 환경에서만 실행).
+No regression in the existing `test_gpu_cupy_consistency.py` 14 cases (9 PASS,
+5 SKIP — the cupy device path runs only in a GPU environment).
 
 ## Backward compatibility
 
 100% backward compatible:
-- 기존 명시 `n_gpus` kwarg 호출 (예: `bem_ret.py::_vram_share_lu_kwargs`)
-  이 항상 env 보다 우선
-- env var 미설정 시 default `n_gpus=1` 유지 (single-GPU/CPU 분기)
-- `MNPBEM_VRAM_SHARE=0` 옵션으로 사용자가 wiring 자체를 무력화 가능
+- existing explicit `n_gpus` kwarg calls (e.g., `bem_ret.py::_vram_share_lu_kwargs`)
+  always take precedence over env
+- when env vars are unset, the default `n_gpus=1` is retained (single-GPU/CPU branch)
+- users can disable the wiring itself via the `MNPBEM_VRAM_SHARE=0` option
 
 ## Known limits / Follow-up
 
-- Tier-3 12672-face cuSolverMg 정식 batch benchmark 권장 (RTX A6000
-  4× pooled VRAM 196 GB 활용 가능 검증). M5+ 또는 별도 lane 작업.
-- `bem_ret_iter.py` 의 추가 LU 호출 지점 (`Delta_lu`, `Sigma_lu` 등) 도
-  이제 동일 env var 자동 인식 — 명시 wiring 추가 작업 불필요.
+- A formal Tier-3 12672-face cuSolverMg batch benchmark is recommended (to
+  verify usability of the RTX A6000 4× pooled VRAM 196 GB). M5+ or a separate lane task.
+- Additional LU call sites in `bem_ret_iter.py` (`Delta_lu`, `Sigma_lu`, etc.)
+  also now auto-recognize the same env var — no additional explicit wiring work needed.
 
 ## Migration
 
-기존 v1.6.1 코드 변경 X. env var 만 export 하면 동작.
+No changes to existing v1.6.1 code. Just export the env vars and it works.
 
 ```bash
 export MNPBEM_GPU=1
 export MNPBEM_VRAM_SHARE_GPUS=4
 export MNPBEM_VRAM_SHARE_BACKEND=cusolvermg
-# (옵션) export MNPBEM_VRAM_SHARE_DEVICE_IDS=0,1,2,3
+# (optional) export MNPBEM_VRAM_SHARE_DEVICE_IDS=0,1,2,3
 python my_simulation.py
 ```
 
 ## Citing
 
-본 release 인용 시 v1.0.0 인용 형식과 동일하게 처리한다 (저장소 저자,
-PyMNPBEM 1.6.2, 2026, internal).
+When citing this release, handle it the same way as the v1.0.0 citation format
+(repository author, PyMNPBEM 1.6.2, 2026, internal).
 
 ## git tag command
 

@@ -1,43 +1,43 @@
 # MNPBEM Regression Suite
 
-위치: `tests/regression/`
-연관 문서: [`docs/ACCEPTANCE_CRITERIA.md`](../../docs/ACCEPTANCE_CRITERIA.md)
-M5-α (Wave A) 산출물.
+Location: `tests/regression/`
+Related document: [`docs/ACCEPTANCE_CRITERIA.md`](../../docs/ACCEPTANCE_CRITERIA.md)
+An M5-α (Wave A) deliverable.
 
-## 폴더 구조
+## Folder structure
 
 ```
 tests/regression/
 ├── __init__.py
-├── README.md                          # 이 파일
-├── conftest.py                        # marker 등록 + 공통 fixture
-├── test_72demo.py                     # 72 demo 등급 회귀
+├── README.md                          # this file
+├── conftest.py                        # marker registration + common fixtures
+├── test_72demo.py                     # 72 demo grade regression
 ├── test_sphere_rod.py                 # sphere/rod/rod_lying 51 case
 ├── test_dimer.py                      # dimer 4-case
 ├── test_edge_cases.py                 # large-mesh edge case
-├── check_metrics.py                   # CI: result.json 의 acceptance 검사
-├── generate_hash.py                   # CI: result.json -> hash 생성/비교
+├── check_metrics.py                   # CI: acceptance check of result.json
+├── generate_hash.py                   # CI: result.json -> hash generation/comparison
 ├── data/
 │   ├── matlab_72demo_reference.json
 │   ├── sphere_rod_reference.json
 │   └── dimer_reference.json
 └── runners/
     ├── __init__.py
-    ├── run_72demo.py                  # CI 용 (비-pytest)
+    ├── run_72demo.py                  # for CI (non-pytest)
     ├── run_sphere_rod.py
     └── run_dimer.py
 ```
 
 ## pytest marker
 
-| marker | 의미 | 예상 wall | 실행 빈도 |
+| marker | Meaning | Expected wall | Run frequency |
 |---|---|---|---|
-| `fast` | < 1 분 — reference / classifier 형식만 검증 | 수 초 | 매 commit |
-| `slow` | 10 ~ 60 분 — accuracy CSV 전수 점검 | ~50 분 | daily |
-| `long` | > 60 분 — full re-run (CPU/GPU benchmark) | ~140 분 | weekly |
-| `gpu` | CUDA + cupy 필요 | - | self-hosted runner |
+| `fast` | < 1 min — verifies only reference / classifier format | a few seconds | every commit |
+| `slow` | 10 ~ 60 min — full accuracy CSV check | ~50 min | daily |
+| `long` | > 60 min — full re-run (CPU/GPU benchmark) | ~140 min | weekly |
+| `gpu` | requires CUDA + cupy | - | self-hosted runner |
 
-## 로컬 실행
+## Local execution
 
 ```bash
 # fast smoke (every commit)
@@ -46,14 +46,14 @@ pytest tests/regression/ -m fast --tb=short -q
 # slow nightly
 pytest tests/regression/ -m slow --tb=short
 
-# long weekly (실제 simulation 재실행은 runners/ 사용)
+# long weekly (use runners/ for actual simulation re-runs)
 pytest tests/regression/ -m long
 ```
 
 ## CI runner
 
-`run_72demo.py` 가 result.json 을 생성하면 `check_metrics.py` 가 acceptance 기준
-충족 여부를 0/1 반환하고, `generate_hash.py` 가 hash 비교를 수행한다.
+Once `run_72demo.py` generates result.json, `check_metrics.py` returns 0/1 for
+whether the acceptance criteria are met, and `generate_hash.py` performs the hash comparison.
 
 ```bash
 # CI workflow
@@ -66,22 +66,22 @@ python tests/regression/generate_hash.py artifacts/result.json \
     --reference tests/regression/reference_hash.json
 ```
 
-## reference 데이터
+## reference data
 
-`data/*.json` 은 2026-04-30 ~ 2026-05-02 측정값 (M5-1 baseline).
+`data/*.json` are measurements from 2026-04-30 to 2026-05-02 (M5-1 baseline).
 
-- `matlab_72demo_reference.json`: 72 demo accuracy_v2.csv 기반.
+- `matlab_72demo_reference.json`: based on the 72 demo accuracy_v2.csv.
 - `sphere_rod_reference.json`: sphere/rod/rod_lying 51 case summary.
-- `dimer_reference.json`: dimer 6336 face × 100 wl, Lane A-E 결과 포함.
+- `dimer_reference.json`: dimer 6336 face × 100 wl, includes Lane A-E results.
 
-reference 갱신 시 `runners/run_*.py --json data/...` 로 재생성.
+To update the reference, regenerate with `runners/run_*.py --json data/...`.
 
-## 환경변수
+## Environment variables
 
-검증 자료의 절대경로를 다음 환경변수로 override:
+Override the absolute paths of the validation data with the following environment variables:
 
-- `MNPBEM_VALIDATION_72DEMO`: 72demos_validation 디렉토리 (기본: scratch path)
-- `MNPBEM_VALIDATION_SPHERE_ROD`: sphere_rod_validation 디렉토리
-- `MNPBEM_VALIDATION_DIMER`: dimer_benchmark 디렉토리
+- `MNPBEM_VALIDATION_72DEMO`: 72demos_validation directory (default: scratch path)
+- `MNPBEM_VALIDATION_SPHERE_ROD`: sphere_rod_validation directory
+- `MNPBEM_VALIDATION_DIMER`: dimer_benchmark directory
 
-CI 환경에서 검증 자료를 patch / mount 하려면 위 변수를 사용한다.
+Use the above variables to patch / mount the validation data in a CI environment.

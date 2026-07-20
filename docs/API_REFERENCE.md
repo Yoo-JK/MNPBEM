@@ -281,61 +281,62 @@ sig, bem = bem.solve(exc.potential(p, enei))   # solve at one wavelength
 - `iter={"tol": 1e-6, "restart": 30, "maxit": 200}` — GMRES parameters.
 - `precond="diag"` — Jacobi preconditioner (default, legacy).
 - `preconditioner='auto'`, `htol_precond=1e-4` — H-matrix LU
-  preconditioner (v1.5.0, `hmatrix=True` 시 권장). 자세한 내용은
-  아래 §"Preconditioner (v1.5.0)" 참고.
+  preconditioner (v1.5.0, recommended when `hmatrix=True`). See the
+  §"Preconditioner (v1.5.0)" section below for details.
 - `schur=True`, `schur_g_ss_solver='auto'` — Schur × Iterative
-  (v1.5.0, cover-layer 자동 소거). 자세한 내용은 아래 §"Schur ×
-  Iterative (v1.5.0)" 참고.
+  (v1.5.0, automatic cover-layer elimination). See the §"Schur ×
+  Iterative (v1.5.0)" section below for details.
 
 ### Iterative BEM solvers — H-matrix mode (v1.3.0)
 
-큰 mesh (25k+ face) 에서 dense LU 가 OOM 일 때, ACA H-matrix 압축 +
-GMRES 로 풀 수 있다. v1.3.0 부터 `BEMStatIter` / `BEMRetIter` 에
-`hmatrix=True` 옵션이 추가되어 block-level ACA 가 아닌 *전체 H-tree*
-경로로 진입한다.
+When a dense LU runs out of memory on a large mesh (25k+ faces), the
+problem can be solved with ACA H-matrix compression + GMRES. Since
+v1.3.0, `BEMStatIter` / `BEMRetIter` gained the `hmatrix=True` option,
+which enters the *full H-tree* path rather than block-level ACA.
 
 **Constructor (v1.3.0)**:
 
 ```python
 BEMRetIter(p, tol=1e-6, maxiter=200,
-           hmatrix=False,             # v1.3.0 신규
+           hmatrix=False,             # new in v1.3.0
            htol=1e-6,
            kmax=[4, 100],
            cleaf=200,
            **other_options)
 ```
 
-`hmatrix=True` 활성 시:
+When `hmatrix=True` is active:
 
-- ACA H-tree compression — 노출 파라미터 (`htol`, `kmax`, `cleaf`).
-- GMRES with H-matrix matvec — per-iter `O(N log N)`.
-- 단일 GPU 에서 25k+ face fit. VRAM share (v1.2.0) 와 결합 시
-  56k+ face 도 도전 가능.
+- ACA H-tree compression — exposed parameters (`htol`, `kmax`, `cleaf`).
+- GMRES with H-matrix matvec — `O(N log N)` per iteration.
+- Fits 25k+ faces on a single GPU. Combined with VRAM share (v1.2.0),
+  even 56k+ faces are within reach.
 
-`hmatrix=False` (default): 기존 dense 또는 block-ACA 경로 (v1.2.0
-동작 그대로).
+`hmatrix=False` (default): the existing dense or block-ACA path (same
+behavior as v1.2.0).
 
 ```python
 from mnpbem.bem import BEMRetIter
 
-# 25k+ face 의 dense LU OOM 회피
+# avoid dense LU OOM at 25k+ faces
 bem = BEMRetIter(p, hmatrix=True, tol=1e-6, maxiter=200,
                  htol=1e-6, cleaf=200)
 sig, bem = bem.solve(exc.potential(p, enei))
 ```
 
-미지원 조합:
+Unsupported combinations:
 
-- `BEMRetLayerIter + hmatrix` → `NotImplementedError`. cover layer +
-  planar substrate 결합 시나리오는 현재 없음.
-- ~~`BEM*Iter + Schur (v1.2.0)` 동시 활성 미지원~~ → **v1.5.0 부터 지원**
-  (`BEMRetIter(p, hmatrix=True, schur=True)`). 아래 §"Schur × Iterative"
-  참고.
+- `BEMRetLayerIter + hmatrix` → `NotImplementedError`. The cover layer +
+  planar substrate combination scenario does not currently exist.
+- ~~`BEM*Iter + Schur (v1.2.0)` simultaneous activation unsupported~~ →
+  **supported since v1.5.0** (`BEMRetIter(p, hmatrix=True, schur=True)`).
+  See the §"Schur × Iterative" section below.
 
 ### Preconditioner (v1.5.0)
 
-H-matrix LU preconditioner 로 GMRES 수렴 가속. 256-face sphere benchmark
-에서 GMRES iter 55 → 1 (55× 감소).
+An H-matrix LU preconditioner accelerates GMRES convergence. On the
+256-face sphere benchmark, GMRES iterations dropped from 55 → 1 (55×
+reduction).
 
 **Constructor**:
 
@@ -347,17 +348,18 @@ BEMRetIter(p, hmatrix=True,
 
 `preconditioner` modes:
 
-- `auto` (default) — `hmatrix=True` 시 자동 ON, 아니면 OFF.
-- `none` — preconditioner 없음 (v1.4.0 동작).
-- `hlu_dense` — alpha-1, full N×N dense LU on `H.full()`. 작은 mesh
-  용 baseline.
-- `hlu_tree` — alpha-2, hierarchical block-Schur LU on H-tree root
-  partition. 큰 mesh 용. `BEMRetIter` 의 8N×8N 결합 시스템에서는
-  단독 효과 제한적이라 dense 로 fallback 되는 경우 있음.
+- `auto` (default) — automatically ON when `hmatrix=True`, otherwise OFF.
+- `none` — no preconditioner (v1.4.0 behavior).
+- `hlu_dense` — alpha-1, full N×N dense LU on `H.full()`. A baseline for
+  small meshes.
+- `hlu_tree` — alpha-2, hierarchical block-Schur LU on the H-tree root
+  partition. For large meshes. In the 8N×8N coupled system of
+  `BEMRetIter`, its standalone effect is limited, so it sometimes falls
+  back to dense.
 
 256-face sphere benchmark:
 
-| 설정 | GMRES iter | wall |
+| Setting | GMRES iter | wall |
 |---|---:|---:|
 | `preconditioner='none'` | 55 | 1.03 s |
 | `preconditioner='auto'` | 1 | 0.82 s |
@@ -372,14 +374,14 @@ bem = BEMRetIter(p, hmatrix=True,
 sig, bem = bem.solve(exc.potential(p, enei))
 ```
 
-`BEMStatIter` 도 동일한 옵션. `BEMStatIter` tree mode 는 diagonal
-term 깨져서 dense fallback (one-time log).
+`BEMStatIter` accepts the same options. `BEMStatIter` tree mode falls
+back to dense because the diagonal term breaks (one-time log).
 
 ### Schur × Iterative (v1.5.0)
 
-Cover layer (nonlocal) 의 shell 변수를 GMRES 외부에서 implicit 소거 →
-reduced 문제 풀이. v1.2.0 의 dense Schur 와 v1.3.0 의 H-matrix iter 가
-v1.5.0 부터 동시 활성 가능.
+Implicitly eliminate the shell variables of the cover layer (nonlocal)
+outside GMRES → solve the reduced problem. The dense Schur of v1.2.0 and
+the H-matrix iter of v1.3.0 can be activated simultaneously since v1.5.0.
 
 **Constructor**:
 
@@ -392,21 +394,21 @@ BEMRetIter(p, hmatrix=True, schur=True,
 
 `schur_g_ss_solver`:
 
-- `lu_dense` — shell DOF < 500 권장 (한 번 dense LU 후 reuse).
-- `gmres` — 큰 shell, inner GMRES (느리지만 메모리 적음).
-- `callable` — user-supplied `A_ss^{-1}` apply 함수.
-- `auto` — shell DOF 자동 선택 (`< 500` → `lu_dense`, otherwise `gmres`).
+- `lu_dense` — recommended for shell DOF < 500 (one dense LU, then reuse).
+- `gmres` — large shell, inner GMRES (slower but lower memory).
+- `callable` — user-supplied `A_ss^{-1}` apply function.
+- `auto` — automatic shell DOF selection (`< 500` → `lu_dense`, otherwise `gmres`).
 
-**연산 형태**:
+**Operator form**:
 `A_eff(x_c) = A_cc x_c − A_cs · A_ss⁻¹ · A_sc x_c` LinearOperator —
-GMRES 가 reduced (core) 차원만 보면 됨.
+GMRES only needs to see the reduced (core) dimension.
 
 568-face nano-gap nonlocal benchmark:
 
-| 설정 | solve wall | 비고 |
+| Setting | solve wall | Note |
 |---|---:|---|
-| `schur=False` | 21.17 s | 8N 결합 GMRES |
-| `schur=True` | 16.65 s | 21.3% 절감 |
+| `schur=False` | 21.17 s | 8N coupled GMRES |
+| `schur=True` | 16.65 s | 21.3% reduction |
 
 ```python
 from mnpbem.bem import BEMRetIter
@@ -418,14 +420,16 @@ bem = BEMRetIter(p, refun=refun,
 sig, bem = bem.solve(exc.potential(p, enei))
 ```
 
-`BEMStatIter` 도 동일하게 `schur=True` + `hmatrix=True` 동시 활성 가능.
+`BEMStatIter` likewise supports simultaneous activation of `schur=True` +
+`hmatrix=True`.
 
 ### Schur complement (v1.2.0)
 
-`BEMStat` / `BEMRet` 가 `schur=True` 옵션으로 cover-layer 변수 자동 소거를
-지원한다. nonlocal cover-layer 시뮬레이션의 메모리를 약 4× → ~2× 로
-줄이고, LU 풀이 단계를 약 30% 가속한다. 결과는 standard formulation 과
-수학적으로 동등 (rel `< 1e-12`).
+`BEMStat` / `BEMRet` support automatic elimination of cover-layer
+variables via the `schur=True` option. This reduces the memory of
+nonlocal cover-layer simulations from roughly 4× → ~2×, and accelerates
+the LU solve step by about 30%. The result is mathematically equivalent
+to the standard formulation (rel `< 1e-12`).
 
 ```python
 from mnpbem.materials import EpsConst, make_nonlocal_pair
@@ -449,19 +453,19 @@ p = ComParticle(
 )
 refun = coverlayer.refine(p, [[1, 2]])
 
-# Schur 적용 — cover layer 변수 소거하여 reduced matrix 풀이
+# apply Schur — eliminate cover-layer variables and solve the reduced matrix
 bem = BEMStat(p, refun=refun, schur=True)
-# 동일하게:
+# equivalently:
 # bem = BEMRet(p, refun=refun, schur=True)
 ```
 
-옵션 값:
+Option values:
 
-- `schur=True` — cover layer 가 감지되면 schur 소거 강제 적용.
-- `schur=False` (default) — standard formulation, v1.1.0 동작.
-- `schur='auto'` — cover layer 가 자동 감지되면 schur 적용, 아니면 standard.
+- `schur=True` — force Schur elimination when a cover layer is detected.
+- `schur=False` (default) — standard formulation, v1.1.0 behavior.
+- `schur='auto'` — apply Schur when a cover layer is auto-detected, otherwise standard.
 
-`pymnpbem_simulation` wrapper 는 `schur='auto'` 를 기본값으로 사용한다.
+The `pymnpbem_simulation` wrapper uses `schur='auto'` as its default.
 
 ### `plasmonmode(bem, n=10, ...)`
 
@@ -661,22 +665,23 @@ the wrappers in `mnpbem_simulation` (companion repo).
 
 ### VRAM share — multi-GPU LU (v1.2.0)
 
-큰 mesh (25k+ face) 의 dense LU 풀이를 multi-GPU 메모리 풀로 처리한다.
-단일 GPU VRAM 한계 (예: RTX A6000 48 GB) 를 초과하는 경우 2 GPU pool
-(96 GB), 4 GPU pool (192 GB) 로 fit 시킨다.
+Handles the dense LU solve of a large mesh (25k+ faces) with a
+multi-GPU memory pool. When exceeding the single-GPU VRAM limit (e.g.
+RTX A6000 48 GB), it fits the problem into a 2-GPU pool (96 GB) or a
+4-GPU pool (192 GB).
 
-환경변수 인터페이스 (가장 간단):
+Environment-variable interface (simplest):
 
 ```python
 import os
-os.environ['MNPBEM_VRAM_SHARE_GPUS']    = '4'           # 4 GPU 메모리 합쳐 사용
+os.environ['MNPBEM_VRAM_SHARE_GPUS']    = '4'           # pool the memory of 4 GPUs
 os.environ['MNPBEM_VRAM_SHARE_BACKEND'] = 'cusolvermg'  # default
 
 from mnpbem.bem import BEMRet
-bem = BEMRet(p)   # 자동으로 cuSolverMg multi-GPU LU 활용
+bem = BEMRet(p)   # automatically uses cuSolverMg multi-GPU LU
 ```
 
-직접 호출 인터페이스:
+Direct-call interface:
 
 ```python
 from mnpbem.utils.gpu import lu_factor_dispatch, lu_solve_dispatch
@@ -685,44 +690,46 @@ lu = lu_factor_dispatch(A, n_gpus=4)        # cuSolverMg block-cyclic LU
 x  = lu_solve_dispatch(lu, b, n_gpus=4)
 ```
 
-지원 backend (`MNPBEM_VRAM_SHARE_BACKEND`):
+Supported backends (`MNPBEM_VRAM_SHARE_BACKEND`):
 
-- `cusolvermg` — NVIDIA cuSOLVER MG (권장). NVLink/PCIe 자동 최적화.
-- `magma` — ICL Magma multi-GPU (예정).
-- `nccl` — 사용자 정의 block-distributed LU (예정).
+- `cusolvermg` — NVIDIA cuSOLVER MG (recommended). Automatic NVLink/PCIe optimization.
+- `magma` — ICL Magma multi-GPU (planned).
+- `nccl` — user-defined block-distributed LU (planned).
 
-`pymnpbem_simulation` wrapper 의 `compute.n_gpus_per_worker > 1` 설정이
-자동으로 `MNPBEM_VRAM_SHARE_GPUS` 를 설정한다. wavelength 분배
-(Lane D, multi-worker) 와 결합 가능 — 예: 8 GPU 환경에서 2-GPU pool 4개
-(`n_workers=4`, `n_gpus_per_worker=2`).
+The `compute.n_gpus_per_worker > 1` setting of the
+`pymnpbem_simulation` wrapper automatically sets
+`MNPBEM_VRAM_SHARE_GPUS`. It can be combined with wavelength
+distribution (Lane D, multi-worker) — e.g. four 2-GPU pools in an
+8-GPU environment (`n_workers=4`, `n_gpus_per_worker=2`).
 
-상세는 `docs/ARCHITECTURE.md` "Key design decisions #12" 참조.
+For details see `docs/ARCHITECTURE.md` "Key design decisions #12".
 
-### GPU 환경 검사 (v1.4.0)
+### GPU environment check (v1.4.0)
 
 `from mnpbem.utils.gpu import has_gpu_capability, get_install_hint`
 
-CPU/GPU 분리 install (v1.4.0) 에 따라, runtime 에서 GPU 활성 가능
-여부를 사전에 확인하는 helper 가 추가되었다.
+Following the CPU/GPU split install (v1.4.0), a helper was added to
+check in advance, at runtime, whether GPU acceleration can be enabled.
 
 ```python
 from mnpbem.utils.gpu import has_gpu_capability, get_install_hint
 
 if not has_gpu_capability(verbose=True):
     print(get_install_hint())
-    # GPU 가속이 필요한 경우: pip install mnpbem[gpu]
+    # if GPU acceleration is needed: pip install mnpbem[gpu]
 ```
 
 | Function | Description |
 |---|---|
-| `has_gpu_capability(verbose=False) -> bool` | cupy import + CUDA driver + GPU device 가용성을 모두 검사. 모두 OK 면 True. `verbose=True` 시 누락 항목별 친절한 메시지 출력. |
-| `get_install_hint() -> str` | 현재 환경 상태를 보고 적절한 `pip install mnpbem[...]` 명령을 안내하는 문자열 반환. |
+| `has_gpu_capability(verbose=False) -> bool` | Checks cupy import + CUDA driver + GPU device availability. Returns True if all are OK. With `verbose=True`, prints a helpful message for each missing item. |
+| `get_install_hint() -> str` | Returns a string that inspects the current environment state and suggests the appropriate `pip install mnpbem[...]` command. |
 
-`MNPBEM_GPU=1` 환경변수를 사용자가 명시했는데 cupy 가 설치되어
-있지 않으면 BEM solver 호출 시점에 `RuntimeError` + install 명령
-안내를 출력한다 (기존: silent fallback 였음).
+If the user explicitly sets the `MNPBEM_GPU=1` environment variable but
+cupy is not installed, a `RuntimeError` plus install-command guidance is
+printed at the point the BEM solver is called (previously: silent
+fallback).
 
-설치 시나리오와 install 명령 매핑은 `docs/INSTALL.md` 참고.
+For install scenarios and their command mapping see `docs/INSTALL.md`.
 
 ---
 

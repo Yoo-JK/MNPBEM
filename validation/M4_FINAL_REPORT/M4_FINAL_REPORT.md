@@ -2,11 +2,11 @@
 
 **Total demos analyzed**: 72
 
-## TL;DR (사용자 요구 3가지 처리 상태)
+## TL;DR (status of the 3 user requirements)
 
-1. ✅ **GPU acceleration = opt-in** — `MNPBEM_GPU=1` 명시적 (default OFF)
+1. ✅ **GPU acceleration = opt-in** — `MNPBEM_GPU=1` explicit (default OFF)
 2. **Python (CPU) > MATLAB on every demo** — **39/43** demos faster on Python CPU (median 4.39× speedup)
-   - MATLAB timing은 sequential하게 백그라운드에서 수집되며, 더 진행될수록 비교 demo 수가 증가합니다.
+   - MATLAB timing is collected sequentially in the background, and the number of compared demos increases as it progresses.
    - Python GPU vs MATLAB: **43/43** demos faster on Python+GPU
 3. ✅ **MATLAB == Python (1e-12)** — perf=71, OK=1, warn=0, BAD=0 (of 72 demos)
 

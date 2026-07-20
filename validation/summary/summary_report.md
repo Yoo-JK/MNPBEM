@@ -33,8 +33,8 @@ Overall Python speedup: x1.17
 | 13_shapes | 6.389 | 21.631 | x0.30 | 1.24e-05 |
 
 ## Notes
-- RMS is computed per matching `*_python.csv` / `*_matlab.csv` pair as `sqrt(mean((|py-ml|/max(|ml|,1e-30))^2))`, 최대값이 "Max RMS"로 보고됨.
-- Timing은 각 폴더의 `python_timing.csv` / `matlab_timing.csv` 합계.
-- `Speedup = MATLAB time / Python time`. >1 이면 Python이 빠름.
-- 06_mirror/rod: trirod quarter-mesh 생성 한계로 skip (README 참고).
-- 10_dipole_layer: Python BEMRetLayer 성능 이슈로 ret 파트 스크립트 내 skip 플래그.
+- RMS is computed per matching `*_python.csv` / `*_matlab.csv` pair as `sqrt(mean((|py-ml|/max(|ml|,1e-30))^2))`, and the maximum is reported as "Max RMS".
+- Timing is the sum of each folder's `python_timing.csv` / `matlab_timing.csv`.
+- `Speedup = MATLAB time / Python time`. >1 means Python is faster.
+- 06_mirror/rod: skipped due to trirod quarter-mesh generation limitations (see README).
+- 10_dipole_layer: skip flag within the script for the ret part due to Python BEMRetLayer performance issues.

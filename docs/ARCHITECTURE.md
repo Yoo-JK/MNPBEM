@@ -303,19 +303,21 @@ If you find a MATLAB behaviour that looks wrong, please flag it before
 
 ### 3.11 Schur complement for cover-layer BEM (v1.2.0)
 
-`EpsNonlocal` cover-layer formulation 은 mesh face count 를 약 2× 증가시켜
-BEM 행렬 메모리를 약 4× 폭증하게 만든다 (n × n 행렬에서 n 가 2배 → 메모리
-4배). Schur complement 으로 shell 변수를 LU 풀이 전 소거하면, 코어 변수만
-풀어 reduced matrix 의 메모리는 ~2× 만 사용 + LU 풀이 시간은 약 30% 감소.
+The `EpsNonlocal` cover-layer formulation increases the mesh face count by
+about 2×, which causes the BEM matrix memory to balloon by about 4× (in an
+n × n matrix, doubling n means 4× the memory). Eliminating the shell variables
+via the Schur complement before the LU solve means only the core variables are
+solved, so the reduced matrix uses only ~2× the memory + the LU solve time
+drops by about 30%.
 
-블록 행렬 표기로
+In block-matrix notation,
 
 ```
 [ A_cc  A_cs ] [ x_c ]   [ b_c ]
 [ A_sc  A_ss ] [ x_s ] = [ b_s ]
 ```
 
-이고, shell 블록 (s) 을 소거하면
+and eliminating the shell block (s) leaves only
 
 ```
 S = A_cc - A_cs * A_ss^-1 * A_sc       # Schur complement
@@ -323,194 +325,203 @@ S * x_c = b_c - A_cs * A_ss^-1 * b_s
 x_s = A_ss^-1 * (b_s - A_sc * x_c)
 ```
 
-만 풀면 된다. 수학적으로 standard formulation 과 동등 — 회귀 테스트에서
-machine precision 일치 (rel < 1e-12).
+to be solved. This is mathematically equivalent to the standard formulation —
+matching to machine precision in the regression tests (rel < 1e-12).
 
-- 활성: `BEMStat(p, schur=True)`, `BEMRet(p, schur=True)` 또는
-  `schur='auto'` 로 cover layer 자동 감지.
-- 구현: `mnpbem/bem/schur_helpers.py` (블록 indexing,
-  `lu_factor_dispatch` 의 reduced-matrix 호출).
-- BEMRetIter / BEMRetLayer 미적용 (M5+ 후속 — H-matrix preconditioner 와
-  결합).
+- Activation: `BEMStat(p, schur=True)`, `BEMRet(p, schur=True)`, or
+  `schur='auto'` to auto-detect a cover layer.
+- Implementation: `mnpbem/bem/schur_helpers.py` (block indexing,
+  reduced-matrix call to `lu_factor_dispatch`).
+- Not applied to BEMRetIter / BEMRetLayer (M5+ follow-up — combined with the
+  H-matrix preconditioner).
 
 ### 3.12 VRAM share — multi-GPU LU dispatch (v1.2.0)
 
-단일 GPU VRAM (예: RTX A6000 48 GB) 을 초과하는 큰 dense LU
-(25k+ face, 50+ GB) 를 multi-GPU 메모리 풀로 처리하는 경로. Lane D
-(현행 multi-GPU = wavelength 분배) 와는 직교하는 새 축 — 1 worker 가
-N개 GPU의 메모리를 합쳐 *하나의* 큰 계산을 처리한다.
+A path that handles a large dense LU (25k+ face, 50+ GB) that exceeds the VRAM
+of a single GPU (e.g. RTX A6000 48 GB) using a multi-GPU memory pool. This is
+a new axis orthogonal to Lane D (the current multi-GPU = wavelength
+distribution) — one worker combines the memory of N GPUs to handle *one* large
+computation.
 
-| 모드 | worker 수 | 1 worker 의 VRAM | 사용 사례 |
+| Mode | # workers | VRAM per worker | Use case |
 |---|---|---|---|
-| Lane D (v1.0+) | N | 1 GPU 분 | wavelength 분배 |
-| **VRAM share (v1.2.0)** | 1 | M GPU 합산 | 큰 단일 계산 |
-| 두 모드 결합 | N | M GPU 합산 | 큰 계산 × wavelength 분배 |
+| Lane D (v1.0+) | N | 1 GPU's worth | wavelength distribution |
+| **VRAM share (v1.2.0)** | 1 | sum of M GPUs | large single computation |
+| Both modes combined | N | sum of M GPUs | large computation × wavelength distribution |
 
-기본 backend 는 NVIDIA cuSOLVER MG (`cusolverMgGetrf` /
-`cusolverMgGetrs`) — block-cyclic distributed matrix 로 NVLink/PCIe
-전송이 NVIDIA 측에서 자동 최적화. cupy MemoryPool 위에서 동작.
+The default backend is NVIDIA cuSOLVER MG (`cusolverMgGetrf` /
+`cusolverMgGetrs`) — with a block-cyclic distributed matrix, NVLink/PCIe
+transfers are automatically optimized on the NVIDIA side. It runs on top of
+the cupy MemoryPool.
 
-- 활성:
-  - 환경변수 `MNPBEM_VRAM_SHARE_GPUS=N` (default 1 = single GPU 동작).
-  - `MNPBEM_VRAM_SHARE_BACKEND=cusolvermg` (default; magma / nccl 예정).
-  - `mnpbem.utils.gpu.lu_factor_dispatch(A, n_gpus=N)` 직접 호출.
-- 구현: `mnpbem/utils/multi_gpu_lu.py` (cuSolverMg ctypes wrapper +
+- Activation:
+  - Environment variable `MNPBEM_VRAM_SHARE_GPUS=N` (default 1 = single-GPU behavior).
+  - `MNPBEM_VRAM_SHARE_BACKEND=cusolvermg` (default; magma / nccl planned).
+  - Direct call to `mnpbem.utils.gpu.lu_factor_dispatch(A, n_gpus=N)`.
+- Implementation: `mnpbem/utils/multi_gpu_lu.py` (cuSolverMg ctypes wrapper +
   block-cyclic distributor).
-- `pymnpbem_simulation` wrapper 의 `compute.n_gpus_per_worker > 1` 가
-  자동으로 환경변수를 설정.
-- 한계: NVIDIA GPU 전용 (cusolvermg backend), AMD GPU 미지원.
-  56k+ face 같이 LU 자체 메모리가 ~250 GB 인 경우 4 GPU pool (192 GB)
-  로도 fit 안되며 H-matrix 와 결합 필요 (v1.3.0 §3.13 참고).
+- The `pymnpbem_simulation` wrapper's `compute.n_gpus_per_worker > 1`
+  automatically sets the environment variable.
+- Limitations: NVIDIA GPU only (cusolvermg backend), AMD GPU unsupported.
+  For cases like 56k+ face where the LU itself needs ~250 GB, it does not fit
+  even in a 4-GPU pool (192 GB) and must be combined with an H-matrix (see
+  v1.3.0 §3.13).
 
-### 3.13 H-matrix BEMRetIter integration (v1.3.0, Lane E2 후속)
+### 3.13 H-matrix BEMRetIter integration (v1.3.0, Lane E2 follow-up)
 
-큰 mesh (25k+ face) 의 dense LU 메모리 한계 (50+ GB peak) 를
-ACA H-matrix + GMRES 로 해소. v1.2.0 의 VRAM share 가 dense LU 의
-*메모리 풀* 을 만들어 GPU 한계를 우회한 반면, v1.3.0 의 H-matrix iter
-는 *알고리즘 차원* 에서 메모리·matvec 모두 `O(N log N)` 으로 줄인다.
+Resolves the dense-LU memory limit (50+ GB peak) of large meshes (25k+ face)
+with ACA H-matrix + GMRES. Whereas v1.2.0's VRAM share circumvented the GPU
+limit by building a *memory pool* for the dense LU, v1.3.0's H-matrix iter
+reduces both memory and matvec to `O(N log N)` at the *algorithmic level*.
 
-| 모드 | 메모리 | matvec 비용 | 적합 mesh |
+| Mode | Memory | matvec cost | Suitable mesh |
 |---|---|---|---|
 | dense BEMRet | `O(N^2)` | `O(N^2)` | < 5k face |
 | dense + VRAM share (v1.2.0) | `O(N^2)`, multi-GPU pool | `O(N^2)` | 25k face (2 GPU pool) |
 | **H-matrix BEMRetIter (v1.3.0)** | `O(N log N)` | `O(N log N)` per iter | 25k+ face |
-| H-matrix + VRAM share | `O(N log N)`, multi-GPU pool | `O(N log N)` | 56k+ face (실험적) |
+| H-matrix + VRAM share | `O(N log N)`, multi-GPU pool | `O(N log N)` | 56k+ face (experimental) |
 
-구현 요점:
+Implementation highlights:
 
-- M4 H1 의 H-matrix Green function module 을 `BEMRetIter` /
-  `BEMStatIter` 와 통합. ACA 가 block-level 압축에서 *전체 H-tree*
-  level 로 확장됨.
-- GMRES 의 matvec op 가 H-matrix matvec 을 호출 — `O(N log N)` per
-  iter.
-- `hmatrix=True` opt-in (default 동작은 v1.2.0 과 동일).
-- VRAM share 와 결합 가능: H-matrix 자체는 단일 GPU 메모리 fit,
-  dense 부분 (preconditioner 등) 만 multi-GPU pool 이 처리.
+- Integrates the M4 H1 H-matrix Green function module with `BEMRetIter` /
+  `BEMStatIter`. ACA is extended from block-level compression to the *whole
+  H-tree* level.
+- The GMRES matvec op calls the H-matrix matvec — `O(N log N)` per iter.
+- `hmatrix=True` opt-in (default behavior is identical to v1.2.0).
+- Can be combined with VRAM share: the H-matrix itself fits in single-GPU
+  memory, and only the dense part (preconditioner, etc.) is handled by the
+  multi-GPU pool.
 
-활성:
+Activation:
 
 - `BEMRetIter(p, hmatrix=True)`, `BEMStatIter(p, hmatrix=True)`.
-- `htol`, `kmax`, `cleaf` 파라미터 노출 (default 는 v1.0.0 ACA 와
-  동일).
-- `pymnpbem_simulation` 의 `iter.hmatrix: 'auto'` 가 5000+ face mesh
-  에서 자동 활성.
+- Exposes the `htol`, `kmax`, `cleaf` parameters (defaults are identical to the
+  v1.0.0 ACA).
+- `pymnpbem_simulation`'s `iter.hmatrix: 'auto'` auto-activates for 5000+ face
+  meshes.
 
-한계:
+Limitations:
 
-- `BEMRetLayerIter + hmatrix` 미지원 (`NotImplementedError`) —
-  cover layer + planar substrate 결합 시나리오 없음.
-- `BEM*Iter + Schur (v1.2.0)` 동시 활성 미지원 — H-matrix + Schur
-  통합은 후속 작업.
-- preconditioner 는 현재 Jacobi (`precond='diag'`) 만 H-matrix 와
-  호환. H-matrix block-LU preconditioner 는 후속.
+- `BEMRetLayerIter + hmatrix` unsupported (`NotImplementedError`) — there is no
+  combined cover layer + planar substrate scenario.
+- Simultaneous `BEM*Iter + Schur (v1.2.0)` activation unsupported — H-matrix +
+  Schur integration is future work.
+- Currently only the Jacobi preconditioner (`precond='diag'`) is compatible
+  with the H-matrix. An H-matrix block-LU preconditioner is future work.
 
-### 3.14 CPU/GPU 분리 build (v1.4.0)
+### 3.14 CPU/GPU separate build (v1.4.0)
 
-핵심 결정: **single wheel + extras** (별도 wheel 분리 X).
+Key decision: **single wheel + extras** (NOT separate wheels).
 
-이유:
+Reasons:
 
-- PyPI 표준 패턴 — 대부분의 ML/numerical 패키지가 `[gpu]` 같은
-  extras 형태로 GPU 의존성을 분리한다 (예: `tensorflow`,
+- Standard PyPI pattern — most ML/numerical packages separate GPU
+  dependencies as extras like `[gpu]` (e.g. `tensorflow`,
   `jax[cuda12]`, `pytorch-lightning[extra]`).
-- 코드 자체는 cupy lazy import — `mnpbem/utils/gpu.py` 가
-  cupy `ImportError` 를 catch 하여 CPU path 로 fallback. 따라서
-  별도 wheel 을 만들지 않아도 단일 코드 베이스로 CPU/GPU 양쪽
-  동작이 가능.
-- 사용자 가치 대비 별도 wheel (예: `mnpbem-cpu`, `mnpbem-gpu`)
-  빌드 + 유지 비용이 큼 — 두 build matrix 를 CI 에서 별도로
-  돌려야 하고, 사용자도 이름이 다른 패키지를 골라야 한다.
+- The code itself uses a cupy lazy import — `mnpbem/utils/gpu.py` catches the
+  cupy `ImportError` and falls back to the CPU path. Thus a single code base
+  can run on both CPU and GPU without producing separate wheels.
+- Relative to the user value, separate wheels (e.g. `mnpbem-cpu`,
+  `mnpbem-gpu`) carry a high build + maintenance cost — two build matrices must
+  be run separately in CI, and users must also choose between differently named
+  packages.
 
-대신 **정교한 extras + runtime auto-detect** 로 사용자 경험 개선:
+Instead, the user experience is improved with **refined extras + runtime
+auto-detect**:
 
-| Extra | 추가 의존성 | 용도 |
+| Extra | Extra dependencies | Purpose |
 |---|---|---|
-| `mnpbem` (default) | (none) | CPU only — numpy/scipy/numba 만 |
-| `mnpbem[gpu]` | cupy-cuda12x | NVIDIA GPU 가속 (Tier 4 G1/G2) |
-| `mnpbem[mpi]` | mpi4py | multi-node wavelength 분배 (Lane D) |
-| `mnpbem[fmm]` | fmm3dpy | free-space ret meshfield 가속 (F1) |
-| `mnpbem[all]` | gpu + mpi + fmm | 전부 |
-| `mnpbem[dev]` | pytest / ruff / build / twine | 개발 환경 |
-| `mnpbem[test]` | pytest | 회귀 테스트만 |
-| `mnpbem[docs]` | (sphinx 등) | docs build (예약) |
+| `mnpbem` (default) | (none) | CPU only — numpy/scipy/numba only |
+| `mnpbem[gpu]` | cupy-cuda12x | NVIDIA GPU acceleration (Tier 4 G1/G2) |
+| `mnpbem[mpi]` | mpi4py | multi-node wavelength distribution (Lane D) |
+| `mnpbem[fmm]` | fmm3dpy | free-space ret meshfield acceleration (F1) |
+| `mnpbem[all]` | gpu + mpi + fmm | everything |
+| `mnpbem[dev]` | pytest / ruff / build / twine | development environment |
+| `mnpbem[test]` | pytest | regression tests only |
+| `mnpbem[docs]` | (sphinx, etc.) | docs build (reserved) |
 
 Runtime auto-detect (`mnpbem/utils/gpu.py`):
 
-- `has_gpu_capability(verbose=True)` — cupy import + CUDA driver +
-  GPU device 검사. 누락된 항목별 친절한 메시지.
-- `get_install_hint()` — 현재 환경에서 GPU 활성을 위해 필요한
-  `pip install mnpbem[gpu]` 명령 안내 문자열.
-- `MNPBEM_GPU=1` env var 가 명시되었지만 cupy 가 미설치되면
-  BEM solver 호출 시점에 `RuntimeError` + install 명령 안내
-  (기존 v1.3.0 까지의 silent fallback 보다 명확).
+- `has_gpu_capability(verbose=True)` — checks cupy import + CUDA driver +
+  GPU device. A friendly message for each missing item.
+- `get_install_hint()` — a string guiding the `pip install mnpbem[gpu]` command
+  needed to enable GPU in the current environment.
+- If the `MNPBEM_GPU=1` env var is specified but cupy is not installed, a
+  `RuntimeError` + install-command guidance is raised at BEM solver call time
+  (clearer than the silent fallback used through v1.3.0).
 
-사용자 가이드: `docs/INSTALL.md` (v1.4.0 신규) — 시나리오별
-(CPU only / single GPU / multi-GPU / multi-node / 개발) install
-절차를 한 곳에 모아 둠.
+User guide: `docs/INSTALL.md` (new in v1.4.0) — gathers the per-scenario
+(CPU only / single GPU / multi-GPU / multi-node / development) install
+procedures in one place.
 
 ### 3.15 H-matrix LU preconditioner + Schur × Iter (v1.5.0)
 
-큰 nonlocal mesh 의 GMRES stall 해결 + cover layer 변수 implicit
-소거. v1.3.0 의 H-matrix BEMRetIter (`O(N log N)` 메모리/matvec) 가
-"풀리는가" 문제는 해결했지만, "충분히 빠르게 수렴하는가" 문제는
-preconditioner 가 필요했고, "cover layer 가 추가된 8N×8N 시스템"
-문제는 Schur × Iter 통합이 필요했다. v1.5.0 이 두 격차를 메운다.
+Resolves the GMRES stall on large nonlocal meshes + implicit elimination of the
+cover-layer variables. v1.3.0's H-matrix BEMRetIter (`O(N log N)` memory/matvec)
+solved the "does it solve at all" problem, but the "does it converge fast
+enough" problem needed a preconditioner, and the "8N×8N system with an added
+cover layer" problem needed the Schur × Iter integration. v1.5.0 closes both
+gaps.
 
 #### Preconditioner
 
-- 구현: `mnpbem/bem/preconditioner.py` (`HMatrixLUPreconditioner`).
+- Implementation: `mnpbem/bem/preconditioner.py` (`HMatrixLUPreconditioner`).
 - modes: `dense` (alpha-1, full N×N LU on `H.full()`), `tree`
-  (alpha-2, hierarchical block-Schur LU on H-tree root partition),
-  `auto` (size 기반 dispatch).
-- BEM solver 측 노출: `BEMRetIter(p, hmatrix=True,
-  preconditioner='auto', htol_precond=1e-4)`. `BEMStatIter` 동일.
-- 256-face sphere benchmark: GMRES iter 55 → 1 (55× 감소),
+  (alpha-2, hierarchical block-Schur LU on the H-tree root partition),
+  `auto` (size-based dispatch).
+- BEM-solver-side exposure: `BEMRetIter(p, hmatrix=True,
+  preconditioner='auto', htol_precond=1e-4)`. Same for `BEMStatIter`.
+- 256-face sphere benchmark: GMRES iter 55 → 1 (55× reduction),
   wall 1.03 s → 0.82 s.
-- 한계 — `BEMRetIter` 의 8N×8N 결합 시스템에서는 G-only H-tree LU
-  단독 효과가 제한적이라 `hlu_tree` 가 dense fallback 으로 동작하는
-  경우가 있음. 25k face 의 진정한 memory-friendly preconditioner 는
-  Sigma/Delta 자체를 H-matrix 로 재구성해야 하는데, 이는 v1.6+
-  과제. `BEMStatIter` tree mode 는 diagonal term 깨져서 dense
-  fallback (one-time log).
+- Limitation — in `BEMRetIter`'s 8N×8N coupled system, the G-only H-tree LU
+  has limited effect on its own, so `hlu_tree` sometimes falls back to dense.
+  A truly memory-friendly preconditioner for 25k face would require
+  reconstructing Sigma/Delta themselves as an H-matrix, which is a v1.6+
+  task. In `BEMStatIter` tree mode the diagonal term breaks, so it falls back
+  to dense (one-time log).
 
 #### Schur × Iter
 
-- 구현: `mnpbem/bem/schur_iter_helpers.py` (`SchurIterOperator`,
-  `LinearOperator` subclass).
-- 연산: `A_eff(x_c) = A_cc x_c − A_cs · A_ss⁻¹ · A_sc x_c` —
-  GMRES 가 reduced (core) 차원만 보면 됨. `A_ss⁻¹` 은
-  `lu_dense` (한 번 dense LU + reuse) / `gmres` (inner Krylov) /
-  `callable` (user-supplied) / `auto` (shell DOF 기반 dispatch)
-  중 선택.
-- BEM solver 측 노출: `BEMRetIter(p, hmatrix=True, schur=True)` —
-  v1.4 까지 `NotImplementedError` 였던 조합이 v1.5.0 부터 가능.
-  cover layer 자동 감지 (v1.2.0 `detect_shell_core_partition` 재활용).
+- Implementation: `mnpbem/bem/schur_iter_helpers.py` (`SchurIterOperator`,
+  a `LinearOperator` subclass).
+- Operation: `A_eff(x_c) = A_cc x_c − A_cs · A_ss⁻¹ · A_sc x_c` —
+  GMRES only needs to see the reduced (core) dimension. `A_ss⁻¹` is chosen
+  from `lu_dense` (dense LU once + reuse) / `gmres` (inner Krylov) /
+  `callable` (user-supplied) / `auto` (dispatch based on shell DOF).
+- BEM-solver-side exposure: `BEMRetIter(p, hmatrix=True, schur=True)` — the
+  combination that raised `NotImplementedError` through v1.4 is available from
+  v1.5.0. Auto-detects the cover layer (reusing v1.2.0's
+  `detect_shell_core_partition`).
 - 568-face nano-gap nonlocal benchmark: solve 21.17 s → 16.65 s
-  (21.3% 절감). reduced GMRES Krylov 차원 + `A_ss⁻¹` reuse 효과.
-- v1.2.0 dense Schur 와 비교 — dense 는 `G_ss` 를 직접 inverse
-  하므로 H-matrix 와 호환 X. `SchurIterOperator` 는 *full matvec
-  A·v* 만 사용해 H-matrix 와 자연스럽게 맞물린다.
+  (21.3% savings). The effect of the reduced GMRES Krylov dimension +
+  `A_ss⁻¹` reuse.
+- Compared with v1.2.0's dense Schur — dense directly inverts `G_ss`, so it is
+  incompatible with the H-matrix. `SchurIterOperator` uses only the *full
+  matvec A·v*, so it meshes naturally with the H-matrix.
 
 ### 3.16 v1.6.0 — B-Schur full coverage + BEMRetLayerIter operator-form + CLI
 
 #### B-Schur (mnpbem/bem/schur_iter_helpers.py)
 
-`SchurIterOperator` 가 `eps_form='operator'` 시 inner GMRES 부담 회피 위해
-`g_ss_solver='auto'` 의 lu_dense threshold 를 500 → 4096 으로 상향. dense LU
-probe 가 N=4096 (≈128 MB at complex128) 까지 효율적.
+To avoid the inner-GMRES burden when `SchurIterOperator` uses
+`eps_form='operator'`, the lu_dense threshold of `g_ss_solver='auto'` was raised
+from 500 → 4096. The dense LU probe is efficient up to N=4096 (≈128 MB at
+complex128).
 
-수학: Schur reduction 자체는 `A_full` 에 무관하게 정확. 통찰 — operator-form
-Schur 재구현 불필요. inner GMRES 비용이 진짜 bottleneck.
+Math: the Schur reduction itself is exact regardless of `A_full`. Insight — no
+operator-form Schur reimplementation needed. The inner GMRES cost is the real
+bottleneck.
 
 #### BEMRetLayerIter (mnpbem/bem/bem_ret_layer_iter.py)
 
-`_afun / _init_precond / _mfun` 모두 operator-form 적용 (β v1.5.1 패턴 동일).
-substrate + iter + multi-material 케이스 drift 해결.
+`_afun / _init_precond / _mfun` all apply the operator form (same pattern as
+β v1.5.1). Resolves the drift in the substrate + iter + multi-material case.
 
 #### pymnpbem CLI (cli.py)
 
-`--str-conf <X.py> --sim-conf <Y.py> --verbose` 패턴 (mnpbem_simulation 호환).
-sim_conf 의 nested compute 블록에 모든 worker/GPU 파라미터.
+`--str-conf <X.py> --sim-conf <Y.py> --verbose` pattern (mnpbem_simulation
+compatible). All worker/GPU parameters are in the nested compute block of
+sim_conf.
 
 ## 4. Performance summary
 

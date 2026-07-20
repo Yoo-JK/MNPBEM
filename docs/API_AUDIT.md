@@ -1,104 +1,104 @@
-# MNPBEM API Audit (MATLAB → Python 포팅)
+# MNPBEM API Audit (MATLAB → Python port)
 
-**작성일**: 2026-04-22  
-**범위**: MATLAB MNPBEM 모든 public class/method  
-**목표**: Python 포팅 완성도 평가 및 누락 항목 우선순위화
+**Date**: 2026-04-22  
+**Scope**: all public classes/methods of MATLAB MNPBEM  
+**Goal**: assess Python port completeness and prioritize missing items
 
 ---
 
-## 요약
+## Summary
 
-| 항목 | 수량 |
+| Item | Count |
 |------|------|
-| **MATLAB public methods** | 697개 |
-| **Python 구현 파일** | 102개 |
-| **주요 클래스 완성도** | 65.2% (60/92 메서드) |
-| **완전히 구현된 클래스** | 0/10 (주요 클래스 기준) |
-| **80% 이상 완성** | 2/10 클래스 |
+| **MATLAB public methods** | 697 |
+| **Python implementation files** | 102 |
+| **Completeness of major classes** | 65.2% (60/92 methods) |
+| **Fully implemented classes** | 0/10 (among major classes) |
+| **80%+ complete** | 2/10 classes |
 
-**결론**: Python 포팅이 대부분의 핵심 기능을 포함하나 메서드 수준에서 ~35% 누락
-
----
-
-## Module별 현황
-
-### 1. BEM (경계요소법) 모듈
-
-| MATLAB Class | Python Class | 메서드 | 완성도 | 상태 |
-|---|---|---|---|---|
-| `bemstat` | `BEMStat` | 9 | 78% (7/9) | ⚠ 미흡 |
-| `bemret` | `BEMRet` | 8 | 88% (7/8) | ⚠ 거의 완성 |
-| `bemstatlayer` | `BEMStatLayer` | 7 | 71% (5/7) | ✗ 불완전 |
-| `bemretlayer` | `BEMRetLayer` | 6 | 83% (5/6) | ⚠ 거의 완성 |
-| `bemstateig` | `BEMStatEig` | 7 | ? | ✓ 구현됨 |
-| `bemstateigmirror` | `BEMStatEigMirror` | 8 | ? | ✓ 구현됨 |
-| `bemstatmirror` | `BEMStatMirror` | 8 | ? | ✓ 구현됨 |
-| `bemretmirror` | `BEMRetMirror` | 6 | ? | ✓ 구현됨 |
-| `bemiter` | `BEMIter` | 10 | 50% (5/10) | ✗ 중대 누락 |
-| `bemstatiter` | `BEMStatIter` | 9 | ? | 부분 구현 |
-| `bemretiter` | `BEMRetIter` | 8 | ? | 부분 구현 |
-| `bemretlayeriter` | `BEMRetLayerIter` | 7 | ? | 부분 구현 |
-| `bemlayermirror` | `BEMLayerMirror` | 1 | ? | ✓ 구현됨 |
-
-**BEM 분석**:
-- ✓ 정적(stat)/진동(ret) 기본 솔버 구현됨
-- ⚠ 반복(iter) 솔버 (~50% 구현)
-- ⚠ 메서드 매핑: MATLAB `mldivide` → Python `__truediv__`, `mtimes` → `__mul__`
+**Conclusion**: the Python port covers most of the core functionality but is ~35% incomplete at the method level
 
 ---
 
-### 2. Particles (입자/기하) 모듈
+## Status by Module
 
-| MATLAB Class | Python Class | 메서드 | 완성도 | 상태 |
+### 1. BEM (boundary element method) module
+
+| MATLAB Class | Python Class | Methods | Completeness | Status |
 |---|---|---|---|---|
-| `polygon` | `Polygon` | 17 | 71% (12/17) | ⚠ 미흡 |
-| `polygon3` | `Polygon3` | 0 | - | ? 불명확 |
-| `comparticle` | `ComParticle` | 11 | 73% (8/11) | ⚠ 미흡 |
-| `compound` | `Compound`/`Connect` | 11 | 9% (1/11) | ✗ **심각한 누락** |
-| `layerstructure` | `LayerStructure` | 13 | 77% (10/13) | ⚠ 미흡 |
+| `bemstat` | `BEMStat` | 9 | 78% (7/9) | ⚠ incomplete |
+| `bemret` | `BEMRet` | 8 | 88% (7/8) | ⚠ nearly complete |
+| `bemstatlayer` | `BEMStatLayer` | 7 | 71% (5/7) | ✗ incomplete |
+| `bemretlayer` | `BEMRetLayer` | 6 | 83% (5/6) | ⚠ nearly complete |
+| `bemstateig` | `BEMStatEig` | 7 | ? | ✓ implemented |
+| `bemstateigmirror` | `BEMStatEigMirror` | 8 | ? | ✓ implemented |
+| `bemstatmirror` | `BEMStatMirror` | 8 | ? | ✓ implemented |
+| `bemretmirror` | `BEMRetMirror` | 6 | ? | ✓ implemented |
+| `bemiter` | `BEMIter` | 10 | 50% (5/10) | ✗ major gaps |
+| `bemstatiter` | `BEMStatIter` | 9 | ? | partially implemented |
+| `bemretiter` | `BEMRetIter` | 8 | ? | partially implemented |
+| `bemretlayeriter` | `BEMRetLayerIter` | 7 | ? | partially implemented |
+| `bemlayermirror` | `BEMLayerMirror` | 1 | ? | ✓ implemented |
+
+**BEM analysis**:
+- ✓ quasistatic (stat) / retarded (ret) base solvers implemented
+- ⚠ iterative (iter) solver (~50% implemented)
+- ⚠ method mapping: MATLAB `mldivide` → Python `__truediv__`, `mtimes` → `__mul__`
+
+---
+
+### 2. Particles (particle/geometry) module
+
+| MATLAB Class | Python Class | Methods | Completeness | Status |
+|---|---|---|---|---|
+| `polygon` | `Polygon` | 17 | 71% (12/17) | ⚠ incomplete |
+| `polygon3` | `Polygon3` | 0 | - | ? unclear |
+| `comparticle` | `ComParticle` | 11 | 73% (8/11) | ⚠ incomplete |
+| `compound` | `Compound`/`Connect` | 11 | 9% (1/11) | ✗ **serious gap** |
+| `layerstructure` | `LayerStructure` | 13 | 77% (10/13) | ⚠ incomplete |
 | `edgeprofile` | `EdgeProfile` | ? | ? | ? |
-| `compoint` | `ComPoint` | ? | ? | ✓ 구현됨 |
-| `point` | `Point` | ? | ? | ✓ 구현됨 |
-| `comparticlemirror` | `ComParticleMirror` | ? | ? | ✓ 구현됨 |
+| `compoint` | `ComPoint` | ? | ? | ✓ implemented |
+| `point` | `Point` | ? | ? | ✓ implemented |
+| `comparticlemirror` | `ComParticleMirror` | ? | ? | ✓ implemented |
 
-**Particles 분석**:
-- ✓ 기본 기하학적 클래스 구현됨
-- ✗ **`compound` 클래스 심각한 누락** (11개 메서드 중 1개만)
-- ⚠ `Polygon`에서 누락된 메서드:
-  - `plot()`, `norm()`, `interp1()`, `union()`, `symmetry()` 등 유틸리티 함수
-- ⚠ 메서드명 변경: `round()` → `round_()`, `sort()` → `sort_()`
+**Particles analysis**:
+- ✓ basic geometric classes implemented
+- ✗ **serious gap in the `compound` class** (only 1 of 11 methods)
+- ⚠ methods missing from `Polygon`:
+  - utility functions such as `plot()`, `norm()`, `interp1()`, `union()`, `symmetry()`
+- ⚠ method renames: `round()` → `round_()`, `sort()` → `sort_()`
 
 ---
 
-### 3. Greenfun (그린함수) 모듈
+### 3. Greenfun (Green function) module
 
-| MATLAB Class | Python Class | 메서드 | 상태 |
+| MATLAB Class | Python Class | Methods | Status |
 |---|---|---|---|
-| `greenstat` | `GreenStat` | 4 | ✓ 구현됨 |
-| `greenret` | `GreenRet` | 5 | ✓ 구현됨 |
-| `greenretlayer` | `GreenRetLayer` | 4 | ✓ 구현됨 |
-| `compgreenstat` | `CompGreenStat` | 6 | ✓ 구현됨 |
-| `compgreenret` | `CompGreenRet` | 5 | ✓ 구현됨 |
-| `compgreenretlayer` | `CompGreenRetLayer` | 6 | ✓ 구현됨 |
-| `compgreenretmirror` | `CompGreenRetMirror` | 5 | ✓ 구현됨 |
-| `compgreenstatmirror` | `CompGreenStatMirror` | 5 | ✓ 구현됨 |
-| `compgreentablayer` | `CompGreenTabLayer` | 8 | ✓ 구현됨 |
-| `greentablayer` | `GreenTabLayer` | 8 | ✓ 구현됨 |
-| `+aca/compgreenstat` | `AcaCompGreenStat` | 5 | ✓ 구현됨 |
-| `+aca/compgreenret` | `AcaCompGreenRet` | 4 | ✓ 구현됨 |
-| `+aca/compgreenretlayer` | `AcaCompGreenRetLayer` | 4 | ✓ 구현됨 |
+| `greenstat` | `GreenStat` | 4 | ✓ implemented |
+| `greenret` | `GreenRet` | 5 | ✓ implemented |
+| `greenretlayer` | `GreenRetLayer` | 4 | ✓ implemented |
+| `compgreenstat` | `CompGreenStat` | 6 | ✓ implemented |
+| `compgreenret` | `CompGreenRet` | 5 | ✓ implemented |
+| `compgreenretlayer` | `CompGreenRetLayer` | 6 | ✓ implemented |
+| `compgreenretmirror` | `CompGreenRetMirror` | 5 | ✓ implemented |
+| `compgreenstatmirror` | `CompGreenStatMirror` | 5 | ✓ implemented |
+| `compgreentablayer` | `CompGreenTabLayer` | 8 | ✓ implemented |
+| `greentablayer` | `GreenTabLayer` | 8 | ✓ implemented |
+| `+aca/compgreenstat` | `AcaCompGreenStat` | 5 | ✓ implemented |
+| `+aca/compgreenret` | `AcaCompGreenRet` | 4 | ✓ implemented |
+| `+aca/compgreenretlayer` | `AcaCompGreenRetLayer` | 4 | ✓ implemented |
 
-**Greenfun 분석**:
-- ✓ **거의 완전히 구현됨** (가장 높은 완성도)
-- ✓ ACA (Adaptive Cross-Approximation) 압축 포함
-- ✓ H-matrix 구현 포함
+**Greenfun analysis**:
+- ✓ **nearly fully implemented** (highest completeness)
+- ✓ includes ACA (Adaptive Cross-Approximation) compression
+- ✓ includes H-matrix implementation
 
 ---
 
-### 4. Simulation (시뮬레이션) 모듈
+### 4. Simulation module
 
-**Static 부분:**
-| MATLAB Class | Python Class | 상태 |
+**Static part:**
+| MATLAB Class | Python Class | Status |
 |---|---|---|
 | `dipolestat` | `DipoleStatEsource` | ✓ |
 | `dipolestatlayer` | `DipoleStatLayer` | ✓ |
@@ -110,8 +110,8 @@
 | `spectrumstat` | `SpectrumStat` | ✓ |
 | `spectrumstatlayer` | `SpectrumStatLayer` | ✓ |
 
-**Retarded (진동) 부분:**
-| MATLAB Class | Python Class | 상태 |
+**Retarded part:**
+| MATLAB Class | Python Class | Status |
 |---|---|---|
 | `dipoleret` | `DipoleRetEsource` | ✓ |
 | `dipoleretlayer` | `DipoleRetLayer` | ✓ |
@@ -123,30 +123,30 @@
 | `spectrumret` | `SpectrumRet` | ✓ |
 | `spectrumretlayer` | `SpectrumRetLayer` | ✓ |
 
-**Simulation 분석**:
-- ✓ **Static 및 Retarded 여기(excitation) 거의 완전히 구현**
-- ✓ 디폴라이저(dipole), 평면파(planewave), EELS, 스펙트럼 분석 포함
-- ✓ Mirror 대칭 구현됨
+**Simulation analysis**:
+- ✓ **Static and Retarded excitation nearly fully implemented**
+- ✓ includes dipole, plane wave, EELS, and spectrum analysis
+- ✓ Mirror symmetry implemented
 
 ---
 
-### 5. Mesh2d (메시 생성) 모듈
+### 5. Mesh2d (mesh generation) module
 
-| 항목 | 상태 |
+| Item | Status |
 |---|---|
-| `mesh2d` | ✓ 구현됨 |
-| `mesh2d_core` | ✓ 구현됨 |
-| `mesh_generators` | ✓ 구현됨 |
-| Darren Engwirda 툴박스 | ✓ 포팅됨 |
+| `mesh2d` | ✓ implemented |
+| `mesh2d_core` | ✓ implemented |
+| `mesh_generators` | ✓ implemented |
+| Darren Engwirda toolbox | ✓ ported |
 
-**Mesh2d 분석**:
-- ✓ **완전히 구현됨**
+**Mesh2d analysis**:
+- ✓ **fully implemented**
 
 ---
 
-### 6. Misc (+misc) 모듈
+### 6. Misc (+misc) module
 
-| 항목 | Python | 상태 |
+| Item | Python | Status |
 |---|---|---|
 | `units` | `mnpbem/misc/units.py` | ✓ |
 | `constants` | `mnpbem/utils/constants.py` | ✓ |
@@ -155,148 +155,148 @@
 | `gauss_legendre` | `mnpbem/misc/gauss_legendre.py` | ✓ |
 | `bemplot` | `mnpbem/misc/bemplot.py` | ✓ |
 
-**Misc 분석**:
-- ✓ **완전히 구현됨**
+**Misc analysis**:
+- ✓ **fully implemented**
 
 ---
 
-## 누락 항목 (Priority별)
+## Missing Items (by Priority)
 
-### Priority 1 (주요 기능, 예제 실행에 필수)
+### Priority 1 (major features, essential to run the demos)
 
-1. **`Particles/@compound` 메서드** (11개 중 10개 누락)
+1. **`Particles/@compound` methods** (10 of 11 missing)
    - `set()`, `eq()`, `ne()`, `ipart()`, `subsref()`, `dielectric()`, `mask()`, `index()`, `expand()`
-   - **영향도**: 다중-물질 입자 구성 불가 → `demospecret15` 등 복잡한 예제 실패
-   - **우선순위**: 매우 높음
+   - **Impact**: multi-material particle construction impossible → complex demos such as `demospecret15` fail
+   - **Priority**: very high
 
-2. **`BEM/@bemiter` 메서드** (10개 중 5개 누락)
+2. **`BEM/@bemiter` methods** (5 of 10 missing)
    - `solve()`, `setstat()`, `printstat()`, `setiter()` 
-   - **영향도**: 반복 솔버 기능 불완전 → 대규모 시뮬레이션 성능 저하
-   - **우선순위**: 높음
+   - **Impact**: incomplete iterative solver → degraded large-scale simulation performance
+   - **Priority**: high
 
-3. **`Particles/@polygon` 유틸리티** (17개 중 5개 누락)
+3. **`Particles/@polygon` utilities** (5 of 17 missing)
    - `plot()`, `norm()`, `interp1()`, `union()`, `symmetry()`
-   - **영향도**: 메시 생성 및 시각화 제한
-   - **우선순위**: 중간-높음
+   - **Impact**: limits mesh generation and visualization
+   - **Priority**: medium-high
 
-4. **Mirror 클래스 메서드 완성도** 
-   - `bemstateigmirror`, `bemstatmirror`, `bemretmirror` → 메서드 수 불명확
-   - 거울 대칭 기능 부분적 구현
-   - **우선순위**: 중간
+4. **Completeness of Mirror class methods** 
+   - `bemstateigmirror`, `bemstatmirror`, `bemretmirror` → method counts unclear
+   - mirror-symmetry functionality partially implemented
+   - **Priority**: medium
 
-### Priority 2 (고급 기능, 일부 예제에 필요)
+### Priority 2 (advanced features, needed for some demos)
 
-1. **`Particles/@layerstructure` 메서드** (13개 중 3개 누락)
-   - 정확한 누락 메서드 미파악 (대부분 내부 헬퍼)
-   - **영향도**: 다층 구조 시뮬레이션 제한
+1. **`Particles/@layerstructure` methods** (3 of 13 missing)
+   - exact missing methods not identified (mostly internal helpers)
+   - **Impact**: limits layered-structure simulation
 
-2. **`BEM/@bemstatlayer` 메서드** (7개 중 2개 누락)
-   - `subsref()`, `init()` 완전성 미상
-   - **영향도**: 다층 정적 BEM 기능 제한
+2. **`BEM/@bemstatlayer` methods** (2 of 7 missing)
+   - completeness of `subsref()`, `init()` unknown
+   - **Impact**: limits layered quasistatic BEM functionality
 
-3. **`BEM/@bemretlayer` 메서드** (6개 중 1개 누락)
-   - `solve()` 메서드 완전성 검증 필요
-   - **영향도**: 다층 진동 BEM 기능 제한
+3. **`BEM/@bemretlayer` methods** (1 of 6 missing)
+   - completeness of the `solve()` method needs verification
+   - **Impact**: limits layered retarded BEM functionality
 
-### Priority 3 (선택적, 내부 헬퍼/레거시)
+### Priority 3 (optional, internal helpers/legacy)
 
 1. **`Particles/@polygon3`**
-   - MATLAB에서도 메서드 불명확 (생성자만 존재)
-   - Python 구현 존재하나 매핑 불명확
+   - methods unclear even in MATLAB (only a constructor exists)
+   - a Python implementation exists but the mapping is unclear
 
 2. **`+aca/` (Adaptive Cross Approximation)**
-   - 고급 압축 기능 (대규모 문제용)
-   - 포팅 상태: ✓ 구현됨
+   - advanced compression feature (for large-scale problems)
+   - port status: ✓ implemented
 
-3. **메서드명 변경 호환성**
+3. **Method-rename compatibility**
    - MATLAB `round()` → Python `round_()`
    - MATLAB `sort()` → Python `sort_()`
-   - 레거시 별칭 추가 검토
+   - consider adding legacy aliases
 
 ---
 
-## Python 추가 구현 (MATLAB에 없음)
+## Python Additions (not in MATLAB)
 
-| 기능 | 파일 | 설명 |
+| Feature | File | Description |
 |---|---|---|
-| **Material 모델** | `mnpbem/materials/` | Drude, Lorentz, 표 기반 모델 |
-| **Mie 이론** | `mnpbem/mie/` | 구형 산란 (MIE 이론) |
-| **Field 메시 계산** | `mnpbem/simulation/meshfield.py` | 공간 메시 위 전자기장 계산 |
-| **Solver 팩토리** | `mnpbem/bem/solver_factory.py` | BEM 솔버 팩토리 패턴 |
-| **병렬화** | `mnpbem/utils/parallel.py` | 병렬 계산 지원 |
-| **테스트 스위트** | `mnpbem/tests/` | 20개 테스트 모듈 |
+| **Material models** | `mnpbem/materials/` | Drude, Lorentz, table-based models |
+| **Mie theory** | `mnpbem/mie/` | spherical scattering (Mie theory) |
+| **Field mesh computation** | `mnpbem/simulation/meshfield.py` | electromagnetic field computation on a spatial mesh |
+| **Solver factory** | `mnpbem/bem/solver_factory.py` | BEM solver factory pattern |
+| **Parallelization** | `mnpbem/utils/parallel.py` | parallel computation support |
+| **Test suite** | `mnpbem/tests/` | 20 test modules |
 
 ---
 
-## 메서드 매핑 가이드
+## Method Mapping Guide
 
-### 연산자 오버로딩
+### Operator overloading
 
-| MATLAB | Python | 의미 |
+| MATLAB | Python | Meaning |
 |---|---|---|
-| `obj \ exc` | `obj.__truediv__(exc)` 또는 `obj / exc` | 표면 전하 계산 |
-| `obj * sig` | `obj.__mul__(sig)` | 유도 전위 계산 |
+| `obj \ exc` | `obj.__truediv__(exc)` or `obj / exc` | surface charge computation |
+| `obj * sig` | `obj.__mul__(sig)` | induced potential computation |
 
-**주의**: Python은 `\` 연산자가 없으므로 대신 `/` 또는 `.solve()`를 사용
+**Note**: Python has no `\` operator, so use `/` or `.solve()` instead
 
-### 메서드명 규칙
+### Method-naming conventions
 
-| MATLAB | Python | 이유 |
+| MATLAB | Python | Reason |
 |---|---|---|
-| `round()` | `round_()` | Python 내장 `round()` 충돌 회피 |
-| `sort()` | `sort_()` | Python 내장 `list.sort()` 명확성 |
-| `subsref()` | `__getitem__()` | Python 인덱싱 컨벤션 |
-| `init()` | `__init__()` | Python 생성자 |
+| `round()` | `round_()` | avoid clash with Python built-in `round()` |
+| `sort()` | `sort_()` | clarity vs Python built-in `list.sort()` |
+| `subsref()` | `__getitem__()` | Python indexing convention |
+| `init()` | `__init__()` | Python constructor |
 
 ---
 
-## 데모 실행 가능성 평가
+## Demo Runnability Assessment
 
-### 완전히 작동하는 예제
-- ✓ `demo_nanosphere_spectrum` - 나노구 산란 스펙트럼
-- ✓ 단순 입자 (구, 타원체)
-- ✓ 정적/진동 다중극 여기
-- ✓ 평면파 여기
-- ✓ EELS 계산
+### Fully working demos
+- ✓ `demo_nanosphere_spectrum` - nanosphere scattering spectrum
+- ✓ simple particles (sphere, ellipsoid)
+- ✓ quasistatic/retarded multipole excitation
+- ✓ plane-wave excitation
+- ✓ EELS computation
 
-### 문제가 있을 수 있는 예제
-- ⚠ 다중-물질 입자 (`compound` 메서드 부족)
-- ⚠ 대규모 시뮬레이션 (반복 솔버 미흡)
-- ⚠ 고급 메시 조작 (`polygon` 유틸리티 부족)
-- ⚠ 다층 구조 (레이어 메서드 부분 미흡)
-
----
-
-## 권장 사항
-
-### 즉시 해결 (1주)
-
-1. **`Particles/@compound` 전체 포팅**
-   - 영향도 높음, 규모 중간
-   - 핵심: `subsref()`, `dielectric()`, `mask()`, `index()` 메서드
-
-2. **`BEM/@bemiter.solve()` 검증 및 완성**
-   - 반복 솔버 안정성 확보
-
-### 단기 개선 (2-3주)
-
-3. **`Particles/@polygon` 유틸리티 메서드 추가**
-   - `plot()`, `norm()`, `symmetry()` 등
-
-4. **Mirror 클래스 메서드 명시화**
-   - 각 mirror 클래스의 메서드 목록 문서화
-
-### 중기 정비 (1개월)
-
-5. **메서드명 호환성 레이어**
-   - 레거시 별칭 추가 (e.g., `round` → `round_()`)
-
-6. **테스트 커버리지 확대**
-   - 누락 메서드별 테스트 작성
+### Demos that may have issues
+- ⚠ multi-material particles (insufficient `compound` methods)
+- ⚠ large-scale simulation (incomplete iterative solver)
+- ⚠ advanced mesh manipulation (insufficient `polygon` utilities)
+- ⚠ layered structures (layer methods partially incomplete)
 
 ---
 
-## 완성도 통계
+## Recommendations
+
+### Immediate (1 week)
+
+1. **Full port of `Particles/@compound`**
+   - high impact, medium scope
+   - core: `subsref()`, `dielectric()`, `mask()`, `index()` methods
+
+2. **Verify and complete `BEM/@bemiter.solve()`**
+   - ensure iterative solver stability
+
+### Short-term improvements (2-3 weeks)
+
+3. **Add `Particles/@polygon` utility methods**
+   - `plot()`, `norm()`, `symmetry()`, etc.
+
+4. **Clarify Mirror class methods**
+   - document the method list for each mirror class
+
+### Medium-term maintenance (1 month)
+
+5. **Method-name compatibility layer**
+   - add legacy aliases (e.g., `round` → `round_()`)
+
+6. **Expand test coverage**
+   - write tests for each missing method
+
+---
+
+## Completeness Statistics
 
 ```
 Module         MATLAB  Python  Completion
@@ -312,16 +312,16 @@ Base             8       ~8     100%  ✓
 TOTAL          606     ~521      86%
 ```
 
-**주요 결론**:
-- **전체 완성도**: ~86% (메서드 수 기준)
-- **높은 완성도**: Greenfun, Simulation, Mesh2d, Misc
-- **개선 필요**: Particles (특히 `compound`), BEM (특히 반복 솔버)
+**Key conclusions**:
+- **Overall completeness**: ~86% (by method count)
+- **High completeness**: Greenfun, Simulation, Mesh2d, Misc
+- **Needs improvement**: Particles (especially `compound`), BEM (especially the iterative solver)
 
 ---
 
-## 사용자 가이드
+## User Guide
 
-### Python에서 MATLAB 코드 마이그레이션
+### Migrating MATLAB code to Python
 
 ```python
 # MATLAB:
@@ -333,28 +333,28 @@ TOTAL          606     ~521      86%
 # Python:
 from mnpbem import *
 bem = BEMStat(p)
-sig = bem / exc  # 또는 sig = bem.solve(exc)
+sig = bem / exc  # or sig = bem.solve(exc)
 phi = bem * sig
 E = bem.field(sig)
 ```
 
-### API 불일치 주의
+### API mismatch caveats
 
-1. **연산자**: MATLAB `\` → Python `/` (또는 `.solve()`)
-2. **메서드명**: `round()` → `round_()`, `sort()` → `sort_()`
-3. **다중 물질**: `compound` 메서드 누락 → 임시 해결책 필요
+1. **Operators**: MATLAB `\` → Python `/` (or `.solve()`)
+2. **Method names**: `round()` → `round_()`, `sort()` → `sort_()`
+3. **Multi-material**: missing `compound` methods → a workaround is needed
 
 ---
 
-## 감사 결론
+## Audit Conclusion
 
-MNPBEM Python 포팅은 **핵심 기능 (86%) 기준으로는 상당히 완성되었으나**,  
-**메서드 수준 (65%) 기준으로는 주요 누락이 존재**합니다.
+The MNPBEM Python port is **fairly complete by core-feature measure (86%)**,  
+but **has major gaps at the method level (65%)**.
 
-**즉시 해결 필요:**
-- `Particles/@compound` 전체 포팅 (매우 높은 우선순위)
-- `BEM/@bemiter` 반복 솔버 완성도 향상
-- 유틸리티 메서드 (`polygon`, `layerstructure`) 추가
+**Immediate action needed:**
+- Full port of `Particles/@compound` (very high priority)
+- Improve completeness of the `BEM/@bemiter` iterative solver
+- Add utility methods (`polygon`, `layerstructure`)
 
-**현황**: 대부분의 기본 시뮬레이션 작동하나, 복잡한 기하/다층 구조에서 제한
+**Current state**: most basic simulations work, but complex geometry / layered structures are limited
 

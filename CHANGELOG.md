@@ -11,14 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **GPU correctness audit (17-18 bug)**: 5 agent (A1-A5) parallel audit
-  + Phase 1 integration audit 결과. 모든 (BEM solver × excitation ×
-  layer / mirror) 조합이 GPU 모드에서 CPU 기준과 1e-7 face / 1e-9
-  cross section 으로 일치함.
+- **GPU correctness audit (17-18 bug)**: results of a 5-agent (A1-A5)
+  parallel audit + Phase 1 integration audit. Every (BEM solver ×
+  excitation × layer / mirror) combination matches the CPU baseline in
+  GPU mode to 1e-7 per face / 1e-9 per cross section.
 
 #### A1 — BEMRet / BEMRetLayer
 
-- disjoint dimer 비균일 eps edge case 회귀 가드 추가.
+- Added a regression guard for the disjoint-dimer non-uniform eps edge case.
 
 #### A2 — BEMRetIter / BEMRetLayerIter
 
@@ -26,124 +26,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### A3 — BEMStat family
 
-- `clear()` stale-cache + GPU LU 누수.
+- `clear()` stale-cache + GPU LU leak.
 
-#### A4 — Mirror BEM 4 종
+#### A4 — Mirror BEM (4 types)
 
-- `CompGreenRetMirror` / `CompGreenStatMirror` eval cupy 결과 host promotion.
+- Host promotion of `CompGreenRetMirror` / `CompGreenStatMirror` eval cupy results.
 - `BEMStatEigMirror` half-mesh index range fix.
 - `BEMLayerMirror` dummy assertion.
 
-#### A5 — Excitation runners 17 종
+#### A5 — Excitation runners (17 types)
 
-- PlaneWaveStat / DipoleStat / DipoleRet / DipoleStatLayer /
-  DipoleRetLayer / EELSStat / EELSRet 의 cupy sig 멤버 host
-  materialization.
+- Host materialization of the cupy sig members of PlaneWaveStat /
+  DipoleStat / DipoleRet / DipoleStatLayer / DipoleRetLayer / EELSStat /
+  EELSRet.
 
 #### Phase 1 (integration)
 
-- **CompGreenRet `_matmul` / `_cross`**: cupy operand 들어올 때
-  silent zero 반환 → host promotion 추가.
-- **BEM solver `solve()` 반환**: cupy sig 멤버를 user-facing host
-  변환 (BEMRet, BEMStat, BEMRetLayer, BEMStatLayer, BEMRetMirror,
-  BEMStatMirror). 데모 스크립트의 `np.asarray(sig.sig1)` 류 호출
-  안전.
-- **`lu_solve_native` GPU LU + cupy b** residency 회귀 가드 추가.
-- EELS × Layer integration smoke test 신규 (EELS × Mirror 는
-  미지원 — MATLAB Demo set 에도 없는 조합).
+- **CompGreenRet `_matmul` / `_cross`**: added host promotion where a
+  cupy operand used to cause a silent zero return.
+- **BEM solver `solve()` return**: convert cupy sig members to
+  user-facing host (BEMRet, BEMStat, BEMRetLayer, BEMStatLayer,
+  BEMRetMirror, BEMStatMirror). Makes `np.asarray(sig.sig1)`-style calls
+  in demo scripts safe.
+- Added a `lu_solve_native` GPU LU + cupy b residency regression guard.
+- New EELS × Layer integration smoke test (EELS × Mirror is
+  unsupported — a combination that does not exist in the MATLAB Demo set
+  either).
 
-### 검증
+### Verification
 
 - 72 demo regression (`/tmp/mnpbem_demo_comparison`):
-  v1.7 GPU 모드 BAD 0 / 72, perf 65 / 72.
+  v1.7 GPU mode BAD 0 / 72, perf 65 / 72.
 
 ## [1.6.4] - 2026-05-08
 
 ### Fixed
 
-- **HMatrix matvec backend/dtype 일관성** (Phase 1): 입력이
-  numpy 인데 일부 ACA 블록이 cupy 거주하는 경우 `mtimes_vec`
-  내부에서 host result + GPU block 간 backend 가 섞이는 경로
-  가 있었음. 이제 블록 GPU 거주 여부를 sniff 하여 destination
-  backend 를 통일하고, 끝에서 입력 backend 로 다시 변환하여
-  numpy 입력 → numpy 출력을 보장한다. `bem_ret_iter._afun` 의
-  6 곳 HMatrix matvec 호출에는 방어용 `_ensure_numpy` wrapper
-  추가 (정상 경로에서는 no-op, host slice assignment 안전성
-  보장).
-- 영향: GPU + iter+hmat+precond 경로에서 numpy/cupy mix 로
-  인한 무작위적 실패/속도 저하 차단. 1176-face Au@Ag dimer
-  에서 ext = 25759.0950 (CPU/GPU/모든 모드 일치, rel diff
-  1e-15).
+- **HMatrix matvec backend/dtype consistency** (Phase 1): when the input
+  was numpy but some ACA blocks resided on cupy, there was a path inside
+  `mtimes_vec` where the backend of the host result and the GPU blocks
+  got mixed. It now sniffs whether the blocks reside on the GPU to unify
+  the destination backend, then converts back to the input backend at the
+  end, guaranteeing numpy input → numpy output. A defensive
+  `_ensure_numpy` wrapper was added to the 6 HMatrix matvec call sites in
+  `bem_ret_iter._afun` (a no-op on the normal path, ensuring host
+  slice-assignment safety).
+- Impact: prevents random failures / slowdowns caused by numpy/cupy mix
+  on the GPU + iter+hmat+precond path. On a 1176-face Au@Ag dimer,
+  ext = 25759.0950 (CPU/GPU/all modes agree, rel diff 1e-15).
 
 ### Added
 
-- **`MNPBEM_AGGRESSIVE_GPU_MFUN=1` 환경변수** (Phase 2 opt-in):
-  `BEMRetIter._mfun` 의 dense Sigma1 / L_diff / L1 행렬을 GPU
-  에 업로드하여 GMRES iterate 동안 호출되는 Sigma1·v / L·v
-  를 cupy matmul 로 디스패치. 메모리 capacity 부족 시 tier
-  별 자동 fallback (Sigma1 only → Sigma1 + L_diff → 모두).
-  flag off (default) 시 v1.6.3 와 bit-identical.
-- 측정:
-  - 5400-face Au@Ag dimer: 111s → 103s (1.08x speedup, 풀
-    Sigma1+L_diff+L1 GPU 거주).
-  - 12672-face Au@Ag dimer: 608s → 620s (flat). 12672 face
-    스케일에서는 GMRES 가 1 outer iter 로 수렴 (mfun call =
-    3 회) → mfun GPU dispatch 는 의미 없음. 효과는 GMRES iter
-    가 많은 wider geometry / 다른 sweep 에서 나타남.
-- 회귀 가드: `mnpbem/tests/test_mfun_gpu_dispatch.py` (1136-
-  face Au@Ag dimer 에서 flag off / on rel diff < 1e-10 검증).
+- **`MNPBEM_AGGRESSIVE_GPU_MFUN=1` environment variable** (Phase 2
+  opt-in): uploads the dense Sigma1 / L_diff / L1 matrices of
+  `BEMRetIter._mfun` to the GPU so that the Sigma1·v / L·v calls made
+  during GMRES iteration are dispatched via cupy matmul. When memory
+  capacity is insufficient, it falls back automatically tier by tier
+  (Sigma1 only → Sigma1 + L_diff → all). With the flag off (default) it
+  is bit-identical to v1.6.3.
+- Measurements:
+  - 5400-face Au@Ag dimer: 111s → 103s (1.08x speedup, full
+    Sigma1+L_diff+L1 resident on GPU).
+  - 12672-face Au@Ag dimer: 608s → 620s (flat). At the 12672-face
+    scale, GMRES converges in 1 outer iter (mfun call =
+    3 times) → mfun GPU dispatch is meaningless. The benefit shows up
+    on wider geometry / other sweeps where GMRES takes many iterations.
+- Regression guard: `mnpbem/tests/test_mfun_gpu_dispatch.py` (verifies
+  flag off / on rel diff < 1e-10 on a 1136-face Au@Ag dimer).
 
 ## [1.6.3] - 2026-05-05
 
 ### Changed
 
-- **BEMRetIter precond GPU LU 하이브리드 파이프라인**:
-  N >= 8000 브랜치에서 전부 host scipy 로 라우팅하던 기존
-  preconditioner 를 cuSOLVER getrs LU + host MKL 행렬곱
-  하이브리드로 재구성. G/Delta/Sigma_mat 의 LU 인수분해를
-  GPU 에서 실행하고 `('gpu', lu, piv)` 태그로 보존하여
-  `_mfun` 의 GMRES iterate 가 cuSOLVER getrs (~5 ms / call)
-  로 라우팅됨. G^{-1} / Sigma1 / L1 GEMM 은 132-core MKL
-  파이프라인이 더 빠르므로 host scipy 에 위임.
-- `_gpu_precond_capacity_ok(N)`: 7 N² × 16 byte 가용 GPU
-  메모리 검사 후 시도, 부족하면 자동 host fallback +
-  `_GpuPrecondOOM` raise 시에도 host scipy 에 안전 fallback.
-- `MNPBEM_GPU_PRECOND_HOST_THRESHOLD` env (default 32768)
-  로 강제 host fallback 가능.
+- **BEMRetIter precond GPU LU hybrid pipeline**:
+  the existing preconditioner, which routed the entire N >= 8000 branch
+  to host scipy, was restructured into a cuSOLVER getrs LU + host MKL
+  matrix-multiply hybrid. The LU factorization of G/Delta/Sigma_mat is
+  run on the GPU and preserved with a `('gpu', lu, piv)` tag, so that the
+  GMRES iterate of `_mfun` is routed through cuSOLVER getrs (~5 ms /
+  call). The G^{-1} / Sigma1 / L1 GEMMs are delegated to host scipy
+  because the 132-core MKL pipeline is faster.
+- `_gpu_precond_capacity_ok(N)`: attempts the GPU path after checking
+  available GPU memory against 7 N² × 16 byte; if insufficient it falls
+  back to host automatically, and it also falls back safely to host scipy
+  even when `_GpuPrecondOOM` is raised.
+- `MNPBEM_GPU_PRECOND_HOST_THRESHOLD` env (default 32768) can force a
+  host fallback.
 
 ## [1.6.2] - 2026-05-02
 
 ### Fixed
 
-- **VRAM share env vars wiring** (C agent v1.6.0/v1.6.1 Tier-3 benchmark 발견):
-  `MNPBEM_VRAM_SHARE_GPUS=N` + `MNPBEM_VRAM_SHARE_BACKEND=cusolvermg`
-  set 되어도 BEM solver (`bem_ret_iter.py`, `bem_stat_layer.py`,
-  `bem_ret_layer.py` 등) 가 `lu_factor_dispatch` 호출 시 `n_gpus` kwarg
-  명시 전달 안 함 → cuSolverMg 활성화 실패, 12672-face dense LU 가
-  49 GB single-GPU OOM. fix:
-  - `mnpbem/utils/gpu.py::_vram_share_env_defaults()` 헬퍼 신설
-  - `lu_factor_dispatch` / `solve_dispatch` 가 `n_gpus` / `backend` /
-    `device_ids` kwarg 미지정 시 env vars (`MNPBEM_VRAM_SHARE_GPUS`,
-    `MNPBEM_VRAM_SHARE_BACKEND`, `MNPBEM_VRAM_SHARE_DEVICE_IDS`) 자동
-    읽음. 명시 kwarg 가 항상 우선.
-  - `MNPBEM_VRAM_SHARE_DEVICE_IDS` (comma-separated) 신규 지원
-  - `MNPBEM_VRAM_SHARE=0` master switch 로 강제 비활성 가능
-  - 기존 `bem_ret.py::_vram_share_lu_kwargs` 명시 전달 경로와 호환
-    (kwarg 우선이므로 동작 변경 X)
+- **VRAM share env vars wiring** (found in the C agent v1.6.0/v1.6.1
+  Tier-3 benchmark): even with `MNPBEM_VRAM_SHARE_GPUS=N` +
+  `MNPBEM_VRAM_SHARE_BACKEND=cusolvermg` set, the BEM solvers
+  (`bem_ret_iter.py`, `bem_stat_layer.py`, `bem_ret_layer.py`, etc.) did
+  not explicitly pass the `n_gpus` kwarg when calling
+  `lu_factor_dispatch` → cuSolverMg failed to activate, and the
+  12672-face dense LU hit a 49 GB single-GPU OOM. fix:
+  - Added the `mnpbem/utils/gpu.py::_vram_share_env_defaults()` helper.
+  - When the `n_gpus` / `backend` / `device_ids` kwargs are not
+    specified, `lu_factor_dispatch` / `solve_dispatch` now read the env
+    vars (`MNPBEM_VRAM_SHARE_GPUS`, `MNPBEM_VRAM_SHARE_BACKEND`,
+    `MNPBEM_VRAM_SHARE_DEVICE_IDS`) automatically. Explicit kwargs always
+    take precedence.
+  - New support for `MNPBEM_VRAM_SHARE_DEVICE_IDS` (comma-separated).
+  - `MNPBEM_VRAM_SHARE=0` master switch can force it off.
+  - Compatible with the existing `bem_ret.py::_vram_share_lu_kwargs`
+    explicit-pass path (no behavior change, since kwargs take
+    precedence).
 
 ### Added
 
-- `mnpbem/tests/test_vram_share_env_wiring.py` (15 tests, mock cuSolverMg
-  backend로 CPU-only host 에서도 dispatch 라우팅 검증)
+- `mnpbem/tests/test_vram_share_env_wiring.py` (15 tests, verifies
+  dispatch routing even on a CPU-only host using a mock cuSolverMg
+  backend)
 
 ### Verified
 
-- 4× RTX A6000 smoke: `MNPBEM_VRAM_SHARE_GPUS=2` 환경변수만으로 256×256
-  complex LU `lu_factor_dispatch` → mgpu 분기 진입, residual 9.3e-16
+- 4× RTX A6000 smoke: with just the `MNPBEM_VRAM_SHARE_GPUS=2`
+  environment variable, a 256×256 complex LU `lu_factor_dispatch` enters
+  the mgpu branch, residual 9.3e-16
 
 ### Known issues
 
-- Tier-3 12672-face cuSolverMg 정식 batch benchmark 미수행 (M5+ 후속)
+- Tier-3 12672-face cuSolverMg formal batch benchmark not yet run (M5+
+  follow-up)
 
 ## [1.6.1] - 2026-05-02
 
@@ -155,154 +163,162 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `compgreen_ret_layer.py:651` shape mismatch (Au@Ag core-shell on substrate)
-- BEM assembly single-thread CPU bottleneck (Numba JIT 적용)
+- BEM assembly single-thread CPU bottleneck (Numba JIT applied)
 
 ### Performance
 
-- 3k+ face mesh assembly ~70% 절감 (Numba)
+- ~70% reduction in 3k+ face mesh assembly (Numba)
 
 ### Known issues
 
-- VRAM share env vars wiring 미완 — v1.6.x 후속
-- Tier-3 timing benchmark 정식 측정 미완 — batch 재시도 권장
+- VRAM share env vars wiring incomplete — v1.6.x follow-up
+- Tier-3 timing benchmark not yet formally measured — batch retry
+  recommended
 
 ## [1.6.0] - 2026-05-02
 
 ### Added
 
-- `BEMRetIter` `schur_eps_form='auto'` 옵션 — non-uniform eps 자동 감지
-- `SchurIterOperator` `eps_form='pointwise'|'operator'` 분기 + threshold 4096
+- `BEMRetIter` `schur_eps_form='auto'` option — automatic detection of non-uniform eps
+- `SchurIterOperator` `eps_form='pointwise'|'operator'` branch + threshold 4096
 - `BEMRetLayerIter` operator-form (substrate + iter + multi-material)
 - pymnpbem `--str-conf <X.py> --sim-conf <Y.py> --verbose` CLI
-- pymnpbem `mesh_density` (nm) 우선 (n_per_edge 보다)
-- 신규 tests: test_b_schur, test_iter_convergence_layer, test_mesh_density_priority, test_cli_str_sim
+- pymnpbem `mesh_density` (nm) takes priority (over n_per_edge)
+- New tests: test_b_schur, test_iter_convergence_layer, test_mesh_density_priority, test_cli_str_sim
 
 ### Fixed
 
-- 60-face nonlocal+schur+iter+hmat 25 min GMRES hang → 6:51 수렴
+- 60-face nonlocal+schur+iter+hmat 25 min GMRES hang → converges in 6:51
 - BEMRetLayerIter multi-material drift (Au+Ag dimer on glass)
 
 ### Performance
 
-- (perf 측정값은 PERFORMANCE.md §11.5)
+- (perf measurements are in PERFORMANCE.md §11.5)
 
 ### Known limits / Deferred
 
-- BEM assembly perf (single-thread CPU bound) — v1.6.x 후속
-- compgreen_ret_layer multi-particle indexing — v1.6.x 후속
+- BEM assembly perf (single-thread CPU bound) — v1.6.x follow-up
+- compgreen_ret_layer multi-particle indexing — v1.6.x follow-up
 
 ## [1.5.2] - 2026-05-02
 
 ### Fixed
 
 - **Bug 5 — `HMatrix.full()` numpy/cupy interop** (`mnpbem/greenfun/hmatrix.py:374`).
-  v1.5.1 에서 `MNPBEM_GPU_NATIVE=1` 활성 시 `CompGreenRet` 가 cupy ndarray
-  를 반환하면 `HMatrix.val[i]` 가 cupy 가 되는데, `full()` 은 host numpy
-  buffer 에 cupy slice 를 implicit cast 하다 `TypeError: Implicit
-  conversion to a NumPy array is not allowed.` 로 실패. fix:
-  `full(xp=None)` 이 val/lhs/rhs 에서 cupy 자동 감지 → cupy backend 로
-  `mat` 할당, 블록별 numpy ↔ cupy 변환 헬퍼로 device 통일. caller 가
-  `xp=np` 또는 `xp=cupy` 강제도 가능.
-- **Bug 6 — `_plus_hmat` / `_truncate_block` backend 통일**. region (0,0)
-  val 은 cupy, region (1,0) val 은 numpy 인 경우 (Au@Ag 처럼 multi-region
-  + cross-connectivity) `G11 - G21` 이 `Unsupported type
-  <numpy.ndarray>` 로 실패. fix: `_same_backend(a, b)` 헬퍼로 한쪽이라도
-  cupy 면 양쪽 cupy 로 승격, `_truncate_block` QR/SVD 도 lhs 가 cupy 면
-  `xp=cupy` dispatch.
-- **Tier-3 12672-face Au@Ag GPU full validation 통과** —
-  `MNPBEM_GPU=1 + iter+hmat+precond + multi-GPU wavelength-split` 경로가
-  처음으로 end-to-end 정상 완료. v1.5.0/v1.5.1 의 BAD grade 해소.
+  In v1.5.1, when `MNPBEM_GPU_NATIVE=1` is active and `CompGreenRet`
+  returns a cupy ndarray, `HMatrix.val[i]` becomes cupy, but `full()`
+  fails with `TypeError: Implicit conversion to a NumPy array is not
+  allowed.` when it implicit-casts a cupy slice into a host numpy buffer.
+  fix: `full(xp=None)` auto-detects cupy from val/lhs/rhs → allocates
+  `mat` on the cupy backend and unifies the device with a per-block
+  numpy ↔ cupy conversion helper. The caller can also force `xp=np` or
+  `xp=cupy`.
+- **Bug 6 — `_plus_hmat` / `_truncate_block` backend unification**. When
+  the region (0,0) val is cupy and the region (1,0) val is numpy (e.g.
+  multi-region + cross-connectivity as in Au@Ag), `G11 - G21` fails with
+  `Unsupported type <numpy.ndarray>`. fix: the `_same_backend(a, b)`
+  helper promotes both sides to cupy if either is cupy, and
+  `_truncate_block` QR/SVD also dispatches with `xp=cupy` when lhs is
+  cupy.
+- **Tier-3 12672-face Au@Ag GPU full validation passed** —
+  the `MNPBEM_GPU=1 + iter+hmat+precond + multi-GPU wavelength-split`
+  path completed end-to-end successfully for the first time. Resolves the
+  BAD grade of v1.5.0/v1.5.1.
 
 ### Added
 
-- `mnpbem/tests/test_hmatrix_full_consistency.py` — 8 tests, cupy/numpy
-  full() 일치, 강제 xp 인자, mixed blocks, ACA dense=cupy/lhs=numpy
-  realistic 시나리오, BEMRetIter._init_matrices GPU end-to-end smoke.
+- `mnpbem/tests/test_hmatrix_full_consistency.py` — 8 tests: cupy/numpy
+  full() agreement, forced xp argument, mixed blocks, the realistic ACA
+  dense=cupy/lhs=numpy scenario, and BEMRetIter._init_matrices GPU
+  end-to-end smoke.
 
 ### Backward compatibility
 
-100% backward compatible with v1.5.1. `HMatrix.full()` signature 가
-`full(xp=None)` 로 확장되어도 기본값이 auto-detect 이므로 기존 caller
-변경 불필요.
+100% backward compatible with v1.5.1. Even though the `HMatrix.full()`
+signature is extended to `full(xp=None)`, the default is auto-detect, so
+no existing caller needs to change.
 
 ## [1.5.1] - 2026-05-02
 
 ### Fixed
 
-- **4 mnpbem GPU 버그 fix** (Au@Ag GPU full mesh acceptance 위해)
-  - `mnpbem/bem/bem_ret.py` (Bug 1) — CPU init path `G1i/G2i/Deltai`
-    LU 백엔드 일관화.
-  - `mnpbem/bem/bem_ret_iter.py:264` (Bug 2) — `Sigma1 = H1 @ G1i`
-    numpy/cupy mix 제거 (dense LU preconditioner 빌드).
-  - `mnpbem/greenfun/hmatrix.py:250` (Bug 3) — `_aca_block`
-    `cols[pivot_col_local]` cupy/numpy index 혼용 방어.
-  - `mnpbem/utils/multi_gpu.py::_worker` (Bug 4) — `BEM` 클래스를
-    `bem_class` 인자로 명시적으로 받도록 확장. 이전엔 `simulation.type=ret_iter`
-    여도 wavelength-split 경로가 `BEMRet` (dense) 강제.
+- **4 mnpbem GPU bug fixes** (for Au@Ag GPU full-mesh acceptance)
+  - `mnpbem/bem/bem_ret.py` (Bug 1) — unified the `G1i/G2i/Deltai` LU
+    backend on the CPU init path.
+  - `mnpbem/bem/bem_ret_iter.py:264` (Bug 2) — removed the `Sigma1 = H1 @
+    G1i` numpy/cupy mix (dense LU preconditioner build).
+  - `mnpbem/greenfun/hmatrix.py:250` (Bug 3) — guarded against
+    cupy/numpy index mixing in `_aca_block` `cols[pivot_col_local]`.
+  - `mnpbem/utils/multi_gpu.py::_worker` (Bug 4) — extended to receive
+    the `BEM` class explicitly via a `bem_class` argument. Previously the
+    wavelength-split path forced `BEMRet` (dense) even when
+    `simulation.type=ret_iter`.
 - **BEMRetIter operator-form eps fix** — Au@Ag (multi-material) iter
-  drift 70% → 0%. Non-uniform eps + cross-connectivity 케이스에서
-  iter formulation 알고리즘 버그. dense `BEMRet` 의
-  `L1 = G1·diag(eps1)·G1⁻¹` 와 일치.
+  drift 70% → 0%. An iter-formulation algorithm bug in the non-uniform
+  eps + cross-connectivity case. Now matches the dense `BEMRet`
+  `L1 = G1·diag(eps1)·G1⁻¹`.
 - **`pymnpbem_simulation` `simulation.type=ret + iterative=true`
-  자동 라우팅** (Issue A) — `dispatch_single_node` /
-  `convert_py_to_yaml` 양쪽에서 `_iter` variant 로 in-place rewrite.
+  automatic routing** (Issue A) — in-place rewrite to the `_iter` variant
+  in both `dispatch_single_node` and `convert_py_to_yaml`.
 - **`pymnpbem_simulation.dispatch.multi_gpu`** —
-  wavelength-split 경로가 `simulation.type` 에서 `bem_class` 를
-  유도하여 `solve_spectrum_multi_gpu(bem_class=…)` 로 전달.
-  `compute.iter.{hmatrix, preconditioner, schur, htol, tol, maxit}` 도
-  worker BEM 으로 전파. v1.5.0 까지는 multi-GPU 경로가 항상 `BEMRet`
-  를 강제하던 Bug 4 후속을 wrapper-side 로 메움.
+  the wavelength-split path derives `bem_class` from `simulation.type`
+  and passes it to `solve_spectrum_multi_gpu(bem_class=…)`. It also
+  propagates `compute.iter.{hmatrix, preconditioner, schur, htol, tol,
+  maxit}` to the worker BEM. This is a wrapper-side follow-up to Bug 4,
+  where up through v1.5.0 the multi-GPU path always forced `BEMRet`.
 
 ### Added
 
 - `mnpbem/tests/test_gpu_cupy_consistency.py` — 14 tests, GPU
-  cupy/numpy interop 회귀.
+  cupy/numpy interop regression.
 - `mnpbem/tests/test_iter_convergence.py` — 8 tests, BEMRetIter
-  operator-form 회귀 (case_g 1136-face Au@Ag).
+  operator-form regression (case_g 1136-face Au@Ag).
 
 ### Known issues
 
-- `BEMRetLayerIter` 에 같은 operator-form eps 패치 필요 — substrate
-  + iter 결합 시나리오. v1.5.2 또는 v1.6 후속.
-- `mnpbem/tests/test_schur_iter.py::TestBEMRetIterSchur::test_schur_dense_matches_no_schur` 가
-  현재 환경에서 hang — 별도 조사 항목 (회귀 통계에서 단독 격리; 다른
-  10 schur_iter 테스트는 PASS).
-- **Bug 5 — `mnpbem/greenfun/hmatrix.py:374` `HMatrix.full()` 의
-  cupy/numpy mix** — `BEMRetIter(hmatrix=True, preconditioner='auto')`
-  경로에서 dense LU preconditioner 빌드 시 `_compress` → `hmat.full()`
-  가 cupy `self.val[i]` 를 numpy `mat` 으로 implicit cast 하려다 실패.
-  Tier-3 12672-face Au@Ag GPU iter 시나리오에서 발견. v1.5.1 의 α
-  4 GPU 버그 fix 와 동일 카테고리. 후속 (v1.5.2) 에서 `xp.zeros` /
-  `cupy.asnumpy` dispatch 로 정리 필요.
+- `BEMRetLayerIter` needs the same operator-form eps patch — the
+  substrate + iter combined scenario. v1.5.2 or v1.6 follow-up.
+- `mnpbem/tests/test_schur_iter.py::TestBEMRetIterSchur::test_schur_dense_matches_no_schur`
+  hangs in the current environment — a separate investigation item
+  (isolated on its own in the regression stats; the other 10 schur_iter
+  tests PASS).
+- **Bug 5 — cupy/numpy mix in `mnpbem/greenfun/hmatrix.py:374`
+  `HMatrix.full()`** — on the `BEMRetIter(hmatrix=True,
+  preconditioner='auto')` path, during the dense LU preconditioner build,
+  `_compress` → `hmat.full()` fails trying to implicit-cast a cupy
+  `self.val[i]` into a numpy `mat`. Found in the Tier-3 12672-face Au@Ag
+  GPU iter scenario. Same category as the α 4-GPU bug fixes of v1.5.1.
+  Needs cleanup via `xp.zeros` / `cupy.asnumpy` dispatch in a follow-up
+  (v1.5.2).
 
 ## [1.5.0] - 2026-05-03
 
 ### Added
 
-- **H-matrix LU preconditioner** for iterative BEM solvers (Lane E2 후속)
+- **H-matrix LU preconditioner** for iterative BEM solvers (Lane E2 follow-up)
   - `BEMRetIter(p, hmatrix=True, preconditioner='auto', htol_precond=1e-4)`,
-    `BEMStatIter` 동일.
-  - 256-face sphere GMRES iter 55 → 1 (55× 감소).
+    same for `BEMStatIter`.
+  - 256-face sphere GMRES iter 55 → 1 (55× reduction).
   - modes: `auto` (default ON when `hmatrix=True`), `none`, `hlu_dense`,
     `hlu_tree`.
-  - 구현: `mnpbem/bem/preconditioner.py` (`HMatrixLUPreconditioner`).
+  - Implementation: `mnpbem/bem/preconditioner.py` (`HMatrixLUPreconditioner`).
 - **Schur complement × Iterative BEM** integration
-  - `BEMRetIter(p, schur=True, hmatrix=True)` (둘 다 ON 가능; v1.4
-    까지는 `NotImplementedError`).
+  - `BEMRetIter(p, schur=True, hmatrix=True)` (both can be ON; through
+    v1.4 this was a `NotImplementedError`).
   - `SchurIterOperator` `LinearOperator`:
     `A_eff(x_c) = A_cc x_c − A_cs · A_ss⁻¹ · A_sc x_c`.
   - `g_ss_solver`: `lu_dense` / `gmres` / `callable` / `auto`.
-  - 568-face nano-gap nonlocal: solve 21.17s → 16.65s (21.3% 절감).
-  - 구현: `mnpbem/bem/schur_iter_helpers.py`.
+  - 568-face nano-gap nonlocal: solve 21.17s → 16.65s (21.3% reduction).
+  - Implementation: `mnpbem/bem/schur_iter_helpers.py`.
 - **51 pre-existing test failures cleanup** (51 → 0)
-  - Stale 11 삭제, infra 38 fix, 1 fix, 1 갱신.
+  - Deleted 11 stale, fixed 38 infra, 1 fix, 1 update.
 - **jk-config 3 follow-up issues** fix
-  - Issue 2: multi-shell `core_shell` builder N-layer 일반화.
+  - Issue 2: N-layer generalization of the multi-shell `core_shell` builder.
   - Issue 3: Metal substrate `IndexError` (`LayerStructure._enlarge`
     boundary clip).
-  - Issue 4: field-only config 자동 변환
+  - Issue 4: automatic conversion of field-only config
     (`py_to_yaml._redirect_field_only_simulation`).
-- `pymnpbem_simulation` 의 `iter.preconditioner`, `iter.schur` 옵션 노출.
+- Exposed the `iter.preconditioner`, `iter.schur` options of `pymnpbem_simulation`.
 
 ### Changed
 
@@ -311,67 +327,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - 256-face sphere GMRES: iter 55 → 1, wall 1.03s → 0.82s.
-- 568-face nonlocal Schur×Iter: 21.3% 시간 절감.
-- 25k face: alpha-2 H-tree LU 의 진정한 가치는 Sigma/Delta H-matrix
-  재구성이 필요 — v1.6+ scope.
+- 568-face nonlocal Schur×Iter: 21.3% time reduction.
+- 25k face: the true value of alpha-2 H-tree LU requires a Sigma/Delta
+  H-matrix reconstruction — v1.6+ scope.
 
 ### Known limits
 
-- `BEMRetIter` 의 8N×8N 결합 시스템 → G-only H-tree LU 단독 효과
-  제한적 (alpha-2 ≈ alpha-1 dense fallback).
-- 25k face 의 진짜 memory-friendly preconditioner = Sigma/Delta
-  H-matrix 재구성 = v1.6+.
-- `BEMStatIter` tree mode → diagonal term 깨져서 dense fallback
-  (one-time log).
+- `BEMRetIter`'s 8N×8N coupled system → limited benefit from G-only
+  H-tree LU alone (alpha-2 ≈ alpha-1 dense fallback).
+- The truly memory-friendly preconditioner for 25k face = Sigma/Delta
+  H-matrix reconstruction = v1.6+.
+- `BEMStatIter` tree mode → the diagonal term breaks, so it falls back to
+  dense (one-time log).
 
 ## [1.4.0] - 2026-05-XX
 
 ### Added
 
-- **CPU/GPU 분리 install** — pyproject extras 정교화
+- **Split CPU/GPU install** — refined pyproject extras
   (`gpu` / `mpi` / `fmm` / `all` / `dev` / `test` / `docs`).
-  - `pip install mnpbem` (CPU only, 가장 가벼움; cupy 의존성 없음).
-  - `pip install mnpbem[gpu]` (cupy-cuda12x 포함, NVIDIA GPU 가속).
-  - `pip install mnpbem[all]` (gpu + mpi + fmm 모든 기능).
-  - 별도 wheel 분리 X — single wheel + extras 가 PyPI 표준 패턴.
-- **Runtime GPU 자동 감지** —
-  `mnpbem.utils.gpu.has_gpu_capability(verbose=True)` 가
-  cupy import + CUDA driver + GPU device 가용성을 검사하여 `bool`
-  반환. 누락 시 친절한 fallback 메시지 출력.
-- **`mnpbem.utils.gpu.get_install_hint()`** — 사용자 환경에 맞는
-  `pip install mnpbem[gpu]` 명령 안내 helper.
-- **`docs/INSTALL.md`** — 시나리오별 install 가이드 (CPU only / GPU /
-  multi-GPU / multi-node / 개발 환경).
+  - `pip install mnpbem` (CPU only, lightest; no cupy dependency).
+  - `pip install mnpbem[gpu]` (includes cupy-cuda12x, NVIDIA GPU acceleration).
+  - `pip install mnpbem[all]` (gpu + mpi + fmm, all features).
+  - No separate wheel split — a single wheel + extras is the standard
+    PyPI pattern.
+- **Runtime GPU auto-detection** —
+  `mnpbem.utils.gpu.has_gpu_capability(verbose=True)` checks cupy import
+  + CUDA driver + GPU device availability and returns a `bool`. Prints a
+  friendly fallback message when unavailable.
+- **`mnpbem.utils.gpu.get_install_hint()`** — a helper that suggests the
+  `pip install mnpbem[gpu]` command appropriate for the user's
+  environment.
+- **`docs/INSTALL.md`** — a per-scenario install guide (CPU only / GPU /
+  multi-GPU / multi-node / development environment).
 
 ### Changed
 
-- `README.md` `Installation` 섹션 간략화 — 자세한 내용은
-  `docs/INSTALL.md` 로 링크.
+- Simplified the `README.md` `Installation` section — links to
+  `docs/INSTALL.md` for details.
 - (none breaking — 100% backward compatible with v1.3.0)
 
 ### Performance
 
-- (perf 영향 없음 — packaging 개선)
+- (no perf impact — packaging improvement)
 
 ## [1.3.0] - 2026-05-XX
 
 ### Added
 
-- **H-matrix BEMRetIter integration** (Lane E2 후속).
-  - `BEMRetIter(p, hmatrix=True)`, `BEMStatIter(p, hmatrix=True)` 새
-    옵션. ACA H-tree 압축 + GMRES 로 25k+ face 큰 mesh 의 dense LU OOM
-    (50+ GB) 을 해소.
-  - 메모리·matvec 모두 `O(N log N)` 스케일 — 단일 GPU 에서 25k face 가
-    fit. VRAM share (v1.2.0) 와 결합 시 56k+ face 도 도전 가능.
-  - 노출 파라미터: `htol` (ACA truncation, default 1e-6),
-    `kmax` (ACA rank 상한, default `[4, 100]`),
-    `cleaf` (leaf cluster 크기, default 200).
-  - `BEMRetLayerIter + hmatrix` 는 미지원 (`NotImplementedError`) —
-    cover-layer + planar substrate 결합 시나리오 없음.
-  - `BEM*Iter + Schur (v1.2.0)` 동시 활성도 미지원 — H-matrix + Schur
-    통합은 후속 작업.
-- **`pymnpbem_simulation` iter runner 의 `iter.hmatrix: 'auto'`**
-  옵션 — 5000+ face mesh 에서 자동으로 H-matrix BEMRetIter 활성.
+- **H-matrix BEMRetIter integration** (Lane E2 follow-up).
+  - New `BEMRetIter(p, hmatrix=True)`, `BEMStatIter(p, hmatrix=True)`
+    options. ACA H-tree compression + GMRES resolves the dense LU OOM
+    (50+ GB) of large 25k+ face meshes.
+  - Both memory and matvec scale as `O(N log N)` — 25k face fits on a
+    single GPU. Combined with VRAM share (v1.2.0), 56k+ face becomes
+    attainable too.
+  - Exposed parameters: `htol` (ACA truncation, default 1e-6),
+    `kmax` (ACA rank upper bound, default `[4, 100]`),
+    `cleaf` (leaf cluster size, default 200).
+  - `BEMRetLayerIter + hmatrix` is unsupported (`NotImplementedError`) —
+    no cover-layer + planar substrate combined scenario.
+  - Simultaneous `BEM*Iter + Schur (v1.2.0)` is also unsupported —
+    H-matrix + Schur integration is follow-up work.
+- **`iter.hmatrix: 'auto'` option in the `pymnpbem_simulation` iter
+  runner** — automatically activates H-matrix BEMRetIter for 5000+ face
+  meshes.
 
 ### Changed
 
@@ -380,31 +400,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - 25k face dimer: dense LU OOM (~50+ GB peak) →
-  H-matrix BEMRetIter 단일 GPU fit (실측 수치는
-  `docs/PERFORMANCE.md` §11 참고).
-- per-wl 시간: dense BEMRet 와 H-matrix BEMRetIter 비교
+  H-matrix BEMRetIter fits on a single GPU (for measured figures see
+  `docs/PERFORMANCE.md` §11).
+- per-wl time: dense BEMRet vs H-matrix BEMRetIter comparison
   (`docs/PERFORMANCE.md` §11).
-- 정확도: dense vs H-matrix BEMRetIter rel `< 1e-4` (htol 기반).
+- Accuracy: dense vs H-matrix BEMRetIter rel `< 1e-4` (htol-based).
 
 ## [1.2.0] - 2026-05-XX
 
 ### Added
 
-- **Schur complement** for cover-layer BEM — nonlocal 메모리 50% 절감,
-  LU 풀이 30% 가속.
-  - `BEMStat(p, schur=True)`, `BEMRet(p, schur=True)` 옵션.
-  - Cover layer (`EpsNonlocal`) 변수를 schur 소거하여 reduced matrix 풀이.
-  - 결과는 standard formulation 과 수학적으로 동등 (rel < 1e-12).
-  - `schur='auto'` 또는 wrapper 가 cover layer 자동 감지.
-  - 구현: `mnpbem/bem/schur_helpers.py`.
-- **VRAM share** — 1 worker 가 multi-GPU 메모리 합쳐 큰 단일 계산 처리.
-  - cuSolverMg backend (NVIDIA 공식 multi-GPU LU API).
-  - 25k+ face dense LU (50+ GB) 가 2 GPU pool (96 GB) 에서 fit.
-  - 환경변수 `MNPBEM_VRAM_SHARE_GPUS=N`,
+- **Schur complement** for cover-layer BEM — 50% nonlocal memory
+  reduction, 30% faster LU solve.
+  - `BEMStat(p, schur=True)`, `BEMRet(p, schur=True)` options.
+  - Schur-eliminates the cover layer (`EpsNonlocal`) variables to solve a reduced matrix.
+  - The result is mathematically equivalent to the standard formulation (rel < 1e-12).
+  - `schur='auto'`, or the wrapper auto-detects the cover layer.
+  - Implementation: `mnpbem/bem/schur_helpers.py`.
+- **VRAM share** — 1 worker handles a large single computation by pooling multi-GPU memory.
+  - cuSolverMg backend (NVIDIA's official multi-GPU LU API).
+  - A 25k+ face dense LU (50+ GB) fits in a 2 GPU pool (96 GB).
+  - environment variables `MNPBEM_VRAM_SHARE_GPUS=N`,
     `MNPBEM_VRAM_SHARE_BACKEND=cusolvermg`.
-  - `mnpbem.utils.gpu.lu_factor_dispatch(A, n_gpus=N)` 직접 호출 지원.
-  - `pymnpbem_simulation` 의 `compute.n_gpus_per_worker > 1` 이 자동 활성.
-  - 구현: `mnpbem/utils/multi_gpu_lu.py`.
+  - Supports direct calls to `mnpbem.utils.gpu.lu_factor_dispatch(A, n_gpus=N)`.
+  - `compute.n_gpus_per_worker > 1` in `pymnpbem_simulation` activates it automatically.
+  - Implementation: `mnpbem/utils/multi_gpu_lu.py`.
 
 ### Changed
 
@@ -412,9 +432,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- nonlocal cover-layer simulations: 메모리 4× → ~2× (Schur 적용 시).
-- 25k+ face dense LU: 단일 GPU OOM → multi-GPU pool 로 가능.
-- (수치는 `docs/PERFORMANCE.md` 참고)
+- nonlocal cover-layer simulations: memory 4× → ~2× (when Schur is applied).
+- 25k+ face dense LU: single-GPU OOM → possible with a multi-GPU pool.
+- (for figures see `docs/PERFORMANCE.md`)
 
 ## [1.1.0] - 2026-05-XX
 
@@ -427,7 +447,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `.from_table(path)`.
   - Helper: `make_nonlocal_pair(metal, eps_embed, delta_d, beta)` →
     `(core, shell)` tuple.
-  - 18 unit tests; bit-identical to MATLAB `demospecstat19` reference
+  - 18 unit tests; bit-identical to the MATLAB `demospecstat19` reference
     formula at `rtol = 1e-12`.
 - `BEMRet` now accepts a `refun` parameter (parity with `BEMStat`) — the
   retarded path can be combined with the cover-layer integration.
@@ -471,13 +491,13 @@ Highlights:
 
 Representative commits:
 
-- `d8d396e` `merge: T1 scipy lu_factor/solve check_finite=False/overwrite flag 적용`
-- `0f7637d` `mesh2d._minrectangle: MATLAB strict < tie-break 정합` (BAD 12 → 8)
-- `af69b7d` `matlab_compat: MATLAB libmwmathutil 전체 초월 함수 bit-identical 포팅`
-- `0320f9e` `matlab_compat.matan2: MATLAB libmwmathutil 직접 호출로 bit-identical 구현`
-- `b8fadd4` `BEM 솔버 전체: np.linalg.inv() → scipy.linalg.lu_factor/lu_solve 교체`
-- `a371b30` `BEMRetLayer 솔버를 MATLAB initmat.m/mldivide.m와 동일한 structured 2x2 block matrix 시스템으로 재작성`
-- `ac988d8` `누락 29개 메서드 전부 구현: MATLAB MNPBEM 100% 기능 동일성 달성`
+- `d8d396e` `merge: apply T1 scipy lu_factor/solve check_finite=False/overwrite flag`
+- `0f7637d` `mesh2d._minrectangle: match MATLAB strict < tie-break` (BAD 12 → 8)
+- `af69b7d` `matlab_compat: bit-identical port of all MATLAB libmwmathutil transcendental functions`
+- `0320f9e` `matlab_compat.matan2: bit-identical implementation via direct MATLAB libmwmathutil call`
+- `b8fadd4` `all BEM solvers: replace np.linalg.inv() → scipy.linalg.lu_factor/lu_solve`
+- `a371b30` `rewrite the BEMRetLayer solver into the same structured 2x2 block matrix system as MATLAB initmat.m/mldivide.m`
+- `ac988d8` `implement all 29 missing methods: achieve 100% feature parity with MATLAB MNPBEM`
 
 ### Milestone 2 — Missing API porting
 
@@ -504,13 +524,13 @@ Representative commits:
 
 - `0fcd647` `docs: Add comprehensive MNPBEM API audit report (MATLAB → Python)`
 - `c510e89` `Implement closed surface regularization in CompGreenRet`
-- `7024e3f` `MeshField 클래스 구현: BEM 해로부터 근접장 분포 계산`
-- `d7d8ca5` `ClusterTree 및 HMatrix (계층적 행렬) 구현: MATLAB H-matrix 코드의 Python 변환`
-- `6d26cd7` `ACA 가속 retarded Green 함수 (ACACompGreenRet) 구현`
-- `600a5b0` `ACA 가속 layer Green 함수 (ACACompGreenRetLayer) 구현 및 broadcasting 버그 수정`
-- `3104aee` `compound: MATLAB @compound 10개 public 메서드 Python 포팅`
-- `a1086fa` `greenfun/coverlayer: MATLAB +coverlayer 모듈 재구현`
-- `cb2c7ce` `compgreentab_layer: multi-tab per-query dispatch 구현 (Wave 8 β)`
+- `7024e3f` `implement MeshField class: compute near-field distribution from the BEM solution`
+- `d7d8ca5` `implement ClusterTree and HMatrix (hierarchical matrix): Python translation of the MATLAB H-matrix code`
+- `6d26cd7` `implement ACA-accelerated retarded Green function (ACACompGreenRet)`
+- `600a5b0` `implement ACA-accelerated layer Green function (ACACompGreenRetLayer) and fix broadcasting bug`
+- `3104aee` `compound: Python port of the 10 public methods of MATLAB @compound`
+- `a1086fa` `greenfun/coverlayer: reimplement the MATLAB +coverlayer module`
+- `cb2c7ce` `compgreentab_layer: implement multi-tab per-query dispatch (Wave 8 β)`
 
 ### Milestone 3 — Edge cases & robustness
 
@@ -541,13 +561,13 @@ interfaces, mesh FP drift, and degenerate input validation.
 
 Representative commits:
 
-- `e7beedf` `layer_structure: ODE 기반 Sommerfeld 적분 백엔드 추가 (Wave 33, opt-in)`
-- `9c45543` `matlab_ode45: MATLAB ode45.m step controller 1:1 재구현 (Wave 48)`
-- `08f754a` `intbessel/inthankel: MATLAB FP 곱셈 순서로 정렬 (Wave 49)`
-- `8e0329e` `trisphere: 모든 sphere 사이즈에 MATLAB 사전 triangulation 추가 (Wave 62)`
-- `4d72e1c` `BEMRetLayer: Wave 67 — MATLAB initmat.m 전체 BEM matrix 재구성 인프라`
-- `c55e2a3` `M3 Wave2 B3: spectrum/MeshField/output edge case 테스트 추가`
-- `2de8ae0` `validation/summary: 전체 MATLAB vs Python 집계 리포트`
+- `e7beedf` `layer_structure: add ODE-based Sommerfeld integration backend (Wave 33, opt-in)`
+- `9c45543` `matlab_ode45: 1:1 reimplementation of the MATLAB ode45.m step controller (Wave 48)`
+- `08f754a` `intbessel/inthankel: align to MATLAB FP multiplication order (Wave 49)`
+- `8e0329e` `trisphere: add MATLAB precomputed triangulation for all sphere sizes (Wave 62)`
+- `4d72e1c` `BEMRetLayer: Wave 67 — full MATLAB initmat.m BEM matrix reconstruction infrastructure`
+- `c55e2a3` `M3 Wave2 B3: add spectrum/MeshField/output edge case tests`
+- `2de8ae0` `validation/summary: full MATLAB vs Python aggregate report`
 
 ### Milestone 4 — Performance optimisation
 
@@ -617,19 +637,19 @@ Headline results:
 
 Representative commits:
 
-- `d8d396e` `merge: T1 scipy lu_factor/solve check_finite=False/overwrite flag 적용`
+- `d8d396e` `merge: apply T1 scipy lu_factor/solve check_finite=False/overwrite flag`
 - `7969e02` `merge: N1 Numba JIT compgreen_stat G/F/Gp kernel`
 - `b4ca3dd` `merge: N2 Numba JIT compgreen_ret distance kernel`
 - `eb0439a` `merge: N3 Numba JIT compgreen_layer bilinear/trilinear interp`
-- `e957143` `merge: N4 Numba meshfield + R2 H1p/H2p Gp.copy() NameError 수정`
-- `7d0befd` `merge: N6 closedparticle loc 매칭 vectorize (450×)`
+- `e957143` `merge: N4 Numba meshfield + R2 fix H1p/H2p Gp.copy() NameError`
+- `7d0befd` `merge: N6 vectorize closedparticle loc matching (450×)`
 - `12415db` `merge: G1 GPU cupy LU/solve dual-path (RTX A6000 5-14×)`
-- `30ede18` `merge: G2 모든 BEM solver + eig GPU 확장 (iter/mirror/eig dispatch)`
-- `73d98d3` `merge: H1 ACA complex128 numba + k-aware admissibility + hmatrix=False 옵션`
-- `a270bdf` `merge: F1 fmm3dpy potential/field 보조 가속 (5K×10K 5×)`
+- `30ede18` `merge: G2 extend all BEM solvers + eig to GPU (iter/mirror/eig dispatch)`
+- `73d98d3` `merge: H1 ACA complex128 numba + k-aware admissibility + hmatrix=False option`
+- `a270bdf` `merge: F1 fmm3dpy potential/field auxiliary acceleration (5K×10K 5×)`
 - `942d487` `merge: Lane D multi-GPU wavelength batch`
 - `5aa34dc` `merge: Lane A2 BEM matrix assembly cupy-eager`
-- `f30d3a7` `multi-node MPI wavelength dispatch (Lane D 확장)`
+- `f30d3a7` `multi-node MPI wavelength dispatch (Lane D extension)`
 
 ### Milestone 5 — Final validation
 

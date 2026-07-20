@@ -5,61 +5,69 @@ Status: Reference document for future optimization work
 
 ## Context
 
-MATLAB → Python port의 MATLAB 대비 performance benchmark 결과, **수학적 정확성은 달성**(sphere 대부분 머신 정밀도, 최근 trirod RMS 1.06 → 2.2e-07로 5M× 개선)했으나 **실행 시간은 케이스별 0.11× ~ 90× 편차**. 특히 작은 matrix × 많은 wavelength 반복 구간에서 Python이 MATLAB 대비 5-10× 느림. 이 문서는 profile 기반 root cause 와 단계별 개선 로드맵.
+In the performance benchmark of the MATLAB → Python port against MATLAB,
+**mathematical accuracy was achieved** (most sphere cases at machine precision;
+recently trirod RMS improved 1.06 → 2.2e-07, a 5M× improvement), but **the
+execution time varies per case from 0.11× to 90×**. In particular, in the
+regime of small matrices × many wavelength iterations, Python is 5-10× slower
+than MATLAB. This document covers the profile-based root cause and a staged
+improvement roadmap.
 
-## Benchmark 요약 (2026-04-23 기준)
+## Benchmark summary (as of 2026-04-23)
 
-MATLAB 대비 Python 성능 비율 (1.0 = 동등, >1 Python 빠름):
+Python performance ratio relative to MATLAB (1.0 = parity, >1 Python faster):
 
-### Python 빠른 경우 (9 cases)
-| 테스트 | Speedup | 원인 |
+### Cases where Python is faster (9 cases)
+| Test | Speedup | Cause |
 |---|---:|---|
-| 01 MieStat | 89.7× | Analytical 벡터화 |
-| 01 MieGans | 40.5× | 동일 |
-| 04 BEMStat layer oblique | 9.21× | Sommerfeld tabulation 벡터화 |
-| 13 trispheresegment | 8.17× | Small mesh 벡터 이득 |
-| 01 MieRet | 7.1× | 벡터화 |
-| 09 DipoleStat | 3.4× | Stat dipole 벡터화 |
-| 09 Distance | 2.5× | Distance scan 벡터화 |
+| 01 MieStat | 89.7× | Analytical vectorization |
+| 01 MieGans | 40.5× | Same |
+| 04 BEMStat layer oblique | 9.21× | Sommerfeld tabulation vectorization |
+| 13 trispheresegment | 8.17× | Small-mesh vector gain |
+| 01 MieRet | 7.1× | Vectorization |
+| 09 DipoleStat | 3.4× | Stat dipole vectorization |
+| 09 Distance | 2.5× | Distance-scan vectorization |
 | 12 stat meshfield | 2.4× | - |
 | 13 tricube | 1.9× | - |
 
-### Python 느린 경우 (요주의)
-| 테스트 | Speedup | Root cause (profile) |
+### Cases where Python is slower (needs attention)
+| Test | Speedup | Root cause (profile) |
 |---|---:|---|
 | 02 BEMStat sphere | **0.11×** | `scipy.linalg.lu_factor` × 41 wavelengths × wrapper overhead 170ms/call |
-| 12 ret meshfield | **0.11×** | Per-point field eval 누적 |
-| 13 trirod | 0.35× | 큰 mesh + ret coupling |
-| 13 tritorus | 0.47× | 동일 |
-| 09 DipoleRet | 0.55× | Retarded 전반 |
+| 12 ret meshfield | **0.11×** | Per-point field eval accumulation |
+| 13 trirod | 0.35× | Large mesh + ret coupling |
+| 13 tritorus | 0.47× | Same |
+| 09 DipoleRet | 0.55× | Retarded across the board |
 | 05 BEMRet layer | 0.65× | Sommerfeld integral heavy |
 | 13 trispherescale | 0.69× | - |
 | 03 BEMRet sphere | 0.76× | Retarded LU |
 
-### Python-only 값 (MATLAB reference 없음 — test script 버그로 측정 불가)
-| 테스트 | Python (s) | 비고 |
+### Python-only values (no MATLAB reference — not measurable due to a test-script bug)
+| Test | Python (s) | Note |
 |---|---:|---|
 | 06 mirror stat full / mirror | 75 / 2.5 | Mirror symmetry 30× speedup |
 | 06 mirror ret full / mirror | 420 / 30 | Mirror symmetry 14× speedup |
 | 07 eigenmode (BEMStatEig) | 2.7 | - |
 | 08 iterative stat dir/iter | 2.6 / 2.0 | Iter 23% faster |
 | 08 iterative ret dir/iter | 20.3 / 15.6 | Iter 23% faster |
-| 08 iterative retlayer dir/iter | **392 / 354** | retlayer 매우 heavy |
+| 08 iterative retlayer dir/iter | **392 / 354** | retlayer very heavy |
 | 09 DipoleStat/Ret/Distance | 2.9 / 32.6 / 1.6 | - |
-| **10 DipoleRetLayer** | **3471 (≈58분)** | **가장 느린 케이스** ⚠️ |
+| **10 DipoleRetLayer** | **3471 (≈58 min)** | **slowest case** ⚠️ |
 | 10 DipoleStatLayer | 2.3 | - |
 | 11 EELS stat/ret spectrum | 9.8 / 22.7 | - |
 | 11 EELS map | 28.3 | - |
 | 12 stat/ret nearfield | 1.9 / 18.1 | ret 9× slower than stat |
 
-**주목:** `10 DipoleRetLayer` = **58분** — 사용자님 47nm dimer retarded + substrate + dipole 시뮬이 이 카테고리라면 1 configuration 당 1시간 소요. 병렬화 / JIT compile 강력 권장.
+**Note:** `10 DipoleRetLayer` = **58 min** — if the user's 47nm dimer retarded +
+substrate + dipole simulation falls into this category, it takes 1 hour per
+configuration. Parallelization / JIT compilation is strongly recommended.
 
-## Root Cause — Profile 분석
+## Root Cause — Profile analysis
 
-**중요 발견:** Python도 MKL 2025 사용 중 (`numpy.show_config`).  
-→ BLAS/LAPACK backend 차이 **아님**.
+**Important finding:** Python is also using MKL 2025 (`numpy.show_config`).  
+→ This is **not** a BLAS/LAPACK backend difference.
 
-### 병목 1: scipy wrapper overhead per call
+### Bottleneck 1: scipy wrapper overhead per call
 
 `02_bemstat_sphere` cProfile (41 wavelengths):
 ```
@@ -69,84 +77,84 @@ ncalls  cumtime  percall  function
    41     6.96    0.170s  scipy.linalg.lu_factor   ← 99% of time
 ```
 
-단독 benchmark 대비:
+Versus the standalone benchmark:
 - `scipy.linalg.lu_factor` 284×284 real: 42 ms
-- 실제 실행: 170 ms (4× 부풀림 — complex128 promotion + wrapper overhead 추정)
+- Actual run: 170 ms (4× inflation — presumably complex128 promotion + wrapper overhead)
 
-**MATLAB은 C-level 직접 MKL 호출** → wrapper overhead 거의 0.  
-**Python scipy은 interpreter + check_finite + object wrapping** → 작은 연산에서 overhead 누적.
+**MATLAB calls MKL directly at the C level** → nearly 0 wrapper overhead.  
+**Python scipy has interpreter + check_finite + object wrapping** → overhead accumulates on small operations.
 
-### 병목 2: Per-point evaluation (meshfield)
+### Bottleneck 2: Per-point evaluation (meshfield)
 
-`12 ret meshfield`: 여러 field point × per-point Green function eval. Python loop 인터프리터 overhead 점별 누적.
+`12 ret meshfield`: multiple field points × per-point Green function eval. Python-loop interpreter overhead accumulates point by point.
 
-### 병목 3: F 행렬 assembly (일부 케이스)
+### Bottleneck 3: F matrix assembly (some cases)
 
-`greenfun/compgreen_stat.py`의 $O(N^2)$ Green function kernel — Python nested loop일 경우 수백-수천배 느림. 현재는 NumPy broadcasting 씀 (fast) but 복잡한 retarded kernel은 느려질 가능성.
+The $O(N^2)$ Green function kernel in `greenfun/compgreen_stat.py` — hundreds to thousands of times slower if written as a Python nested loop. It currently uses NumPy broadcasting (fast), but the complex retarded kernel could become slow.
 
-## 개선 로드맵 (우선순위순)
+## Improvement roadmap (in priority order)
 
 ### Tier 1 — Zero-effort fix (~10-20% gain)
 
-**1. scipy 호출 플래그 최적화**
+**1. Optimize scipy call flags**
 
-모든 `scipy.linalg.{lu_factor, lu_solve, solve}` 호출에 추가:
+Add to every `scipy.linalg.{lu_factor, lu_solve, solve}` call:
 ```python
 lu_factor(A, check_finite=False, overwrite_a=True)
 lu_solve(lu_piv, b, check_finite=False, overwrite_b=True)
 solve(A, b, check_finite=False, overwrite_a=True, overwrite_b=True)
 ```
 
-**적용 대상 파일:**
+**Target files:**
 - `mnpbem/bem/bem_stat.py`
 - `mnpbem/bem/bem_ret.py`
 - `mnpbem/bem/bem_stat_eig.py`
-- `mnpbem/bem/bem_ret_*.py` 계열
+- `mnpbem/bem/bem_ret_*.py` family
 
-**주의:** `check_finite=False`는 NaN/Inf 검증 skip → Green function assembly에 NaN 발생 시 silent 전파. 기존 validation 다시 돌려 regression 확인 필수.
+**Caution:** `check_finite=False` skips NaN/Inf validation → if a NaN arises in the Green function assembly it propagates silently. Re-running the existing validation to confirm no regression is mandatory.
 
-**예상 효과:** 02 BEMStat sphere 3.68s → 3.0s (~20%)
+**Expected effect:** 02 BEMStat sphere 3.68s → 3.0s (~20%)
 
-### Tier 2 — Refactor (며칠 작업, 2-3× gain)
+### Tier 2 — Refactor (a few days' work, 2-3× gain)
 
-**2. Batch wavelength 처리**
+**2. Batch wavelength processing**
 
-현재 각 파장마다 Python wrapper 호출 → 여러 wavelength RHS를 matrix로 stack:
+Currently a Python wrapper is called for each wavelength → stack the several wavelength RHS into a matrix:
 ```python
-# 현재
+# current
 for wl in wavelengths:
     sig = bem.solve(exc(p, wl))
 
-# 개선 (L만 바뀌므로 factor는 여전히 per-wl, but solve는 batch 가능한 부분)
-# Λ(ω)가 diagonal이라 Sherman-Morrison-Woodbury는 적용 어려움.
-# 대신 exc.phip을 stack하고 block-solve로 call count 줄이기.
+# improved (only L changes, so the factor is still per-wl, but the solve part can be batched)
+# Since Λ(ω) is diagonal, Sherman-Morrison-Woodbury is hard to apply.
+# Instead, stack exc.phip and reduce the call count with a block-solve.
 ```
 
-**3. 불필요한 array copy 제거**
+**3. Remove unnecessary array copies**
 
-`np.asarray`, `np.ascontiguousarray`, `np.copy` 등을 hot loop에서 제거. 특히 `_init_matrices` 내부.
+Remove `np.asarray`, `np.ascontiguousarray`, `np.copy`, etc. from the hot loop. Especially inside `_init_matrices`.
 
-**4. Iterative solver option (큰 mesh)**
+**4. Iterative solver option (large mesh)**
 
 ```python
 from scipy.sparse.linalg import gmres, LinearOperator
 
 def solve_iterative(F, Lambda, rhs):
     M = LinearOperator((n, n), matvec=lambda x: (Lambda + F) @ x)
-    # F만 precondition (파장 독립)
+    # precondition on F only (wavelength-independent)
     P_lu = lu_factor(F, check_finite=False)
     P_inv = LinearOperator((n, n), matvec=lambda x: lu_solve(P_lu, x))
     sig, _ = gmres(M, rhs, M=P_inv, tol=1e-8)
     return sig
 ```
 
-**예상 효과:** 03/05 BEMRet 1.5-3× (큰 mesh에서 강함)
+**Expected effect:** 03/05 BEMRet 1.5-3× (strong on large meshes)
 
-### Tier 3 — JIT compile (1-2주, 5-50× gain on hot loops)
+### Tier 3 — JIT compile (1-2 weeks, 5-50× gain on hot loops)
 
 **5. Numba JIT for Green function kernel**
 
-`mnpbem/greenfun/compgreen_ret.py` 등 retarded Green function 에서 per-element eval:
+Per-element eval in retarded Green functions such as `mnpbem/greenfun/compgreen_ret.py`:
 
 ```python
 from numba import jit, prange
@@ -168,24 +176,24 @@ def green_ret_kernel(positions, normals, areas, k):
     return G, F
 ```
 
-**적용 순서:**
-1. `compgreen_stat.py` — simpler kernel 먼저
+**Application order:**
+1. `compgreen_stat.py` — simpler kernel first
 2. `compgreen_ret.py` — retarded
 3. `compgreen_stat_layer.py` / `compgreen_ret_layer.py` — layer variants
 4. `meshfield*.py` — per-point field evaluation
 
-**예상 효과:**
+**Expected effect:**
 - Green function assembly 50-100× faster
 - Meshfield evaluation 10-50× faster
-- 전체 BEM 30-50% 개선
+- Overall BEM 30-50% improvement
 
-**주의:** Numba는 first-call compile overhead 있음 (첫 호출 1-3초). Cache=True로 영속화.
+**Caution:** Numba has first-call compile overhead (1-3 s on the first call). Persist it with Cache=True.
 
-### Tier 4 — Advanced (월 단위, 10-1000× gain, 연구 필요)
+### Tier 4 — Advanced (months, 10-1000× gain, requires research)
 
 **6. Hierarchical matrix (H-matrix) for Green function**
 
-큰 mesh (N > 1000)에서 $O(N^2) \to O(N \log N)$. Library: `h2tools`, `pyhml2d`.
+On large meshes (N > 1000), $O(N^2) \to O(N \log N)$. Library: `h2tools`, `pyhml2d`.
 
 **7. Fast Multipole Method (FMM)**
 
@@ -199,17 +207,17 @@ F_gpu = cp.asarray(F)
 for wl in wavelengths:
     sig = cp.linalg.solve(Lambda_gpu + F_gpu, phi_gpu)
 ```
-NVIDIA GPU 필요. 큰 matrix에서 5-50×.
+Requires an NVIDIA GPU. 5-50× on large matrices.
 
-**9. C extension bypass scipy**
+**9. C extension bypassing scipy**
 
-MATLAB 방식 (MKL 직접 호출). 가장 어렵지만 wrapper overhead 0.
+The MATLAB way (direct MKL call). Hardest but 0 wrapper overhead.
 
-## 즉시 측정 가능한 값 (benchmark 재실행시)
+## Immediately measurable values (when re-running the benchmark)
 
-개선 후 확인할 metrics:
+Metrics to check after improvement:
 
-| 테스트 | 현재 (Apr 23) | Tier 1 후 예상 | Tier 3 후 예상 |
+| Test | Current (Apr 23) | Expected after Tier 1 | Expected after Tier 3 |
 |---|---|---|---|
 | 02 BEMStat sphere | 3.68s | 3.0s | 1.5s |
 | 03 BEMRet sphere | 42.5s | 35s | 15-20s |
@@ -217,24 +225,25 @@ MATLAB 방식 (MKL 직접 호출). 가장 어렵지만 wrapper overhead 0.
 | 12 ret meshfield | 18.1s | 15s | 3-5s |
 | 13 trirod | 11.6s | 9s | 4-5s |
 
-## 구현 우선순위 (가성비 기준)
+## Implementation priority (by cost-effectiveness)
 
-**권장 순서:**
-1. **Tier 1** (scipy 플래그) — 0.5일, 전역 10-20% gain
-2. **Tier 3 step 5a** (compgreen_stat.py Numba) — 2-3일, BEM stat 30-50% gain
-3. **Tier 3 step 5b** (compgreen_ret.py Numba) — 3-5일, BEM ret 30-50% gain
-4. **Tier 3 step 5d** (meshfield Numba) — 2일, meshfield 10-50× gain
-5. **Tier 2.4** (iterative solver) — 선택적, 큰 mesh 특화
+**Recommended order:**
+1. **Tier 1** (scipy flags) — 0.5 day, global 10-20% gain
+2. **Tier 3 step 5a** (compgreen_stat.py Numba) — 2-3 days, BEM stat 30-50% gain
+3. **Tier 3 step 5b** (compgreen_ret.py Numba) — 3-5 days, BEM ret 30-50% gain
+4. **Tier 3 step 5d** (meshfield Numba) — 2 days, meshfield 10-50× gain
+5. **Tier 2.4** (iterative solver) — optional, specialized for large meshes
 
-나머지 (H-matrix, FMM, GPU)는 **연구 단계** 또는 **사용자 mesh 5000+ faces** 같은 극한 조건용.
+The rest (H-matrix, FMM, GPU) are for the **research stage** or extreme
+conditions such as **user meshes with 5000+ faces**.
 
-## Profile 재현 방법
+## Profile reproduction method
 
 ```python
 import cProfile, pstats
 import sys; sys.path.insert(0, '.')
 
-# 테스트 code (예: BEMStat sphere)
+# test code (e.g. BEMStat sphere)
 def run_test():
     from mnpbem.materials import EpsConst, EpsTable
     from mnpbem.geometry import trisphere, ComParticle
@@ -257,16 +266,16 @@ pr.disable()
 pstats.Stats(pr).sort_stats('cumtime').print_stats(20)
 ```
 
-시각화는 snakeviz:
+For visualization, snakeviz:
 ```bash
 pip install snakeviz
 python -c "import cProfile; cProfile.run('run_test()', 'profile.out')"
 snakeviz profile.out
 ```
 
-## Regression 검증
+## Regression verification
 
-모든 optimization 후 validation 재실행 필수:
+Re-running the validation after every optimization is mandatory:
 
 ```bash
 cd validation
@@ -277,30 +286,30 @@ done
 python validation/summary/generate_summary.py
 ```
 
-RMS error가 optimization 전후 **머신 정밀도 수준 유지**되는지 확인 (기존 1e-14 ~ 1e-7 그대로여야 함).
+Confirm that the RMS error **stays at machine-precision level** before and after optimization (the existing 1e-14 ~ 1e-7 must remain unchanged).
 
-## 관련 파일
+## Related files
 
-**수정 대상:**
+**Modification targets:**
 - `mnpbem/bem/bem_stat.py`, `bem_ret.py`, `bem_stat_eig.py`
 - `mnpbem/greenfun/compgreen_*.py` (Tier 3)
 - `mnpbem/simulation/meshfield*.py` (Tier 3)
 
-**validation 참조:**
-- `validation/summary/summary_report.md` — 현재 성능 baseline
-- `validation/13_shapes/data/*_matlab.csv` — 검증 기준 데이터
-- `validation/summary/data/summary_data.csv` — RMS + timing 수치
+**validation references:**
+- `validation/summary/summary_report.md` — current performance baseline
+- `validation/13_shapes/data/*_matlab.csv` — validation reference data
+- `validation/summary/data/summary_data.csv` — RMS + timing figures
 
-## 히스토리 맥락
+## Historical context
 
-**2026-04-13 이전:** Python porting 정확도 우선, 성능 2차.  
-**2026-04-13 ~ 04-22:** Mesh2d FP drift, MATLAB 정합 버그 수정. Trirod RMS 1.06 → 2.2e-07 (5M× 정확도 개선).  
-**2026-04-23 (현재):** 정확도는 sphere/rod 모두 production-ready. **이제 성능 최적화 단계.**
+**Before 2026-04-13:** Python porting prioritized accuracy, performance second.  
+**2026-04-13 ~ 04-22:** Mesh2d FP drift, MATLAB-parity bug fixes. Trirod RMS 1.06 → 2.2e-07 (5M× accuracy improvement).  
+**2026-04-23 (current):** Accuracy is production-ready for both sphere and rod. **Now in the performance optimization stage.**
 
-## 참고
+## Notes
 
-- NumPy config: MKL 2025 (backend 문제 아님)
+- NumPy config: MKL 2025 (not a backend problem)
 - Python 3.11
 - scipy 1.x
-- 테스트 CPU: (benchmark 당시 환경 기록 필요)
-- 주요 bottleneck: **interpreter overhead × 반복 횟수**
+- Test CPU: (the environment at benchmark time needs to be recorded)
+- Main bottleneck: **interpreter overhead × iteration count**

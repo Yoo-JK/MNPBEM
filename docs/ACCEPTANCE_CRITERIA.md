@@ -1,73 +1,73 @@
 # PyMNPBEM — Acceptance Criteria (v1.0.0)
 
-생성일: 2026-05-02 (M5-1)
-대상 릴리즈: `mnpbem-python` v1.0.0
-근거: 72 demo, sphere/rod 51 case, dimer 4-case, Lane A-E 보고서 (`/tmp/bem_drift_lane_AE_report.md`)
+Created: 2026-05-02 (M5-1)
+Target release: `mnpbem-python` v1.0.0
+Basis: 72 demo, sphere/rod 51 case, dimer 4-case, Lane A-E report (`/tmp/bem_drift_lane_AE_report.md`)
 
-이 문서는 v1.0.0 릴리즈를 위한 production-ready 기준을 정의한다. 각 섹션은 **현재 실측값 (As-Measured)** 과 **요구 기준 (Required)** 을 동시에 명시하며, 회귀 스위트 (`tests/regression/`) 와 CI 워크플로우 (M5-γ) 가 이 기준에 따라 자동 판정한다.
+This document defines the production-ready criteria for the v1.0.0 release. Each section specifies both the **current measured value (As-Measured)** and the **required criterion (Required)**, and the regression suite (`tests/regression/`) and CI workflow (M5-γ) judge automatically against these criteria.
 
 ---
 
-## 1. 정확도 기준 (Accuracy)
+## 1. Accuracy criteria (Accuracy)
 
-### 1.1 등급 정의
+### 1.1 Grade definitions
 
-| 등급 | 표기 | 정의 (max relative error) | 의미 |
+| Grade | Label | Definition (max relative error) | Meaning |
 |---|---|---|---|
-| machine precision | `perf` | `max_rel_err < 1e-12` | MATLAB과 bit-수준 일치 (FP 누적 한계) |
-| OK | `ok` | `1e-12 ≤ max_rel_err < 1e-6` | 과학적으로 동등 |
-| good | `good` | `1e-6 ≤ max_rel_err < 1e-4` | 시각적으로 동등 |
-| warn | `warn` | `1e-4 ≤ max_rel_err < 1e-3` | 추적 권장 |
-| BAD | `BAD` | `max_rel_err ≥ 1e-3` | 회귀 실패 (블로커) |
+| machine precision | `perf` | `max_rel_err < 1e-12` | Bit-level agreement with MATLAB (FP accumulation limit) |
+| OK | `ok` | `1e-12 ≤ max_rel_err < 1e-6` | Scientifically equivalent |
+| good | `good` | `1e-6 ≤ max_rel_err < 1e-4` | Visually equivalent |
+| warn | `warn` | `1e-4 ≤ max_rel_err < 1e-3` | Tracking recommended |
+| BAD | `BAD` | `max_rel_err ≥ 1e-3` | Regression failure (blocker) |
 
-분류는 `validation/.../scripts/compare_smart_v3.py` 와 동일한 기준이며, 회귀 스위트 (`tests/regression/`) 가 동일 기준을 적용한다.
+The classification uses the same criteria as `validation/.../scripts/compare_smart_v3.py`, and the regression suite (`tests/regression/`) applies the same criteria.
 
-### 1.2 72 demo 정확도
+### 1.2 72 demo accuracy
 
-기준 데이터: `/tmp/mnpbem_validation/72demos_validation/data/accuracy_v2.csv` (72 demo × machine precision class)
+Reference data: `/tmp/mnpbem_validation/72demos_validation/data/accuracy_v2.csv` (72 demo × machine precision class)
 
-| 메트릭 | 현재 실측값 | 요구 기준 | 통과 |
+| Metric | Current measured value | Required criterion | Pass |
 |---|---|---|---|
-| machine precision (`<1e-12`) 개수 | 55 / 72 (76.4%) | ≥ 55 / 72 (76%) | OK |
-| OK (`1e-12 ~ 1e-6`) 개수 | 11 / 72 | ≥ 0 (참고용) | - |
-| good + warn 합계 | 5 / 72 | ≤ 6 (≤ 8.3%) | OK |
-| BAD (`≥1e-3`) 개수 | 0 / 72 | **= 0** (필수) | OK |
+| machine precision (`<1e-12`) count | 55 / 72 (76.4%) | ≥ 55 / 72 (76%) | OK |
+| OK (`1e-12 ~ 1e-6`) count | 11 / 72 | ≥ 0 (informational) | - |
+| good + warn total | 5 / 72 | ≤ 6 (≤ 8.3%) | OK |
+| BAD (`≥1e-3`) count | 0 / 72 | **= 0** (required) | OK |
 | median max_rel_err | 3.98e-14 | ≤ 1e-12 | OK |
-| max max_rel_err | 1.58e-02 (`demospecstat17`) | ≤ 1e-1 (warn 한도 내) | OK |
+| max max_rel_err | 1.58e-02 (`demospecstat17`) | ≤ 1e-1 (within warn limit) | OK |
 
-**비고**: `demospecstat17` 1.58e-2 는 layered eigenmode 반올림 차이 (rod/sphere에도 동일 패턴 등장). 회귀에서 BAD 임계 `1e-3` 적용 시 fail 가능 → `pytest.mark.xfail (matlab_layer_eigen_diff)` 로 격리.
+**Note**: `demospecstat17` 1.58e-2 is a layered eigenmode rounding difference (the same pattern also appears in rod/sphere). It may fail when the BAD threshold `1e-3` is applied in regression → isolated with `pytest.mark.xfail (matlab_layer_eigen_diff)`.
 
-### 1.3 sphere / rod / rod_lying 51 case 정확도
+### 1.3 sphere / rod / rod_lying 51 case accuracy
 
-기준 데이터: `/tmp/mnpbem_validation/sphere_rod_validation/summary_table.csv` (sphere 24 + rod 9 + rod_lying 18 = 51)
+Reference data: `/tmp/mnpbem_validation/sphere_rod_validation/summary_table.csv` (sphere 24 + rod 9 + rod_lying 18 = 51)
 
-| 메트릭 | 현재 실측값 | 요구 기준 | 통과 |
+| Metric | Current measured value | Required criterion | Pass |
 |---|---|---|---|
-| machine precision (`max_rel_err < 1e-12`) 개수 | 35 / 51 (68.6%) | ≥ 35 / 51 (68%) | OK |
-| BAD (`max_rel_err ≥ 1e-3`) 개수 | 5 / 51 (모두 layer/eigenmode) | ≤ 6 | OK (xfail 처리) |
-| sphere 단독 machine precision | 18 / 24 | ≥ 18 / 24 | OK |
-| rod 단독 machine precision | 8 / 9 | ≥ 8 / 9 | OK |
-| rod_lying 단독 machine precision | 9 / 18 | ≥ 9 / 18 | OK |
+| machine precision (`max_rel_err < 1e-12`) count | 35 / 51 (68.6%) | ≥ 35 / 51 (68%) | OK |
+| BAD (`max_rel_err ≥ 1e-3`) count | 5 / 51 (all layer/eigenmode) | ≤ 6 | OK (handled as xfail) |
+| sphere-only machine precision | 18 / 24 | ≥ 18 / 24 | OK |
+| rod-only machine precision | 8 / 9 | ≥ 8 / 9 | OK |
+| rod_lying-only machine precision | 9 / 18 | ≥ 9 / 18 | OK |
 
-**알려진 한계 (xfail)**: layer 시뮬레이션 (07_eigenmode, 04/05_*_layer, 03_bemret/layer) 5 케이스는 MATLAB과 7e-3 ~ 1.5e-2 의 잔여 차이. M5-3 PERFORMANCE.md 에 알려진 한계로 기록.
+**Known limitation (xfail)**: 5 layer-simulation cases (07_eigenmode, 04/05_*_layer, 03_bemret/layer) have a residual difference of 7e-3 ~ 1.5e-2 from MATLAB. Recorded as a known limitation in M5-3 PERFORMANCE.md.
 
-### 1.4 dimer 4-case 정확도 (Au dimer 47nm × 2, gap 0.6 nm, 6336 face × 100 wl)
+### 1.4 dimer 4-case accuracy (Au dimer 47nm × 2, gap 0.6 nm, 6336 face × 100 wl)
 
-기준 데이터: `/tmp/mnpbem_validation/dimer_benchmark/data/final_v4.json`, Lane A-E 보고서 `/tmp/bem_drift_lane_AE_report.md`
+Reference data: `/tmp/mnpbem_validation/dimer_benchmark/data/final_v4.json`, Lane A-E report `/tmp/bem_drift_lane_AE_report.md`
 
-| 메트릭 | 현재 실측값 | 요구 기준 | 통과 |
+| Metric | Current measured value | Required criterion | Pass |
 |---|---|---|---|
 | ext_x peak rel-diff (single λ=636 nm) | 9.1e-8 | ≤ 1e-7 | OK |
 | ext_x max rel (100 wavelength) | 1.68e-4 (final_v4 dense GPU 4×) | ≤ 1e-3 | OK |
 | ext_x mean rel (100 wavelength) | 3.0e-5 | ≤ 1e-4 | OK |
 | sca_x max rel | 1.24e-4 | ≤ 1e-3 | OK |
-| Lane A-E green G1 잔여 | 4 entries / 40M (대칭쌍 quadrature 노드 순서 차이) | 알고리즘 결함 X | OK |
+| Lane A-E green G1 residual | 4 entries / 40M (symmetric-pair quadrature node ordering difference) | not an algorithmic defect | OK |
 
-### 1.5 Solver 모드 간 정합성
+### 1.5 Consistency across solver modes
 
-ACA / iterative / dense 솔버 결과는 동일 문제에 대해 ≤1% 정합해야 한다 (필요 시 H-matrix 절단으로 인한 차이 허용).
+The ACA / iterative / dense solver results must agree to ≤1% for the same problem (differences due to H-matrix truncation are allowed where necessary).
 
-| 모드 비교 | 요구 기준 | 측정 위치 |
+| Mode comparison | Required criterion | Measurement location |
 |---|---|---|
 | dense vs ACA | rel ≤ 1e-2 | `tests/regression/test_dimer.py` |
 | dense vs iterative | rel ≤ 1e-3 | `tests/regression/test_dimer.py` |
@@ -75,87 +75,87 @@ ACA / iterative / dense 솔버 결과는 동일 문제에 대해 ≤1% 정합해
 
 ---
 
-## 2. 속도 기준 (Performance)
+## 2. Speed criteria (Performance)
 
-shell wall-time 동일 metric (`time matlab -batch ...`, `time python ...`) 으로 측정.
+Measured with the same shell wall-time metric (`time matlab -batch ...`, `time python ...`).
 
 ### 2.1 72 demo speedup
 
-기준 데이터: `/tmp/mnpbem_validation/72demos_validation/FINAL_TABLE.md`
+Reference data: `/tmp/mnpbem_validation/72demos_validation/FINAL_TABLE.md`
 
-| 메트릭 | 현재 실측값 | 요구 기준 | 통과 |
+| Metric | Current measured value | Required criterion | Pass |
 |---|---|---|---|
 | 72 demo CPU geo-mean speedup (MATLAB / Python CPU) | 2.21× | ≥ 1.5× | OK |
 | 72 demo GPU geo-mean speedup (MATLAB / Python GPU) | 3.60× | ≥ 3.0× | OK |
-| Python CPU faster 비율 | 65 / 72 (90%) | ≥ 60 / 72 (83%) | OK |
-| Python GPU faster 비율 | 68 / 72 (94%) | ≥ 60 / 72 (83%) | OK |
-| 72 demo 총 wall (Python CPU) | 47.5 min | ≤ 60 min | OK |
-| 72 demo 총 wall (Python GPU 단일) | 19.4 min | ≤ 30 min | OK |
+| Python CPU faster ratio | 65 / 72 (90%) | ≥ 60 / 72 (83%) | OK |
+| Python GPU faster ratio | 68 / 72 (94%) | ≥ 60 / 72 (83%) | OK |
+| 72 demo total wall (Python CPU) | 47.5 min | ≤ 60 min | OK |
+| 72 demo total wall (Python GPU single) | 19.4 min | ≤ 30 min | OK |
 
 ### 2.2 dimer 6336 face × 100 wavelength
 
-기준 데이터: dimer benchmark final_v4 + final_v3.
+Reference data: dimer benchmark final_v4 + final_v3.
 
-| 모드 | 현재 실측값 (min) | 요구 기준 (min) | 통과 |
+| Mode | Current measured value (min) | Required criterion (min) | Pass |
 |---|---|---|---|
 | Python GPU 4× RTX A6000 (Phase 3 native) | 13.00 (v4) ~ 13.26 | ≤ 15 | OK |
 | Python GPU 1× | 29.36 | ≤ 35 | OK |
-| Python CPU 4 worker × 1 thread | 138.54 | ≤ 160 (MATLAB 동등 모드 151) | OK |
+| Python CPU 4 worker × 1 thread | 138.54 | ≤ 160 (MATLAB equivalent mode 151) | OK |
 | Python CPU 1 worker × 4 thread | 163.26 | ≤ 200 | OK |
-| MATLAB CPU 4 worker × 1 thread (참조) | 151.00 | - | - |
+| MATLAB CPU 4 worker × 1 thread (reference) | 151.00 | - | - |
 
-**dimer 종합 기준**: Python GPU 4× 모드가 MATLAB 최고 모드 대비 ≥ 10× 속도 향상 (현재 11.6×).
+**dimer overall criterion**: The Python GPU 4× mode is ≥ 10× faster than MATLAB's best mode (currently 11.6×).
 
-### 2.3 Solver-mode 성능 정합성
+### 2.3 Solver-mode performance consistency
 
-ACA / iterative / dense 결과 정합성 (`≤ 1%`) 은 §1.5 에서 정의. 성능 측면에서는 추가 제약 없음.
+The ACA / iterative / dense result consistency (`≤ 1%`) is defined in §1.5. There is no additional constraint on the performance side.
 
 ---
 
-## 3. 환경 기준 (Environment)
+## 3. Environment criteria (Environment)
 
-| 항목 | 요구 기준 | 비고 |
+| Item | Required criterion | Note |
 |---|---|---|
-| Python | 3.11, 3.12 둘 다 통과 | matrix CI |
-| numpy | ≥ 1.26 | numba 호환성 |
-| scipy | ≥ 1.13 | sparse, lu_solve 안정성 |
-| numba | ≥ 0.59 | typed dict, deprecation 회피 |
-| matplotlib | ≥ 3.8 | 시각화 도구 |
-| lmfit | ≥ 1.3 | drudefit 등 |
-| cupy | 13.x (CUDA 12.x) | GPU 옵션 (extras) |
-| OS | Linux x86_64 (RHEL 8+, Ubuntu 22.04+) | 1차 지원 |
+| Python | Both 3.11 and 3.12 pass | matrix CI |
+| numpy | ≥ 1.26 | numba compatibility |
+| scipy | ≥ 1.13 | sparse, lu_solve stability |
+| numba | ≥ 0.59 | typed dict, avoids deprecation |
+| matplotlib | ≥ 3.8 | visualization tool |
+| lmfit | ≥ 1.3 | drudefit, etc. |
+| cupy | 13.x (CUDA 12.x) | GPU option (extras) |
+| OS | Linux x86_64 (RHEL 8+, Ubuntu 22.04+) | primary support |
 | OS | macOS, Windows | best-effort |
 
-### 3.1 GPU 환경
+### 3.1 GPU environment
 
-- CUDA 12.x + cupy 13.x 환경에서 `MNPBEM_GPU=1` 활성화 시 §2.1, §2.2 GPU 기준을 충족해야 함.
-- GPU 미설치 환경에서는 자동 CPU fallback 동작 확인 (회귀 `test_*.py` 의 `@pytest.mark.gpu` 비-GPU 머신에서는 skip).
+- When `MNPBEM_GPU=1` is enabled in a CUDA 12.x + cupy 13.x environment, the §2.1, §2.2 GPU criteria must be met.
+- In an environment without a GPU, confirm the automatic CPU fallback works (the `@pytest.mark.gpu` regression `test_*.py` is skipped on non-GPU machines).
 
 ---
 
-## 4. 회귀 통과 기준 (Regression)
+## 4. Regression pass criteria (Regression)
 
-### 4.1 회귀 스위트 (`tests/regression/`)
+### 4.1 Regression suite (`tests/regression/`)
 
-| 회귀 묶음 | 통과 기준 | marker | 예상 wall |
+| Regression bundle | Pass criterion | marker | Expected wall |
 |---|---|---|---|
-| 72 demo 등급 회귀 | machine_precision ≥ 55, BAD = 0 | slow | ~50 min |
-| sphere/rod 51 case 회귀 | machine_precision ≥ 35, BAD ≤ 6 (xfail) | slow | ~30 min |
-| dimer 4-case 회귀 | ext_x rel ≤ 1e-7 (single λ), ≤ 1e-3 (100 wl) | long | ~140 min (CPU) / ~15 min (GPU) |
-| edge case (large mesh) | OOM 없이 완주 | long | ~60 min |
-| fast smoke | machine precision 한 줄 케이스만 | fast | < 60 sec |
+| 72 demo grade regression | machine_precision ≥ 55, BAD = 0 | slow | ~50 min |
+| sphere/rod 51 case regression | machine_precision ≥ 35, BAD ≤ 6 (xfail) | slow | ~30 min |
+| dimer 4-case regression | ext_x rel ≤ 1e-7 (single λ), ≤ 1e-3 (100 wl) | long | ~140 min (CPU) / ~15 min (GPU) |
+| edge case (large mesh) | completes without OOM | long | ~60 min |
+| fast smoke | machine precision, single-line case only | fast | < 60 sec |
 
-### 4.2 CI 자동 통과 기준
+### 4.2 CI automatic pass criteria
 
-- GitHub Actions matrix `python={3.11, 3.12} × os=ubuntu-22.04` 에서 `pytest tests/regression -m "fast"` 가 매 commit 통과해야 함.
-- daily nightly CI `pytest -m "slow"` 가 통과해야 함.
-- weekly CI `pytest -m "long"` 가 통과해야 함.
-- GPU CI 는 self-hosted runner 필요 (M5-γ 에서 결정).
-- 회귀 통과 시 hash 비교가 `tests/regression/data/*_reference.json` 과 일치.
+- On the GitHub Actions matrix `python={3.11, 3.12} × os=ubuntu-22.04`, `pytest tests/regression -m "fast"` must pass on every commit.
+- The daily nightly CI `pytest -m "slow"` must pass.
+- The weekly CI `pytest -m "long"` must pass.
+- GPU CI requires a self-hosted runner (to be decided in M5-γ).
+- On regression pass, the hash comparison matches `tests/regression/data/*_reference.json`.
 
-### 4.3 회귀 출력 포맷 (CI 사용)
+### 4.3 Regression output format (used by CI)
 
-회귀 runner 는 다음 JSON 을 stdout 마지막 줄로 출력:
+The regression runner outputs the following JSON as the last line of stdout:
 
 ```json
 {
@@ -166,23 +166,23 @@ ACA / iterative / dense 결과 정합성 (`≤ 1%`) 은 §1.5 에서 정의. 성
 }
 ```
 
-CI 는 이 JSON 을 parsing 하여 §1, §2 기준 충족 여부를 자동 판정.
+CI parses this JSON and automatically judges whether the §1, §2 criteria are met.
 
 ---
 
-## 5. 비-자동화 기준 (Manual)
+## 5. Non-automated criteria (Manual)
 
-릴리즈 직전 사용자/메인테이너 수동 확인:
+Manual confirmation by the user/maintainer just before release:
 
-- `pip install mnpbem-python` (PyPI dry-run) 후 `python -c "import mnpbem"` 동작.
-- `docs/EXAMPLES/` 의 quick-start 스크립트 4개 모두 ≤5 분 내 동작.
-- README.md 의 Requirements 섹션 복사 → 새 conda env 에서 0-에러 설치.
-- LICENSE = GPL (MATLAB 호환) 또는 결정된 라이선스 명시.
+- After `pip install mnpbem-python` (PyPI dry-run), `python -c "import mnpbem"` works.
+- All 4 quick-start scripts in `docs/EXAMPLES/` run within ≤5 minutes.
+- Copy the Requirements section of README.md → 0-error installation in a fresh conda env.
+- LICENSE = GPL (MATLAB compatible) or the decided license is specified.
 
 ---
 
-## 6. 변경 이력
+## 6. Change history
 
-| 일자 | 버전 | 변경 |
+| Date | Version | Change |
 |---|---|---|
-| 2026-05-02 | 0.1 | 초안 (M5-1, Wave A) — 72 demo / sphere-rod / dimer baseline 확정 |
+| 2026-05-02 | 0.1 | Draft (M5-1, Wave A) — 72 demo / sphere-rod / dimer baseline finalized |

@@ -94,11 +94,11 @@ users.
 | MATLAB | Python |
 |---|---|
 | `epsfun(@(enei) 1./(1./(eps_b - eps_m) - q_L * delta_d))` | `EpsNonlocal(eps_m, eps_b, delta_d=δ, beta=β)` |
-| (manual `coverlayer.shift`) | `coverlayer.shift(p_core, delta_d)` (동일) |
-| `coverlayer.refine(p, [[1, 2]])` | `coverlayer.refine(p, [[1, 2]])` (동일) |
-| (ad-hoc 3-particle epstab construction) | `make_nonlocal_pair('gold', eps_embed, delta_d, beta)` 가 자동 `(core, shell)` 튜플 반환 |
+| (manual `coverlayer.shift`) | `coverlayer.shift(p_core, delta_d)` (same) |
+| `coverlayer.refine(p, [[1, 2]])` | `coverlayer.refine(p, [[1, 2]])` (same) |
+| (ad-hoc 3-particle epstab construction) | `make_nonlocal_pair('gold', eps_embed, delta_d, beta)` automatically returns a `(core, shell)` tuple |
 | `bemstat(p, op{:}, 'refun', refun)` | `BEMStat(p, refun=refun)` |
-| `bemret(p, op{:}, 'refun', refun)` | `BEMRet(p, refun=refun)` (v1.1.0 신규) |
+| `bemret(p, op{:}, 'refun', refun)` | `BEMRet(p, refun=refun)` (new in v1.1.0) |
 
 ---
 
@@ -353,32 +353,34 @@ caveats when porting MATLAB nonlocal scripts:
    `inout = [[3, 1], [2, 3]]`; `closed = [1, 2]`.
 4. **Cover layer makes the BEM result smoother**, but the mesh face
    count grows by ≈ 2× → memory grows by ≈ 4× (standard formulation).
-   - **v1.2.0+**: `schur=True` 적용 시 메모리 ~2× 만 (50% 절감), LU 풀이
-     ~30% 가속. cover layer 변수를 schur 소거하여 reduced matrix 풀이.
+   - **v1.2.0+**: with `schur=True`, memory is only ~2× (50% reduction)
+     and the LU solve is ~30% faster. Cover-layer variables are Schur-
+     eliminated and the reduced matrix is solved.
 
      ```python
      bem = BEMStat(p, refun=refun, schur=True)   # v1.2.0
-     # 또는:
+     # or:
      bem = BEMRet(p, refun=refun, schur=True)
      ```
 
-     `schur='auto'` 또는 wrapper 가 cover layer 자동 감지.
-   - 큰 mesh (25k+ face) + nonlocal 시나리오는 `MNPBEM_VRAM_SHARE_GPUS=N`
-     환경변수로 multi-GPU pool 활용 (cuSolverMg 백엔드, v1.2.0+).
+     `schur='auto'`, or the wrapper auto-detects the cover layer.
+   - For large mesh (25k+ faces) + nonlocal scenarios, use a multi-GPU
+     pool via the `MNPBEM_VRAM_SHARE_GPUS=N` environment variable
+     (cuSolverMg backend, v1.2.0+).
 5. **`BEMRet` `refun` parameter** is new in v1.1.0 — use it when you
    want the retarded path with the cover-layer integration. `BEMStat`
    has accepted `refun` since v1.0.0.
 
 ### 17. Schur complement (v1.2.0)
 
-EpsNonlocal cover-layer formulation 의 메모리 폭증 (face count ~2× →
-matrix memory ~4×) 을 완화하기 위한 옵션.
+An option to mitigate the memory blow-up of the EpsNonlocal cover-layer
+formulation (face count ~2× → matrix memory ~4×).
 
-| 동작 | 설정 | 메모리 | LU 시간 |
+| Behavior | Setting | Memory | LU time |
 |---|---|---|---|
 | Standard formulation | `schur=False` (default) | 4× | baseline |
 | Schur complement | `schur=True` | ~2× | -30% |
-| Auto-detect | `schur='auto'` | (cover layer 감지 시 2×) | -30% |
+| Auto-detect | `schur='auto'` | (2× when cover layer detected) | -30% |
 
 ```python
 # v1.1.0 — standard formulation
@@ -388,13 +390,13 @@ bem = BEMStat(p, refun=refun)
 bem = BEMStat(p, refun=refun, schur=True)
 ```
 
-수학적으로 standard formulation 과 동등 (rel < 1e-12 수준에서 일치).
-회귀 테스트는 둘 다 회기적으로 검증된다.
+Mathematically equivalent to the standard formulation (agreement at the
+rel < 1e-12 level). Both paths are verified by regression tests.
 
 ### 18. Multi-GPU VRAM share (v1.2.0)
 
-단일 GPU VRAM (예: RTX A6000 48 GB) 을 초과하는 큰 dense LU
-(25k+ face) 를 multi-GPU 메모리 풀로 처리.
+Handles a large dense LU (25k+ faces) that exceeds single-GPU VRAM (e.g.
+RTX A6000 48 GB) with a multi-GPU memory pool.
 
 ```python
 import os
@@ -402,30 +404,30 @@ os.environ['MNPBEM_VRAM_SHARE_GPUS']    = '2'           # 2 GPU pool = 96 GB
 os.environ['MNPBEM_VRAM_SHARE_BACKEND'] = 'cusolvermg'  # default
 
 from mnpbem.bem import BEMRet
-bem = BEMRet(p)   # 자동으로 multi-GPU LU 활용
+bem = BEMRet(p)   # automatically uses multi-GPU LU
 ```
 
-이전 (v1.1.0) 에는 단일 GPU OOM 이 되던 mesh 크기가 v1.2.0 부터
-multi-GPU pool 로 fit 가능. wavelength 분배 (Lane D, multi-worker) 와
-결합 가능 — 8 GPU 환경에서 2-GPU pool 4개 (`n_workers=4`,
-`n_gpus_per_worker=2`).
+Mesh sizes that previously (v1.1.0) caused single-GPU OOM can be fit
+into a multi-GPU pool since v1.2.0. Can be combined with wavelength
+distribution (Lane D, multi-worker) — four 2-GPU pools in an 8-GPU
+environment (`n_workers=4`, `n_gpus_per_worker=2`).
 
 ### 19. Large mesh strategy (v1.3.0)
 
-25k+ face 시뮬레이션을 어떻게 처리할지 결정 가이드.
+A guide for deciding how to handle 25k+ face simulations.
 
-| mesh face count | 권장 |
+| mesh face count | Recommendation |
 |---|---|
 | < 1k | dense BEMStat / BEMRet |
 | 1k - 5k | dense + Numba JIT (`MNPBEM_NUMBA=1`) |
 | 5k - 25k | `BEMRetIter(p, hmatrix=True)` (v1.3.0) — H-matrix iter |
 | 25k+ | `BEMRetIter(p, hmatrix=True)` + VRAM share (multi-GPU) |
-| 50k+ | + 별도 H-matrix 분산 / preconditioner 튜닝 (실험적) |
+| 50k+ | + separate H-matrix distribution / preconditioner tuning (experimental) |
 
 ```python
 from mnpbem.bem import BEMRetIter
 
-# 큰 mesh + iterative + H-matrix
+# large mesh + iterative + H-matrix
 bem = BEMRetIter(p, hmatrix=True, htol=1e-6,
                  tol=1e-6, maxiter=200)
 
@@ -434,49 +436,50 @@ import os
 os.environ['MNPBEM_VRAM_SHARE_GPUS'] = '4'
 ```
 
-`pymnpbem_simulation` 사용자는 YAML 의 `iter.hmatrix: 'auto'` 만
-켜두면 face count 5000+ 에서 자동 활성된다 (v1.3.0).
+`pymnpbem_simulation` users only need to enable `iter.hmatrix: 'auto'`
+in the YAML, and it activates automatically at 5000+ faces (v1.3.0).
 
-**Common issue**: GMRES 가 수렴하지 않으면 다음을 시도:
+**Common issue**: if GMRES does not converge, try the following:
 
-- `tol` 완화 (예: 1e-4) 또는 `maxiter` 증가.
-- `htol` 강화 (예: 1e-7) — H-matrix 압축이 너무 느슨해 condition
-  악화 시 효과적.
-- ~~preconditioner 강화~~ → **v1.5.0 부터 `preconditioner='auto'`
-  지원** (H-matrix LU). 256-face sphere 에서 GMRES iter 55 → 1.
-  pitfall #21 참고.
+- Relax `tol` (e.g. 1e-4) or increase `maxiter`.
+- Tighten `htol` (e.g. 1e-7) — effective when H-matrix compression is
+  too loose and the conditioning degrades.
+- ~~Strengthen the preconditioner~~ → **`preconditioner='auto'` is
+  supported since v1.5.0** (H-matrix LU). On the 256-face sphere,
+  GMRES iterations go 55 → 1. See pitfall #21.
 
-H-matrix vs dense 결과는 `htol` 기반 — `htol=1e-6` 에서
-relative `< 1e-4` 수준으로 일치 (`docs/PERFORMANCE.md` §11).
+H-matrix vs dense results are `htol`-based — at `htol=1e-6` they agree
+at the relative `< 1e-4` level (`docs/PERFORMANCE.md` §11).
 
-### 20. Install 변경 (v1.4.0)
+### 20. Install changes (v1.4.0)
 
-v1.3.0 이전 까지는 `pip install mnpbem` 한 줄이 (사실상)
-모든 의존성을 끌어왔지만, v1.4.0 부터는 사용 환경에 맞춰
-**extras** 로 install 범위를 고를 수 있다.
+Up to v1.3.0, a single `pip install mnpbem` pulled in (effectively) all
+dependencies, but since v1.4.0 you can select the install scope with
+**extras** to match your environment.
 
-기존 (v1.3.0 이하):
+Previously (v1.3.0 and earlier):
 
 ```bash
-pip install mnpbem            # 사실상 모든 extras 가 같이 들어옴
+pip install mnpbem            # effectively all extras come along
 ```
 
 v1.4.0+:
 
 ```bash
-pip install mnpbem            # CPU only (default, 가장 가벼움)
-pip install mnpbem[gpu]       # + cupy-cuda12x (NVIDIA GPU 가속)
-pip install mnpbem[mpi]       # + mpi4py (multi-node wavelength 분배)
+pip install mnpbem            # CPU only (default, lightest)
+pip install mnpbem[gpu]       # + cupy-cuda12x (NVIDIA GPU acceleration)
+pip install mnpbem[mpi]       # + mpi4py (multi-node wavelength distribution)
 pip install mnpbem[fmm]       # + fmm3dpy (free-space ret meshfield)
-pip install mnpbem[all]       # gpu + mpi + fmm 전부
-pip install mnpbem[dev]       # 개발 환경 (pytest, ruff 등)
+pip install mnpbem[all]       # gpu + mpi + fmm, all of them
+pip install mnpbem[dev]       # dev environment (pytest, ruff, etc.)
 ```
 
-기존 v1.3.0 코드는 **수정 X**. install 명령만 환경에 맞게
-다르게 사용하면 된다. 시뮬레이션 코드 자체는 cupy 가 lazy
-import 라 CPU only 환경에서도 동작 (CPU fallback).
+Existing v1.3.0 code needs **no changes**. You just use a different
+install command to match your environment. The simulation code itself
+runs even in a CPU-only environment because cupy is a lazy import (CPU
+fallback).
 
-GPU 활성 가능 여부를 runtime 에서 확인하려면:
+To check at runtime whether GPU acceleration can be enabled:
 
 ```python
 from mnpbem.utils.gpu import has_gpu_capability, get_install_hint
@@ -485,61 +488,65 @@ if not has_gpu_capability(verbose=True):
     print(get_install_hint())
 ```
 
-자세한 시나리오별 install 절차는 `docs/INSTALL.md` 참고.
+For detailed per-scenario install procedures see `docs/INSTALL.md`.
 
 ### 21. Large nonlocal mesh strategy (v1.5.0)
 
-v1.5.0 부터 cover-layer (nonlocal) 계열 시뮬레이션에 H-matrix LU
-preconditioner + Schur × Iterative 가 추가되어, 큰 nonlocal mesh 에서
-GMRES 수렴 가속 및 cover layer 변수 implicit 소거가 가능하다.
+Since v1.5.0, an H-matrix LU preconditioner + Schur × Iterative were
+added to cover-layer (nonlocal) simulations, enabling accelerated GMRES
+convergence and implicit elimination of cover-layer variables on large
+nonlocal meshes.
 
-| 시나리오 | 권장 옵션 |
+| Scenario | Recommended options |
 |---|---|
-| 작은 nonlocal (< 1k face cover) | `BEMStat(p, schur=True)` (v1.2.0) |
-| 중간 nonlocal (1-5k) | `BEMRetIter(p, hmatrix=True, schur=True)` |
-| 큰 nonlocal (5k+) | + `preconditioner='auto'` |
-| 25k+ nonlocal (cover 50k+ face) | + VRAM share (v1.2.0) — Sigma H-matrix 재구성은 v1.6+ |
+| Small nonlocal (< 1k face cover) | `BEMStat(p, schur=True)` (v1.2.0) |
+| Medium nonlocal (1-5k) | `BEMRetIter(p, hmatrix=True, schur=True)` |
+| Large nonlocal (5k+) | + `preconditioner='auto'` |
+| 25k+ nonlocal (cover 50k+ faces) | + VRAM share (v1.2.0) — Sigma H-matrix reconstruction is v1.6+ |
 
-**예시**:
+**Example**:
 
 ```python
 from mnpbem.bem import BEMRetIter
 
 bem = BEMRetIter(p, refun=refun,
                  hmatrix=True,           # v1.3.0
-                 schur=True,             # v1.5.0 (cover layer 자동 감지)
-                 preconditioner='auto')  # v1.5.0 (수렴 가속)
+                 schur=True,             # v1.5.0 (cover layer auto-detected)
+                 preconditioner='auto')  # v1.5.0 (convergence acceleration)
 
-# 25k+ 면 추가:
+# for 25k+ faces, additionally:
 import os
 os.environ['MNPBEM_VRAM_SHARE_GPUS'] = '4'  # v1.2.0
 ```
 
-`pymnpbem_simulation` 사용자는 YAML 의 `iter.preconditioner: 'auto'`,
-`iter.schur: 'auto'` 만 켜두면 자동 활성된다 (v1.5.0).
+`pymnpbem_simulation` users only need to enable
+`iter.preconditioner: 'auto'` and `iter.schur: 'auto'` in the YAML, and
+they activate automatically (v1.5.0).
 
 **Common issue**:
 
-- 25k+ face 의 진짜 memory-friendly preconditioner 는 Sigma/Delta
-  H-matrix 재구성이 필요 — v1.6+ 과제. 현재 `hlu_tree` 는 8N×8N
-  결합 시스템 특성상 dense fallback 로 동작하는 경우가 있다.
-- `BEMStatIter` tree mode 는 diagonal term 깨짐으로 자동 dense
-  fallback (one-time log).
+- A truly memory-friendly preconditioner at 25k+ faces requires
+  Sigma/Delta H-matrix reconstruction — a v1.6+ task. Currently
+  `hlu_tree` sometimes falls back to dense due to the nature of the
+  8N×8N coupled system.
+- `BEMStatIter` tree mode automatically falls back to dense because the
+  diagonal term breaks (one-time log).
 
-### 22. mesh_density 우선 (v1.6.0)
+### 22. mesh_density takes precedence (v1.6.0)
 
-이전 (v1.5.x): `n_per_edge` 가 explicit 명시 시 그대로 사용.
-v1.6.0+: **`mesh_density` 가 우선** (mnpbem_simulation 의미체계 통일).
+Previously (v1.5.x): `n_per_edge`, when explicitly specified, was used
+as-is. v1.6.0+: **`mesh_density` takes precedence** (unifying the
+mnpbem_simulation semantics).
 
 ```python
-# yaml 에 둘 다 있으면 mesh_density 우선
+# if both are present in the yaml, mesh_density takes precedence
 structure:
   core_size: 47
-  mesh_density: 2     # 우선 사용 → core size 기준 n_per_edge=24
-  n_per_edge: 24      # 무시 (mesh_density 가 결정)
+  mesh_density: 2     # used with precedence → n_per_edge=24 based on core size
+  n_per_edge: 24      # ignored (mesh_density decides)
 ```
 
-backward-compat: `n_per_edge` 만 있는 yaml 은 그대로 사용.
+backward-compat: yaml with only `n_per_edge` is used as-is.
 
 ---
 
