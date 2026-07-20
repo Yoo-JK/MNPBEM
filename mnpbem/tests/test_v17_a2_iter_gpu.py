@@ -1,13 +1,13 @@
 """v1.7 A2 — BEMRetIter + BEMRetLayerIter GPU audit smoke + regression.
 
-5 bug pattern 점검 (이미 v1.6.3/4/5 에서 fix):
+5 bug patterns checked (already fixed in v1.6.3/4/5):
   1. backend mix (numpy/cupy)
-  2. complex128 dtype 일관성
-  3. HMatrix matvec 메모리 누적 (5 wl 반복)
-  4. GMRES iterate backend 일관성
-  5. precond GPU pipeline OOM 회피
+  2. complex128 dtype consistency
+  3. HMatrix matvec memory accumulation (5 wl iterations)
+  4. GMRES iterate backend consistency
+  5. precond GPU pipeline OOM avoidance
 
-GPU 1 만 사용 — module top-level 에서 CUDA_VISIBLE_DEVICES 설정.
+Uses only GPU 1 — sets CUDA_VISIBLE_DEVICES at module top level.
 """
 
 import os

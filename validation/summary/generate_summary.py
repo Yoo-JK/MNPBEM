@@ -174,11 +174,11 @@ def write_summary_md(rows: List[Dict], savepath: str) -> None:
     lines.append('\n## Notes\n')
     lines.append('- RMS is computed per matching `*_python.csv` / `*_matlab.csv` pair '
         'as `sqrt(mean((|py-ml|/max(|ml|,1e-30))^2))`, '
-        '최대값이 "Max RMS"로 보고됨.\n')
-    lines.append('- Timing은 각 폴더의 `python_timing.csv` / `matlab_timing.csv` 합계.\n')
-    lines.append('- `Speedup = MATLAB time / Python time`. >1 이면 Python이 빠름.\n')
-    lines.append('- 06_mirror/rod: trirod quarter-mesh 생성 한계로 skip (README 참고).\n')
-    lines.append('- 10_dipole_layer: Python BEMRetLayer 성능 이슈로 ret 파트 스크립트 내 skip 플래그.\n')
+        'the maximum value is reported as "Max RMS".\n')
+    lines.append('- Timing is the per-folder sum of `python_timing.csv` / `matlab_timing.csv`.\n')
+    lines.append('- `Speedup = MATLAB time / Python time`. >1 means Python is faster.\n')
+    lines.append('- 06_mirror/rod: skipped due to trirod quarter-mesh generation limits (see README).\n')
+    lines.append('- 10_dipole_layer: ret part uses an in-script skip flag due to Python BEMRetLayer performance issues.\n')
 
     with open(savepath, 'w') as f:
         f.writelines(lines)

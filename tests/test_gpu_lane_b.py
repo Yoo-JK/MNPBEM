@@ -1,9 +1,9 @@
 """Unit tests for Lane B GPU dispatch:
 - PlaneWaveRet.potential / field
 - SpectrumRet.farfield / scattering
-- EpsTable cupy 입력 호환
+- EpsTable cupy input compatibility
 
-CPU vs GPU 결과가 (가능한 한) bit-identical인지 확인.
+Verify that CPU vs GPU results are bit-identical (as much as possible).
 """
 
 import importlib

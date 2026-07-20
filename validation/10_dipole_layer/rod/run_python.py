@@ -86,8 +86,8 @@ def main() -> None:
         wls, [tot_s, rad_s], ['tot', 'rad'])
     print('[info] stat {:.3f}s'.format(t_s))
 
-    # NOTE: Python BEMRetLayer + DipoleRetLayer가 wavelength 반복 시 매우 느림
-    # (21pt 대상으로 30분+ 소요). 이건 Python 구현 성능 이슈로 별도 조사 필요.
+    # NOTE: Python BEMRetLayer + DipoleRetLayer is very slow when iterating over wavelengths
+    # (30+ minutes for 21 points). This is a Python implementation performance issue needing separate investigation.
     run_ret_enabled = False
     if run_ret_enabled:
         tot_r, rad_r, t_r = run_ret(wls)
@@ -96,7 +96,7 @@ def main() -> None:
             wls, [tot_r, rad_r], ['tot', 'rad'])
         print('[info] ret  {:.3f}s'.format(t_r))
     else:
-        print('[info] ret: SKIPPED (Python BEMRetLayer 성능 이슈, 조사 필요)')
+        print('[info] ret: SKIPPED (Python BEMRetLayer performance issue, needs investigation)')
 
     save_timing(os.path.join(DATA_DIR, 'python_timing.csv'), timings)
 

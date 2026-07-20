@@ -1900,9 +1900,9 @@ class BEMRetLayer(object):
         self.Sigma1e = Sigma1e
         self.Gamma = Gamma
 
-        # solve-side 상수 GEMM 캐시. 일반 init(line 891-926)과 동일 — distributed
-        # init 에서 누락되면 _solve_single 이 stale/미정의 _sv_* 로 spectrum 이
-        # 발산한다 (green split 배선 시 빠졌던 버그).
+        # solve-side constant GEMM cache. Same as the standard init (lines 891-926) — distributed
+        # init; if omitted here, _solve_single diverges the spectrum via stale/undefined _sv_*
+        # (a bug that was missing when wiring the green split).
         self._sv_diff_ss = matmul_dispatch(L1, G2['ss']) - G2e['ss']
         self._sv_diff_sh = matmul_dispatch(L1, G2['sh']) - G2e['sh']
         self._sv_G2piGamma = matmul_dispatch(G2pi, Gamma)

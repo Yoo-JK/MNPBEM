@@ -70,7 +70,7 @@ def _build_au_sphere_uniform() -> ComParticle:
 
 
 # ---------------------------------------------------------------------------
-# 검증 1: dense BEMRet vs B-Schur (iter+hmat) on small core-shell mesh
+# Test 1: dense BEMRet vs B-Schur (iter+hmat) on small core-shell mesh
 #
 # The dense BEMRet (no Schur) and BEMRetIter(schur=True, hmatrix=True) must
 # produce equivalent surface charges on a 60-face nonlocal core-shell sphere.
@@ -119,7 +119,7 @@ class TestVerification1DenseVsBSchur(object):
 
 
 # ---------------------------------------------------------------------------
-# 검증 2: uniform-eps pointwise vs operator equivalence
+# Test 2: uniform-eps pointwise vs operator equivalence
 #
 # When eps is scalar within the region, pointwise and operator forms produce
 # identical _afun output (β v1.5.1 fast path explicitly preserves this).  The
@@ -177,7 +177,7 @@ class TestVerification2PointwiseVsOperator(object):
 
 
 # ---------------------------------------------------------------------------
-# 검증 3: Au@Ag dimer iter+hmat — β v1.5.1 fix preserved (no schur regression)
+# Test 3: Au@Ag dimer iter+hmat — β v1.5.1 fix preserved (no schur regression)
 #
 # When schur is off, the only thing that matters is that BEMRetIter still
 # reproduces the dense BEMRet result on the Au@Ag dimer (the case the β fix
@@ -220,7 +220,7 @@ class TestVerification3AuAgNoRegression(object):
 
 
 # ---------------------------------------------------------------------------
-# 검증 4: 60-face nonlocal core-shell + schur+iter+hmat — GMRES converges
+# Test 4: 60-face nonlocal core-shell + schur+iter+hmat — GMRES converges
 #
 # The pre-fix (v1.5.0) test ran in 6:30; post-β-fix (v1.5.1) it hung 25+ min.
 # B-Schur must restore convergence within a reasonable time budget.
@@ -279,7 +279,7 @@ class TestVerification4NonlocalSchurConverges(object):
                 '[error] expected lu_dense for 928-shell-dof case, got <{}>'.format(
                         op_info['g_ss_solver'])
 
-        print('[info] B-Schur 검증 4: ref={:.1f}s, schur={:.1f}s'.format(
+        print('[info] B-Schur test 4: ref={:.1f}s, schur={:.1f}s'.format(
                 t_ref, t_schur))
 
 

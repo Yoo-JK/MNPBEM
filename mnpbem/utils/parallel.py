@@ -65,7 +65,7 @@ def _compute_single_wavelength_ret(
         wavelength: float,
         bem_class: type,
         bem_kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    # RET: Green function이 k에 의존하므로 각 worker에서 bem 객체를 새로 생성
+    # RET: the Green function depends on k, so each worker builds a fresh bem object
     bem_local = bem_class(particle, **bem_kwargs)
     pot = exc(particle, wavelength)
     sig, _ = bem_local.solve(pot)
@@ -104,7 +104,7 @@ def compute_spectrum_parallel(
     n_wl = len(wavelengths)
 
     if not HAS_JOBLIB:
-        warnings.warn('[info] joblib 미설치: 순차 계산으로 fallback')
+        warnings.warn('[info] joblib not installed: falling back to sequential computation')
         return compute_spectrum(bem, exc, particle, wavelengths, **kwargs)
 
     is_stat = _is_stat_solver(bem)
@@ -113,7 +113,7 @@ def compute_spectrum_parallel(
     blas_threads = kwargs.get('blas_threads', 1)
 
     if is_stat:
-        # STAT: Green function이 파장 무관 → bem 객체를 공유하고 solve만 병렬화
+        # STAT: the Green function is wavelength-independent -> share the bem object and parallelize only the solve
         def _worker_stat(wl: float) -> Dict[str, Any]:
             if HAS_THREADPOOLCTL:
                 with threadpool_limits(limits = blas_threads, user_api = 'blas'):
@@ -126,7 +126,7 @@ def compute_spectrum_parallel(
         )
 
     elif is_ret:
-        # RET: Green function이 k에 의존 → 각 worker에서 독립 계산
+        # RET: the Green function depends on k -> each worker computes independently
         bem_class = type(bem)
         bem_kwargs = kwargs.get('bem_kwargs', {})
 
@@ -142,7 +142,7 @@ def compute_spectrum_parallel(
         )
 
     else:
-        raise ValueError('[error] 알 수 없는 solver 타입: <{}>'.format(getattr(bem, 'needs', {})))
+        raise ValueError('[error] unknown solver type: <{}>'.format(getattr(bem, 'needs', {})))
 
     return _aggregate_results(results_list, n_wl)
 
@@ -166,7 +166,7 @@ def _aggregate_results(
             output[key] = arr
 
         elif isinstance(first_val, np.ndarray) and first_val.ndim == 1:
-            # 다중 편광: (n_wl, npol)
+            # Multiple polarizations: (n_wl, npol)
             npol = first_val.shape[0]
             arr = np.empty((n_wl, npol), dtype = float)
             for i in range(n_wl):
@@ -174,7 +174,7 @@ def _aggregate_results(
             output[key] = arr
 
         else:
-            # 기타 형태: 리스트로 저장
+            # Other shapes: store as a list
             arr_list = [results_list[i][key] for i in range(n_wl)]
             output[key] = arr_list
 
